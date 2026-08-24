@@ -1,0 +1,43 @@
+name: reference-track-follow-plan
+version: 1
+variables:
+  requested_track: plan-alpha
+steps:
+  - id: create-track
+    step: track.create_moving
+    inputs:
+      track_id:
+        $var: requested_track
+      x: 10.0
+      y: 20.0
+      vx: 8.0
+      vy: 1.0
+    outputs:
+      track_id: active_track
+      x: initial_x
+
+  - id: wait-for-motion
+    step: track.wait_for_motion
+    inputs:
+      track_id:
+        $var: active_track
+      initial_x:
+        $var: initial_x
+    outputs:
+      x: moved_x
+
+  - id: follow-track
+    step: track.follow
+    inputs:
+      track_id:
+        $var: active_track
+    outputs:
+      followed: followed
+
+  - id: validate-followed
+    step: validation.equal
+    inputs:
+      name: followed
+      actual:
+        $var: followed
+      expected: true

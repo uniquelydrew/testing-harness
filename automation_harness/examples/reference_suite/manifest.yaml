@@ -1,0 +1,23 @@
+name: reference-regression-suite
+version: 1
+step_libraries:
+  - steps/reference_workflows.py
+variables:
+  history: []
+  session:
+    phase: initialized
+requires:
+  - reference
+  - tracking
+  - mosaic
+  - threat-state
+  - triangulation
+tests:
+  - tests/test_threat_levels.py
+  - tests/test_mosaic_tile_sets.py
+  - tests/test_triangulation.py
+  - tests/test_camera_video_tracking.py
+  - tests/test_track_follow.py
+  - tests/test_registered_step_reuse.py
+  - tests/test_associated_step_library.py
+  - tests/test_step_dataflow.py

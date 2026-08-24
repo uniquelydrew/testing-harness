@@ -1,0 +1,14 @@
+name: reference-ui-regression-suite
+version: 1
+requires:
+  - reference
+  - local-only
+  - gui
+  - components
+  - screen-capture
+  - synthetic-video
+tests:
+  - tests/test_authoring_gui.py
+  - tests/test_component_state.py
+  - tests/test_component_activation.py
+  - tests/test_vision_target.py

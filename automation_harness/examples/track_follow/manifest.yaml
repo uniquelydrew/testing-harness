@@ -1,0 +1,7 @@
+name: reference-track-follow
+version: 1
+requires:
+  - reference
+  - tracking
+tests:
+  - tests/test_track_follow.py

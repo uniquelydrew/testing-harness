@@ -1,0 +1,22 @@
+# 0.5.0
+
+- Added typed component state/property model and state wait/assert operations.
+- Expanded AT-SPI adapter with state inspection, hierarchy/action/bounds capture, accessible IDs, and capture-at-point.
+- Added ObjectCaptureService with locator assessment and versioned repository persistence.
+- Added local `automation-author` Tk authoring GUI with repository, step library, TestPlan, variables and execution-state views.
+- Added immutable declarative TestPlan and managed READY/BLOCKED execution state.
+- Added `automation-run plan validate`, `plan status`, and reference-only `plan run`.
+- Declarative plan execution imports no test modules or bundle-local Python step libraries.
+- Made registered-step output binding transactional and moved `step_finished` after successful extraction/binding.
+- Added atomic multi-variable output commit.
+- Added synthetic disabled and expanded/menu state fixtures.
+- Moved reference Unix sockets to short `/tmp` paths to avoid AF_UNIX path-length failures.
+- Protected backend remains intentionally disabled.
+- Remediated example-test module namespace collisions and scoped normal repository pytest to framework tests; packaged examples still collect uniquely and run through selftest bundles.
+- Added declarative backend capability and step-risk authorization before backend startup.
+- Added step risk metadata: `read_only`, `synthetic_control`, `application_control`, and reserved `physical_control`.
+- Added dependency-cycle detection and support for consumers that wait on outputs produced later in the declarative composition.
+- Runtime `--var` overrides now participate in plan validation before execution.
+- Declarative run artifacts now record a canonical TestPlan SHA-256 and registered-step-catalog SHA-256.
+- Added deterministic authoring-GUI smoke qualification under the isolated reference display.
+- Added Open Plan and Run Reference controls to the authoring GUI; reference execution uses the same declarative executor and reloads `execution_state.json` into the GUI.
