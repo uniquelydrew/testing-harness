@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automation-harness"
+version = "0.5.2"
+description = "Protected-target-safe automation harness with an isolated synthetic reference backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+  "pytest>=8.0",
+  "Pillow>=10.0",
+]
+
+[project.scripts]
+automation-run = "automation_harness.runner.cli:main"
+automation-reference = "automation_harness.reference.app:main"
+automation-author = "automation_harness.authoring.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["automation_harness*"]
+
+[tool.setuptools.package-data]
+automation_harness = ["resources/**/*.yaml", "examples/**/*.yaml", "examples/**/*.py"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["automation_harness/tests"]
+markers = [
+  "reference: runnable against the synthetic reference backend",
+  "ui: exercises UI-oriented behavior",
+  "tracking: exercises moving target behavior",
+  "integration: crosses process/service boundaries",
+  "protected: may only run against an explicitly enabled protected backend",
+]

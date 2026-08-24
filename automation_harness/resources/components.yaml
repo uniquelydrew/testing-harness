@@ -1,0 +1,97 @@
+version: 1
+components:
+  reference.threat.low:
+    description: Set the synthetic threat state to LOW through the real desktop control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: Low
+          role: push button
+  reference.threat.medium:
+    description: Set the synthetic threat state to MEDIUM through the real desktop
+      control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: Medium
+          role: push button
+  reference.threat.high:
+    description: Set the synthetic threat state to HIGH through the real desktop control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: High
+          role: push button
+  reference.mosaic.add_alpha:
+    description: Add the Alpha synthetic tile through the real desktop control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: Add Alpha
+          role: push button
+  reference.mosaic.add_bravo:
+    description: Add the Bravo synthetic tile through the real desktop control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: Add Bravo
+          role: push button
+  reference.mosaic.clear:
+    description: Clear all synthetic mosaic tiles through the real desktop control.
+    actions:
+    - resolve
+    - activate
+    strategies:
+    - type: atspi
+      identification:
+        mandatory:
+          name: Clear Tiles
+          role: push button
+  reference.track.canvas:
+    description: Synthetic moving-target render surface; reference metadata is inspection-only.
+    actions:
+    - resolve
+    strategies:
+    - type: reference_inspection
+      component_id: track.canvas
+  reference.state.options_menu:
+    description: Synthetic menu control exposed for read-only state inspection.
+    actions:
+    - resolve
+    strategies:
+    - type: reference_inspection
+      component_id: state.options_menu
+  reference.state.options_popup:
+    description: Synthetic menu popup whose presence reflects the menu-open state.
+    actions:
+    - resolve
+    strategies:
+    - type: reference_inspection
+      component_id: state.options_popup
+  reference.state.disabled_action:
+    description: Synthetic disabled control for object-state qualification.
+    actions:
+    - resolve
+    strategies:
+    - type: reference_inspection
+      component_id: state.disabled_action
