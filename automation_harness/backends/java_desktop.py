@@ -62,6 +62,8 @@ class JavaDesktopBackend(ExecutionBackend):
             completed = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Status}", package], text=True, capture_output=True)
             if completed.returncode != 0 or completed.stdout.strip() != "installed":
                 issues.append(f"Linux Java accessibility requires package {package}")
+        if not Path("/usr/share/java/java-atk-wrapper.jar").is_file():
+            issues.append("Linux Java accessibility requires /usr/share/java/java-atk-wrapper.jar")
         try:
             import pyatspi  # type: ignore # noqa: F401
         except ImportError:
@@ -164,10 +166,18 @@ class JavaDesktopBackend(ExecutionBackend):
 def _enable_java_atk_wrapper(env: dict[str, str], command: list[str]) -> None:
     """Enable the Java ATK wrapper without requiring an application test hook."""
     property_arg = "-Djavax.accessibility.assistive_technologies=org.GNOME.Accessibility.AtkWrapper"
-    if any(arg.startswith("-Djavax.accessibility.assistive_technologies=") for arg in command):
-        return
+    javafx_accessibility_arg = "-Dglass.accessible.force=true"
+    bootclasspath_arg = "-Xbootclasspath/a:/usr/share/java/java-atk-wrapper.jar"
     if Path(command[0]).name.casefold().startswith("java"):
-        command.insert(1, property_arg)
+        if not any(arg.startswith("-Djavax.accessibility.assistive_technologies=") for arg in command):
+            command.insert(1, property_arg)
+        if javafx_accessibility_arg not in command:
+            command.insert(1, javafx_accessibility_arg)
+        if not any(arg.startswith("-Xbootclasspath/a:") and "java-atk-wrapper.jar" in arg for arg in command):
+            command.insert(1, bootclasspath_arg)
     else:
         options = env.get("JAVA_TOOL_OPTIONS", "").strip()
-        env["JAVA_TOOL_OPTIONS"] = " ".join(filter(None, [options, property_arg]))
+        extra = [property_arg, javafx_accessibility_arg]
+        if "java-atk-wrapper.jar" not in options:
+            extra.append(bootclasspath_arg)
+        env["JAVA_TOOL_OPTIONS"] = " ".join(filter(None, [options, *extra]))

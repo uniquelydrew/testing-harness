@@ -1,4 +1,6 @@
 from automation_harness.backends.gtk_demo import GtkDemoBackend
+from automation_harness.backends.java_desktop import JavaDesktopBackend
+from automation_harness.drivers.java_accessibility import JavaAccessBridgeDriver
 from automation_harness.runner.bundle import BundleError, TestBundle
 
 
@@ -65,3 +67,20 @@ tests: [test_case.py]
     )
     bundle = TestBundle.load(tmp_path)
     assert bundle.target and bundle.target["command"] == ["java", "-jar", "demo.jar"]
+
+
+def test_java_desktop_backend_rejects_unknown_display_mode():
+    try:
+        JavaDesktopBackend({"command": ["java", "-version"]}, display_mode="remote")
+    except ValueError as exc:
+        assert "display" in str(exc).lower()
+    else:
+        raise AssertionError("unknown display mode must be rejected")
+
+
+def test_jab_locator_matches_name_role_and_window():
+    info = JavaAccessBridgeDriver._ContextInfo()
+    info.name = "Follow"
+    info.role_en_US = "push button"
+    assert JavaAccessBridgeDriver._matches(info, "Tracking", {"name": "Follow", "role": "push button", "window": "Tracking"})
+    assert not JavaAccessBridgeDriver._matches(info, "Tracking", {"name": "Stop"})
