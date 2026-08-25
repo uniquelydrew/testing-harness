@@ -1,82 +1,110 @@
 # RHEL 8 Deployment
 
-Automation Harness supports deployment qualification on Red Hat Enterprise Linux 8 as a Linux/X11 target. Linux runtime checks are capability-based: the harness does not require `apt`, `dpkg`, or any other distribution-specific package manager at runtime.
+Automation Harness supports deployment qualification on Red Hat Enterprise Linux 8 as a Linux/X11 target. Linux runtime checks are capability-based: the application itself does not depend on `apt`, `dpkg`, or distribution-specific package names.
 
-## Baseline
+## Bootstrap installation
 
-The initial RHEL qualification target is:
+For an extracted source/archive deployment, the normal installation path is now:
 
-- Red Hat Enterprise Linux 8.x, x86_64
-- Python 3.11 or newer in an application-owned environment
-- X11, with Xvfb available for virtual-display runs
-- AT-SPI2 and a D-Bus session for accessibility-backed object interaction
-- a `pyatspi` binding importable by the same Python runtime that executes Automation Harness
-- Java plus the Java ATK wrapper for Swing/JavaFX targets
+```bash
+cd testing-harness
+bash bootstrap.sh
+```
 
-Do not replace RHEL's `/usr/bin/python3` to satisfy the harness Python requirement. Install or provision Python 3.11+ separately and create an application-owned virtual environment.
+`bootstrap.sh` is intentionally idempotent. It may be rerun to repair or re-qualify an installation.
 
-## Python runtime
+The bootstrap performs the following work automatically:
 
-Example layout:
+1. Detects the Linux distribution using `/etc/os-release`.
+2. Installs native GUI, accessibility, compiler, X11/Xvfb, and D-Bus prerequisites.
+3. On RHEL-family systems, uses `dnf`; on Debian-family systems, uses `apt-get`.
+4. Attempts to install a distribution-provided Python 3.11+ runtime.
+5. If no suitable Python exists, builds an application-owned CPython 3.11 runtime under `.runtime/` without replacing `/usr/bin/python3`.
+6. Creates or repairs the application virtual environment at `.venv/`.
+7. Installs Automation Harness and its Python dependencies.
+8. Installs a PyGObject/PyCairo line compatible with enterprise-Linux GLib versions.
+9. Makes the distribution `pyatspi` Python sources available to the application runtime when they are present and compatible with the separately installed PyGObject runtime.
+10. Locates the Java ATK wrapper without assuming a package layout.
+11. Runs the base self-test and the AT-SPI qualification gate.
+12. Writes `.automation-harness-env` with the resulting runtime paths.
+
+After a successful bootstrap:
+
+```bash
+source .automation-harness-env
+automation-run selftest
+```
+
+The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER` when the wrapper is discovered.
+
+## RHEL privilege and repository requirements
+
+Native RPM installation requires root privileges. The bootstrap uses the current process when already running as root; otherwise it uses `sudo`.
+
+On RHEL, some development packages may require CodeReady Builder. If the first native dependency installation fails and `subscription-manager` is available, the bootstrap attempts to enable the architecture-specific CodeReady Builder repository and retries the installation.
+
+The RHEL host must have access to whatever organizational or Red Hat repositories are required to retrieve the RPMs. The bootstrap cannot bypass repository, subscription, proxy, or network policy.
+
+## Python isolation
+
+Do not replace RHEL's `/usr/bin/python3`. RHEL 8 system-management tooling is coupled to the distribution Python stack.
+
+Automation Harness requires Python 3.11+. The bootstrap searches for an existing compatible interpreter in this order:
 
 ```text
-/opt/automation-harness/
-├── venv/
-├── repositories/
-├── testplans/
-└── runs/
+.runtime Python
+python3.13
+python3.12
+python3.11
+python3
 ```
 
-Create the environment with the qualified Python interpreter:
+If none qualifies, the bootstrap downloads and builds the configured CPython source release under `.runtime/` and uses it only for Automation Harness.
+
+The source fallback version can be overridden:
 
 ```bash
-/opt/python311/bin/python3.11 -m venv /opt/automation-harness/venv
-source /opt/automation-harness/venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install ./automation_harness-0.5.2-py3-none-any.whl
+AUTOMATION_HARNESS_PYTHON_VERSION=3.11.9 bash bootstrap.sh
 ```
 
-If RHEL provides the required interpreter as `python3.11`, use that executable instead of `/opt/python311/bin/python3.11`.
+The application virtual environment defaults to:
 
-## Native capability qualification
+```text
+./.venv
+```
 
-Before deploying a real GUI target, verify the host provides the required Linux capabilities:
+and can be relocated with:
 
 ```bash
-command -v Xvfb
-command -v dbus-run-session
-command -v java
-
-echo "DISPLAY=${DISPLAY:-<unset>}"
-echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>}"
-
-find /usr/share/java /usr/lib/java /usr/lib64/java \
-  -type f -name 'java-atk-wrapper*.jar' 2>/dev/null
-
-python - <<'PY'
-for module in ("pyatspi", "gi", "cairo"):
-    try:
-        imported = __import__(module)
-        print(f"{module}: OK ({getattr(imported, '__file__', '<built-in>')})")
-    except Exception as exc:
-        print(f"{module}: FAIL ({type(exc).__name__}: {exc})")
-PY
+AUTOMATION_HARNESS_VENV=/opt/automation-harness/venv bash bootstrap.sh
 ```
 
-The important constraint is that `pyatspi` must be importable by the Python 3.11+ runtime actually running the harness. A binding installed only for RHEL's system Python does not satisfy this requirement.
+## AT-SPI and PyGObject
 
-## Java ATK wrapper discovery
+RHEL 8 commonly installs `python3-pyatspi` for the system Python while Automation Harness executes under Python 3.11+.
 
-The Linux Java backend no longer assumes a Debian/Ubuntu package name or calls `dpkg-query`. It discovers the Java ATK wrapper by capability.
+The bootstrap does not add the complete Python 3.6 site-packages tree to `PYTHONPATH`. Native extension modules from the RHEL Python ABI must not be mixed into the application interpreter.
 
-The following locations are checked automatically:
+Instead, it installs PyGObject/PyCairo against the application runtime and, when available, copies only the distribution's pure-Python `pyatspi` package into the isolated environment. The resulting environment must pass:
+
+```bash
+automation-run selftest --require-atspi
+```
+
+A failure at that gate means the machine is not fully qualified for accessibility-backed GUI automation.
+
+## Java Swing and JavaFX
+
+Linux Java accessibility requires a Java ATK wrapper JAR. The harness discovers it by capability rather than RPM/DEB package identity.
+
+The standard locations checked include:
 
 ```text
 /usr/share/java/java-atk-wrapper.jar
 /usr/share/java/java-atk-wrapper/java-atk-wrapper.jar
 ```
 
-The backend also searches beneath:
+and recursive discovery beneath:
 
 ```text
 /usr/share/java
@@ -84,39 +112,41 @@ The backend also searches beneath:
 /usr/lib64/java
 ```
 
-If the RHEL installation places the wrapper elsewhere, set:
+For an organization-specific location:
 
 ```bash
 export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=/absolute/path/to/java-atk-wrapper.jar
 ```
 
-This keeps deployment independent of RPM package naming and allows RHEL installations, internally packaged environments, and future Linux distributions to expose the same runtime capability through different package layouts.
+## D-Bus and virtual display
 
-## D-Bus and virtual displays
+Accessibility-backed runs require a D-Bus session. Virtual-display mode additionally requires `Xvfb`.
 
-A Java accessibility run requires a D-Bus session. Virtual-display mode additionally requires `Xvfb` on `PATH`.
+The bootstrap installs and qualifies both `dbus-run-session` and `Xvfb`. A native display run still requires an active `DISPLAY` supplied by the desktop session.
 
-Where the host does not already provide a desktop D-Bus session, launch qualification or execution under:
+## Strict versus partial bootstrap
 
-```bash
-dbus-run-session -- automation-run selftest --require-atspi
-```
+The default bootstrap is strict: if the core harness installs but the required GUI/accessibility integration cannot qualify, bootstrap exits nonzero instead of silently reporting the host ready.
 
-For a managed Java target, `display_mode: virtual` uses an isolated Xvfb display. `display_mode: native` requires an existing `DISPLAY`; `display_mode: auto` uses an existing display when present and otherwise creates a virtual display.
-
-## Qualification
-
-After installing the Python wheel and native accessibility dependencies:
+For deliberately reduced environments, this behavior can be overridden:
 
 ```bash
-automation-run selftest
-automation-run selftest --require-atspi
+AUTOMATION_HARNESS_ALLOW_PARTIAL=1 bash bootstrap.sh
 ```
 
-The second command is the meaningful qualification gate for a host that will execute accessibility-backed GUI automation.
+That option is intended for development or reference-only operation. It should not be used to declare a real GUI automation deployment qualified.
 
-## RHEL 8.6 known deployment boundary
+## Initial RHEL qualification target
 
-A stock RHEL 8.6 installation may expose AT-SPI/PyGObject bindings only to the distribution's Python 3.6 runtime. Automation Harness requires Python 3.11+. Do not add the Python 3.6 site-packages directories to a Python 3.11 environment: PyGObject and related modules include native ABI components.
+The initial target remains:
 
-The supported deployment must provide a Python 3.11-compatible `pyatspi`/PyGObject stack to the harness runtime. Qualify this explicitly with the import test above before treating the machine as ready for real AT-SPI execution.
+- Red Hat Enterprise Linux 8.x, x86_64
+- Python 3.11+ in an application-owned environment
+- X11/Xvfb
+- D-Bus
+- AT-SPI2
+- PyGObject/PyCairo compatible with the application Python
+- `pyatspi` importable by that same Python runtime
+- Java ATK wrapper for Swing/JavaFX accessibility
+
+The RHEL 8.6 environment that motivated this support has a stock Python 3.6 system runtime. The bootstrap architecture explicitly preserves that runtime rather than modifying it.
