@@ -249,6 +249,8 @@ class JavaAccessBridgeDriver:
             bounds=(int(info.x), int(info.y), int(info.width), int(info.height)),
             state=ComponentState(present=True, visible="visible" in states, showing="showing" in states, enabled="enabled" in states, focused="focused" in states),
             backend_properties={"states": info.states_en_US, "children_count": int(info.children_count)},
+            framework="java_accessibility",
+            native_class=None,
         )
 
     def resolve(self, component_id: str, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> ResolvedComponent:

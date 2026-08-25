@@ -393,6 +393,7 @@ def load_builtin_steps() -> StepRegistry:
         "automation_harness.steps.camera_steps",
         "automation_harness.steps.mosaic_steps",
         "automation_harness.steps.navigation_steps",
+        "automation_harness.steps.gui_steps",
         "automation_harness.steps.threat_steps",
         "automation_harness.steps.track_steps",
         "automation_harness.steps.validation_steps",

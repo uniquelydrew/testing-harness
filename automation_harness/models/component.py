@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from automation_harness.models.gui import ActionType, ObjectType, classify_accessibility, default_actions
+
 
 @dataclass(frozen=True)
 class ComponentStrategy:
@@ -30,6 +32,28 @@ class ComponentDefinition:
     # Persisted paths in ``visual`` are relative to this runtime-only source.
     visual: Mapping[str, Any] | None = None
     repository_path: Path | None = field(default=None, compare=False, repr=False)
+    object_type: ObjectType = ObjectType.CUSTOM
+    properties: Mapping[str, Any] = field(default_factory=dict)
+    framework: str | None = None
+    native_class: str | None = None
+    subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+
+    @property
+    def semantic_actions(self) -> frozenset[ActionType]:
+        """Canonical v2 actions, with lossless v1 ``activate`` compatibility."""
+        values: set[ActionType] = set()
+        for action in self.actions:
+            if action == "activate":
+                values.update({ActionType.ACTIVATE, ActionType.CLICK})
+                continue
+            try:
+                values.add(ActionType(action))
+            except ValueError:
+                continue
+        return frozenset(values) or default_actions(self.object_type)
+
+    def supports(self, action: ActionType) -> bool:
+        return action in self.semantic_actions
 
 
 @dataclass(frozen=True)
@@ -136,6 +160,13 @@ class CapturedComponent:
     parent_role: str | None = None
     parent_accessible_id: str | None = None
     authored_strategy: ComponentStrategy | None = None
+    object_type: ObjectType | None = None
+    framework: str | None = None
+    native_class: str | None = None
+    logical_subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+
+    def semantic_type(self) -> ObjectType:
+        return self.object_type or classify_accessibility(self.role, self.native_class)
 
     def candidate_identification(self) -> AtspiIdentification:
         """Build a durable, multi-property identity from the capture.
@@ -211,4 +242,8 @@ class CapturedComponent:
                 "type": strategy.type,
                 **strategy.options,
             },
+            "object_type": self.semantic_type().value,
+            "framework": self.framework,
+            "native_class": self.native_class,
+            "logical_subobjects": {key: dict(value) for key, value in self.logical_subobjects.items()},
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -7,6 +8,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
+from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
 from automation_harness.utils.wait import wait_for as wait_for_value
 
 
@@ -15,6 +17,10 @@ class ComponentResolutionError(RuntimeError):
 
 
 class UnsupportedComponentAction(RuntimeError):
+    pass
+
+
+class UnsupportedGuiAction(UnsupportedComponentAction):
     pass
 
 
@@ -76,7 +82,75 @@ class ComponentHandle:
         )
 
     def property(self, name: str) -> Any:
+        if name in self.definition.properties:
+            return self.definition.properties[name]
         return self.state().get(name)
+
+    @builtins.property
+    def identity(self) -> ObjectIdentity:
+        return ObjectIdentity(self.definition.component_id, framework_id=self.definition.framework)
+
+    @builtins.property
+    def object_type(self):
+        return self.definition.object_type
+
+    def supports(self, action: ActionType | str) -> bool:
+        return self.definition.supports(ActionType(action))
+
+    def gui_state(self) -> GuiState:
+        state = self.state()
+        return GuiState(state.present, state.visible, state.enabled, state.focused, state.properties)
+
+    def execute(self, action: GuiAction | ActionType | str | dict, *, strategy: str | None = None) -> ExecutionResult:
+        """Execute one validated semantic action through the configured strategies.
+
+        The current accessibility implementations are deliberately the first
+        concrete executor.  Unsupported requested strategies are retained in
+        the diagnostic trail instead of silently changing test intent.
+        """
+        semantic = GuiAction.from_value(action)
+        if not self.supports(semantic.type):
+            available = ", ".join(sorted(item.value for item in self.definition.semantic_actions)) or "none"
+            raise UnsupportedGuiAction(
+                f"object {self.definition.component_id!r} type {self.definition.object_type.value} does not support "
+                f"{semantic.type.value}; supported actions: {available}"
+            )
+        if strategy not in {None, "accessibility", "atspi", "java_accessibility"}:
+            raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
+        try:
+            if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.ACTIVATE}:
+                payload = self.activate()
+            elif semantic.type == ActionType.SET_TEXT:
+                if not isinstance(semantic.value, str):
+                    raise ValueError("set_text requires a string value")
+                payload = self.set_text(semantic.value)
+            elif semantic.type == ActionType.CLEAR_TEXT:
+                payload = self.set_text("")
+            elif semantic.type == ActionType.APPEND_TEXT:
+                if not isinstance(semantic.value, str):
+                    raise ValueError("append_text requires a string value")
+                payload = self.set_text(self.get_text() + semantic.value)
+            elif semantic.type in {ActionType.SELECT, ActionType.SELECT_ITEM, ActionType.SELECT_ROW, ActionType.SELECT_CELL}:
+                index = semantic.value
+                if index is None and semantic.selector is not None:
+                    index = semantic.selector.criteria.get("index")
+                if not isinstance(index, int):
+                    raise ValueError(f"{semantic.type.value} currently requires selector.criteria.index")
+                payload = self.select_child(index)
+            elif semantic.type == ActionType.SET_VALUE:
+                if not isinstance(semantic.value, (int, float)) or isinstance(semantic.value, bool):
+                    raise ValueError("set_value requires a numeric value")
+                payload = self.set_value(float(semantic.value))
+            else:
+                raise ComponentResolutionError(
+                    f"semantic action {semantic.type.value!r} is declared but has no executor for the current strategy chain"
+                )
+        except Exception as exc:
+            self.context.evidence.record("gui_action_attempt_failed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=strategy or "accessibility", error=f"{type(exc).__name__}: {exc}")
+            raise
+        result = ExecutionResult(semantic.type, strategy or "accessibility", payload, ({"strategy": strategy or "accessibility", "success": True},))
+        self.context.evidence.record("gui_action_executed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=result.strategy, result=dict(payload))
+        return result
 
     def assert_state(self, **expected: Any) -> ComponentState:
         observed = self.state()
@@ -118,7 +192,7 @@ class ComponentHandle:
         return last
 
     def activate(self) -> dict[str, Any]:
-        if "activate" not in self.definition.actions:
+        if "activate" not in self.definition.actions and not self.supports(ActionType.CLICK):
             raise UnsupportedComponentAction(
                 f"component {self.definition.component_id!r} does not support activation"
             )

@@ -582,6 +582,8 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         parent_name=getattr(parent, "name", None) if parent is not None else None,
         parent_role=_role_name(parent) if parent is not None else None,
         parent_accessible_id=_accessible_id(parent) if parent is not None else None,
+        framework="atspi",
+        native_class=attributes.get("class") or attributes.get("class-name"),
     )
 
 

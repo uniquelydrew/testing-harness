@@ -91,12 +91,14 @@ class AuthoringApp:
     def _build_objects(self) -> None:
         left = ttk.Frame(self.objects_tab, padding=6)
         left.pack(side="left", fill="y")
-        self.object_tree = ttk.Treeview(left, columns=("revision", "actions"), show="tree headings", height=24)
+        self.object_tree = ttk.Treeview(left, columns=("revision", "type", "actions"), show="tree headings", height=24)
         self.object_tree.heading("#0", text="Component")
         self.object_tree.heading("revision", text="Rev")
+        self.object_tree.heading("type", text="Type")
         self.object_tree.heading("actions", text="Actions")
         self.object_tree.column("#0", width=260)
         self.object_tree.column("revision", width=50, anchor="center")
+        self.object_tree.column("type", width=110)
         self.object_tree.column("actions", width=140)
         self.object_tree.pack(fill="both", expand=True)
         self.object_tree.bind("<<TreeviewSelect>>", lambda _e: self.show_object())
@@ -200,7 +202,7 @@ class AuthoringApp:
     def refresh_objects(self) -> None:
         self.object_tree.delete(*self.object_tree.get_children())
         for component_id, definition in sorted(self.repository.components.items()):
-            self.object_tree.insert("", "end", iid=component_id, text=component_id, values=(definition.revision, ",".join(sorted(definition.actions))))
+            self.object_tree.insert("", "end", iid=component_id, text=component_id, values=(definition.revision, definition.object_type.value, ",".join(sorted(item.value for item in definition.semantic_actions))))
 
     def show_object(self) -> None:
         selected = self.object_tree.selection()
@@ -212,6 +214,12 @@ class AuthoringApp:
             "description": definition.description,
             "revision": definition.revision,
             "actions": sorted(definition.actions),
+            "semantic_actions": sorted(item.value for item in definition.semantic_actions),
+            "object_type": definition.object_type.value,
+            "framework": definition.framework,
+            "native_class": definition.native_class,
+            "properties": dict(definition.properties),
+            "subobjects": {key: dict(value) for key, value in definition.subobjects.items()},
             "expected_states": dict(definition.expected_states),
             "visual": dict(definition.visual) if definition.visual else None,
             "strategies": [{"type": item.type, **item.options} for item in definition.strategies],

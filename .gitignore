@@ -5,6 +5,7 @@ __pycache__/
 
 # Local virtual environments and package build metadata
 .venv/
+.idea/
 *.egg-info/
 build/
 dist/

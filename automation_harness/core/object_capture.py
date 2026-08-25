@@ -213,6 +213,11 @@ class ObjectCaptureService:
             actions=frozenset(actions),
             expected_states=expected,
             revision=revision,
+            object_type=captured.semantic_type(),
+            properties=dict(captured.backend_properties),
+            framework=captured.framework,
+            native_class=captured.native_class,
+            subobjects=captured.logical_subobjects,
         )
 
     def save_capture(

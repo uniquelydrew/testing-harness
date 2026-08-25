@@ -7,6 +7,7 @@ from typing import Any, Iterable, Mapping
 import yaml
 
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
+from automation_harness.models.gui import ObjectType, default_actions
 
 
 class ComponentRepositoryError(ValueError):
@@ -41,13 +42,13 @@ class ComponentRepository:
         if not isinstance(raw, dict):
             raise ComponentRepositoryError(f"{source}: root must be a mapping")
         version = raw.get("version", 1)
-        if version != 1:
+        if version not in {1, 2}:
             raise ComponentRepositoryError(f"{source}: unsupported component schema version {version!r}")
         entries = raw.get("components", {})
         if not isinstance(entries, dict):
             raise ComponentRepositoryError(f"{source}: components must be a mapping")
         return cls({
-            str(component_id): _parse_component(Path(source), str(component_id), value)
+            str(component_id): _parse_component(Path(source), str(component_id), value, version=version)
             for component_id, value in entries.items()
         })
 
@@ -69,7 +70,7 @@ class ComponentRepository:
 
     def to_document(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "components": {
                 component_id: _component_to_mapping(definition)
                 for component_id, definition in sorted(self.components.items())
@@ -99,7 +100,7 @@ class ComponentRepository:
         return ComponentRepository(merged)
 
 
-def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefinition:
+def _parse_component(path: Path, component_id: str, value: Any, *, version: int = 1) -> ComponentDefinition:
     if not isinstance(value, dict):
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must be a mapping")
     description = value.get("description", "")
@@ -113,13 +114,23 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.expected_states must be a mapping")
     visual = _normalize_visual(path, component_id, value.get("visual"))
 
-    raw_actions = value.get("actions", ["resolve", "activate"])
+    raw_actions = value.get("actions")
+    raw_object_type = value.get("object_type")
+    if raw_object_type is None:
+        object_type = ObjectType.CUSTOM
+    else:
+        try:
+            object_type = ObjectType(str(raw_object_type))
+        except ValueError as exc:
+            raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_type is not a known semantic type") from exc
+    if raw_actions is None:
+        raw_actions = [item.value for item in default_actions(object_type)] if version == 2 else ["resolve", "activate"]
     if not isinstance(raw_actions, list) or not raw_actions or not all(isinstance(item, str) and item for item in raw_actions):
         raise ComponentRepositoryError(
             f"{path}: component {component_id!r}.actions must be a non-empty list of strings"
         )
     actions = frozenset(raw_actions)
-    if "resolve" not in actions:
+    if version == 1 and "resolve" not in actions:
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must support the resolve action")
 
     raw_strategies = value.get("strategies", [])
@@ -157,6 +168,18 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
         elif strategy_type == "anchored_visual":
             options = _normalize_anchored_visual_strategy(path, component_id, index, options)
         strategies.append(ComponentStrategy(strategy_type, options))
+    properties = value.get("properties", {})
+    if not isinstance(properties, Mapping):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.properties must be a mapping")
+    framework = value.get("framework")
+    native_class = value.get("native_class")
+    if framework is not None and not isinstance(framework, str):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.framework must be a string")
+    if native_class is not None and not isinstance(native_class, str):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.native_class must be a string")
+    subobjects = value.get("subobjects", {})
+    if not isinstance(subobjects, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in subobjects.items()):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.subobjects must map IDs to selector mappings")
     return ComponentDefinition(
         component_id=component_id,
         description=description,
@@ -166,6 +189,11 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
         revision=revision,
         visual=visual,
         repository_path=path if path.name not in {"repository", "editor"} else None,
+        object_type=object_type,
+        properties=dict(properties),
+        framework=framework,
+        native_class=native_class,
+        subobjects={str(key): dict(item) for key, item in subobjects.items()},
     )
 
 
@@ -281,6 +309,15 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["expected_states"] = dict(definition.expected_states)
     if definition.visual:
         payload["visual"] = dict(definition.visual)
+    payload["object_type"] = definition.object_type.value
+    if definition.properties:
+        payload["properties"] = dict(definition.properties)
+    if definition.framework:
+        payload["framework"] = definition.framework
+    if definition.native_class:
+        payload["native_class"] = definition.native_class
+    if definition.subobjects:
+        payload["subobjects"] = {key: dict(value) for key, value in definition.subobjects.items()}
     return payload
 
 

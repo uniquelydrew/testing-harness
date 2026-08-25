@@ -173,8 +173,19 @@ def validate_plan_components(plan: TestPlan, repository: ComponentRepository) ->
             continue
         if call.step_id == "navigation.component.activate":
             definition = repository.get(component_id)
-            if "activate" not in definition.actions:
+            from automation_harness.models.gui import ActionType
+            if "activate" not in definition.actions and not definition.supports(ActionType.CLICK):
                 issues.append(f"{call.node_id}: component {component_id!r} does not support activation")
+        if call.step_id == "gui.object.action":
+            definition = repository.get(component_id)
+            try:
+                from automation_harness.models.gui import GuiAction
+                action = GuiAction.from_value(call.inputs.get("action"))
+                if not definition.supports(action.type):
+                    supported = ", ".join(sorted(item.value for item in definition.semantic_actions)) or "none"
+                    issues.append(f"{call.node_id}: component {component_id!r} does not support {action.type.value}; supported actions: {supported}")
+            except (ValueError, TypeError) as exc:
+                issues.append(f"{call.node_id}: invalid gui action: {exc}")
     return issues
 
 
