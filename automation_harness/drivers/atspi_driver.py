@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import queue
+import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -125,6 +128,124 @@ class AtspiDriver:
         if match is None:
             raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
         return _capture_accessible(match, pyatspi)
+
+    def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
+        """Identify the application under a point, then resolve within it.
+
+        Re-querying the live application prevents a transient or stale proxy
+        from becoming the captured component after the picker disappears.
+        """
+        pyatspi = _pyatspi()
+        desktop = pyatspi.Registry.getDesktop(0)
+        source = _deepest_at_point(desktop, x=x, y=y, pyatspi=pyatspi)
+        if source is None:
+            raise LookupError(f"no application matched desktop point ({x}, {y})")
+        application_name = _application_name(source)
+        if not application_name:
+            raise LookupError(f"object at desktop point ({x}, {y}) has no application source")
+        application = _live_application(desktop, application_name)
+        if application is None:
+            raise LookupError(f"application {application_name!r} is no longer live")
+        target = _deepest_at_point(application, x=x, y=y, pyatspi=pyatspi)
+        if target is None:
+            raise LookupError(
+                f"no live component matched desktop point ({x}, {y}) "
+                f"within application {application_name!r}"
+            )
+        return _capture_accessible(target, pyatspi)
+
+    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
+        """Wait for one desktop mouse press and capture its accessible source.
+
+        AT-SPI dispatches global ``mouse:button:1p`` events on X11.  Wayland
+        sessions may withhold global mouse events, so a focused-state event is
+        registered as a fallback.  A normal click that targets an interactive
+        object moves focus to it; in both cases the event source is the object
+        to capture.  This avoids relying on a delayed pointer sample or
+        accidentally capturing the authoring window itself.
+        """
+        if timeout <= 0:
+            raise ValueError("click capture timeout must be positive")
+        pyatspi = _pyatspi()
+        baseline_focus = _focused_accessible(pyatspi.Registry.getDesktop(0), pyatspi)
+        baseline_signature = _accessible_signature(baseline_focus, pyatspi) if baseline_focus is not None else None
+        outcome: queue.Queue[tuple[CapturedComponent | None, BaseException | None]] = queue.Queue(maxsize=1)
+        completed = threading.Event()
+
+        def finish(captured: CapturedComponent | None, error: BaseException | None) -> None:
+            if completed.is_set():
+                return
+            completed.set()
+            outcome.put((captured, error))
+            try:
+                pyatspi.Registry.stop()
+            except Exception:
+                pass
+
+        def on_target_event(event: Any) -> None:
+            event_type = str(getattr(event, "type", ""))
+            if event_type == "object:state-changed:focused" and not bool(getattr(event, "detail1", False)):
+                return
+            source = getattr(event, "source", None)
+            if source is None:
+                return
+            if _application_name(source) == "Automation Harness Object Capture":
+                return
+            if baseline_signature is not None and _accessible_signature(source, pyatspi) == baseline_signature:
+                # The focused object that was already active when capture was
+                # armed is not a new user selection.
+                return
+            try:
+                # Treat one click as a scoped operation. First determine its
+                # application source, then resolve the deepest *live* object
+                # at the source bounds within that application only.
+                source_capture = _capture_accessible(source, pyatspi)
+                if source_capture.application is None or source_capture.bounds is None:
+                    raise LookupError("clicked accessibility event has no application-scoped component bounds")
+                left, top, width, height = source_capture.bounds
+                time.sleep(0.08)
+                application = _live_application(
+                    pyatspi.Registry.getDesktop(0), source_capture.application,
+                )
+                if application is None:
+                    raise LookupError(f"clicked application {source_capture.application!r} is no longer live")
+                target = _deepest_at_point(
+                    application,
+                    x=left + width // 2,
+                    y=top + height // 2,
+                    pyatspi=pyatspi,
+                )
+                if target is None:
+                    raise LookupError("no live component matched the clicked point within its application")
+                captured = _capture_accessible(target, pyatspi)
+                finish(captured, None)
+            except BaseException as exc:
+                finish(None, exc)
+
+        event_types = ("mouse:button:1p", "object:state-changed:focused")
+        for event_type in event_types:
+            pyatspi.Registry.registerEventListener(on_target_event, event_type)
+        timer = threading.Timer(timeout, lambda: finish(None, TimeoutError("no object was clicked before capture timed out")))
+        timer.daemon = True
+        timer.start()
+        try:
+            pyatspi.Registry.start()
+        finally:
+            timer.cancel()
+            try:
+                for event_type in event_types:
+                    pyatspi.Registry.deregisterEventListener(on_target_event, event_type)
+            except Exception:
+                pass
+        try:
+            captured, error = outcome.get_nowait()
+        except queue.Empty as exc:
+            raise RuntimeError("AT-SPI click capture stopped without a result") from exc
+        if error is not None:
+            raise error
+        if captured is None:
+            raise RuntimeError("AT-SPI click capture returned no object")
+        return captured
 
     def state(
         self,
@@ -362,7 +483,12 @@ def _collect_accessibles(node: Any, matches: list[Any], *, criteria: Mapping[str
 
 
 def _matches_criteria(node: Any, criteria: Mapping[str, Any]) -> bool:
-    return all(_matches_condition(node, key, value) for key, value in criteria.items())
+    try:
+        return all(_matches_condition(node, key, value) for key, value in criteria.items())
+    except Exception:
+        # AT-SPI events may hold an object path that becomes defunct as a
+        # control redraws. It is not a candidate in a fresh live-tree query.
+        return False
 
 
 def _matches_condition(node: Any, key: str, expected: Any) -> bool:
@@ -394,19 +520,37 @@ def _matches_condition(node: Any, key: str, expected: Any) -> bool:
 
 
 def _deepest_at_point(node: Any, *, x: int, y: int, pyatspi: Any) -> Any | None:
-    containing_children: list[Any] = []
-    for child in _children(node):
+    # Desktop and application nodes commonly expose no Component interface
+    # (and therefore no bounds). They are structural containers, not proof
+    # that their descendants cannot contain the point. Traverse them while
+    # retaining reverse child order as the best available stacking order.
+    matches: list[Any] = []
+    for child in reversed(_children(node)):
         bounds = _bounds(child, pyatspi)
         if bounds is None:
+            deeper = _deepest_at_point(child, x=x, y=y, pyatspi=pyatspi)
+            if deeper is not None:
+                matches.append(deeper)
             continue
         left, top, width, height = bounds
-        if left <= x < left + width and top <= y < top + height:
-            containing_children.append(child)
-    for child in reversed(containing_children):
+        if not (left <= x < left + width and top <= y < top + height):
+            continue
         deeper = _deepest_at_point(child, x=x, y=y, pyatspi=pyatspi)
         if deeper is not None:
-            return deeper
-        return child
+            matches.append(deeper)
+        else:
+            matches.append(child)
+    if matches:
+        # AT-SPI does not provide a portable z-order. The smallest live
+        # containing object is the most specific target and avoids selecting
+        # GNOME's desktop-sized background panel over an application control.
+        def area(candidate: Any) -> int:
+            candidate_bounds = _bounds(candidate, pyatspi)
+            if candidate_bounds is None:
+                return 2**63 - 1
+            return max(candidate_bounds[2], 0) * max(candidate_bounds[3], 0)
+
+        return min(matches, key=area)
     bounds = _bounds(node, pyatspi)
     if bounds is not None:
         left, top, width, height = bounds
@@ -493,6 +637,36 @@ def _component_state(
     )
 
 
+def _focused_accessible(node: Any, pyatspi: Any) -> Any | None:
+    """Return the first currently focused object in the desktop tree."""
+    try:
+        state = node.getState()
+        focused = getattr(pyatspi, "STATE_FOCUSED", None)
+        if focused is not None and state.contains(focused):
+            return node
+    except Exception:
+        pass
+    for child in _children(node):
+        result = _focused_accessible(child, pyatspi)
+        if result is not None:
+            return result
+    return None
+
+
+def _accessible_signature(node: Any, pyatspi: Any) -> tuple[Any, ...] | None:
+    if node is None:
+        return None
+    try:
+        return (
+            getattr(node, "name", None),
+            _role_name(node),
+            _application_name(node),
+            _bounds(node, pyatspi),
+        )
+    except Exception:
+        return None
+
+
 def _children(node: Any) -> list[Any]:
     try:
         count = int(node.childCount)
@@ -562,7 +736,13 @@ def _bounds(node: Any, pyatspi: Any) -> tuple[int, int, int, int] | None:
     try:
         component = node.queryComponent()
         extents = component.getExtents(pyatspi.DESKTOP_COORDS)
-        return (int(extents.x), int(extents.y), int(extents.width), int(extents.height))
+        bounds = (int(extents.x), int(extents.y), int(extents.width), int(extents.height))
+        # Java ATK uses (-1, -1, -1, -1) for structural containers such as
+        # frames and panels. Treat it as absent geometry so point traversal
+        # continues into their bounded descendants.
+        if bounds[2] <= 0 or bounds[3] <= 0:
+            return None
+        return bounds
     except Exception:
         return None
 
@@ -594,6 +774,24 @@ def _application_name(node: Any) -> str | None:
             name = getattr(current, "name", None)
             return str(name) if name else None
     return None
+
+
+def _live_application(desktop: Any, application_name: str) -> Any | None:
+    """Find a fresh top-level application proxy by its live AT-SPI name."""
+    fallback = None
+    # New registrations are appended. Prefer the newest matching proxy with
+    # a live child tree; Java ATK can retain empty proxies after app restarts.
+    for candidate in reversed(_children(desktop)):
+        if (_role_name(candidate) or "").casefold() != "application":
+            continue
+        try:
+            if candidate.name == application_name:
+                fallback = candidate
+                if _children(candidate):
+                    return candidate
+        except Exception:
+            continue
+    return fallback
 
 
 def _window_name(node: Any) -> str | None:

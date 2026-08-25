@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_capture import ObjectCaptureService
+from automation_harness.core.visual_baselines import approve_visual_candidate, reject_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
@@ -32,6 +34,12 @@ class AuthoringApp:
         self.plan = TestPlan(name="new-test-plan")
         self.selected_step: str | None = None
         self._run_active = False
+        self._click_capture_active = False
+        self._click_picker: tk.Toplevel | None = None
+        self._click_picker_timeout: str | None = None
+        self._last_capture = None
+        self._highlight_windows: list[tk.Toplevel] = []
+        self._highlight_after: str | None = None
         self.last_run_dir: Path | None = None
         self._build()
         self.refresh_all()
@@ -92,13 +100,21 @@ class AuthoringApp:
         self.object_tree.column("actions", width=140)
         self.object_tree.pack(fill="both", expand=True)
         self.object_tree.bind("<<TreeviewSelect>>", lambda _e: self.show_object())
+        self.object_tree.bind("<Button-3>", self._open_object_context_menu)
+        self.object_context_menu = tk.Menu(self.root, tearoff=False)
+        self.object_context_menu.add_command(label="Highlight", command=self.highlight_selected_object)
 
         buttons = ttk.Frame(left)
         buttons.pack(fill="x", pady=6)
         ttk.Button(buttons, text="Inspect", command=self.show_object).pack(side="left")
         if self.mode != "repository":
+            ttk.Button(buttons, text="Capture Next Click", command=self.capture_next_click).pack(side="left", padx=(4, 0))
             ttk.Button(buttons, text="Capture at Pointer (2s)", command=self.capture_pointer_delayed).pack(side="left", padx=4)
             ttk.Button(buttons, text="Capture by Locator", command=self.capture_by_locator).pack(side="left")
+            self.highlight_button = ttk.Button(buttons, text="Highlight Last Capture", command=self.highlight_last_capture, state="disabled")
+            self.highlight_button.pack(side="left", padx=4)
+            ttk.Button(buttons, text="Approve Visual Candidate", command=self.approve_visual_candidate).pack(side="left", padx=4)
+            ttk.Button(buttons, text="Reject Visual Candidate", command=self.reject_visual_candidate).pack(side="left")
         if self.mode != "capture":
             ttk.Button(buttons, text="Edit Selected", command=self.edit_selected_object).pack(side="left", padx=4)
 
@@ -197,6 +213,7 @@ class AuthoringApp:
             "revision": definition.revision,
             "actions": sorted(definition.actions),
             "expected_states": dict(definition.expected_states),
+            "visual": dict(definition.visual) if definition.visual else None,
             "strategies": [{"type": item.type, **item.options} for item in definition.strategies],
         }
         self._set_text(self.object_detail, json.dumps(payload, indent=2, default=str))
@@ -235,6 +252,97 @@ class AuthoringApp:
         self.status.configure(text="Move pointer over target object…")
         self.root.after(2000, self._capture_pointer_now)
 
+    def capture_next_click(self) -> None:
+        """Hide the authoring UI and intercept exactly one desktop click."""
+        if not self.capture.available:
+            messagebox.showerror("AT-SPI unavailable", "pyatspi is not installed on this host.")
+            return
+        if self._click_capture_active:
+            return
+        self._click_capture_active = True
+        self.status.configure(text="Click the target object within 30 seconds…")
+        self.root.withdraw()
+        self.root.after(150, self._show_click_picker)
+
+    def _show_click_picker(self) -> None:
+        if not self._click_capture_active:
+            return
+        picker = tk.Toplevel(self.root)
+        self._click_picker = picker
+        picker.overrideredirect(True)
+        picker.geometry(f"{picker.winfo_screenwidth()}x{picker.winfo_screenheight()}+0+0")
+        picker.configure(cursor="crosshair", background="black")
+        picker.attributes("-topmost", True)
+        # A nearly transparent real window reliably owns the next click on
+        # X11, Xwayland, and Windows without requiring a privileged global
+        # mouse hook. The click is consumed, so the inspected application
+        # cannot mutate or replace its accessibility object before capture.
+        picker.attributes("-alpha", 0.01)
+        # Wait for release so both halves of the physical click remain owned
+        # by the picker; destroying on press can deliver the release to the
+        # underlying control and accidentally activate it.
+        picker.bind("<ButtonRelease-1>", self._click_picker_selected)
+        picker.bind("<Escape>", lambda _event: self._cancel_click_picker())
+        picker.lift()
+        picker.focus_force()
+        picker.grab_set_global()
+        self._click_picker_timeout = self.root.after(30_000, self._click_picker_timed_out)
+
+    def _click_picker_selected(self, event: tk.Event) -> None:
+        point = (int(event.x_root), int(event.y_root))
+        self._destroy_click_picker()
+        # Let the transparent native window disappear before querying the
+        # accessibility tree underneath its desktop coordinate.
+        self.root.after(120, lambda: self._capture_click_point(point))
+
+    def _capture_click_point(self, point: tuple[int, int]) -> None:
+        threading.Thread(
+            target=self._resolve_click_point,
+            args=point,
+            name="automation-object-capture",
+            daemon=True,
+        ).start()
+
+    def _resolve_click_point(self, x: int, y: int) -> None:
+        try:
+            captured = self.capture.capture_scoped_at_point(x, y)
+        except Exception as exc:
+            self.root.after(0, lambda error=exc: self._finish_next_click_capture(error=error))
+        else:
+            self.root.after(0, lambda result=captured: self._finish_next_click_capture(captured=result))
+
+    def _click_picker_timed_out(self) -> None:
+        self._destroy_click_picker()
+        self._finish_next_click_capture(error=TimeoutError("no mouse button press was received before capture timed out"))
+
+    def _cancel_click_picker(self) -> None:
+        self._destroy_click_picker()
+        self._finish_next_click_capture(error=RuntimeError("capture cancelled"))
+
+    def _destroy_click_picker(self) -> None:
+        if self._click_picker_timeout is not None:
+            self.root.after_cancel(self._click_picker_timeout)
+            self._click_picker_timeout = None
+        picker, self._click_picker = self._click_picker, None
+        if picker is not None:
+            try:
+                picker.grab_release()
+            except tk.TclError:
+                pass
+            picker.destroy()
+
+    def _finish_next_click_capture(self, *, captured=None, error: Exception | None = None) -> None:
+        self._click_capture_active = False
+        if error is not None:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self.status.configure(text="Ready")
+            messagebox.showerror("Capture failed", f"{type(error).__name__}: {error}")
+            return
+        self.status.configure(text="Captured clicked object")
+        self._show_highlight_then_present(captured)
+
     def _capture_pointer_now(self) -> None:
         try:
             captured = self.capture.capture_at_point(self.root.winfo_pointerx(), self.root.winfo_pointery())
@@ -264,6 +372,9 @@ class AuthoringApp:
             messagebox.showerror("Capture failed", f"{type(exc).__name__}: {exc}")
 
     def _present_capture(self, captured) -> None:
+        self._last_capture = captured
+        if hasattr(self, "highlight_button"):
+            self.highlight_button.configure(state="normal" if captured.bounds else "disabled")
         assessments = [item.to_dict() for item in self.capture.assess(captured)]
         self._set_text(self.object_detail, json.dumps({"capture": captured.to_dict(), "locator_assessments": assessments}, indent=2, default=str))
         if self.repository_path is None:
@@ -276,30 +387,207 @@ class AuthoringApp:
         component_id = simpledialog.askstring("Save capture", "Logical component ID:")
         if not component_id:
             return
-        candidate = captured.candidate_identification().to_dict()
-        identity_raw = simpledialog.askstring(
-            "Object identification",
-            "AT-SPI identity JSON. Mandatory properties always match; assistive properties are applied in order only if needed. Add ordinal only as an explicit last resort.",
-            initialvalue=json.dumps(candidate, separators=(",", ":")),
-        )
-        if identity_raw is None:
-            return
         try:
-            identification = json.loads(identity_raw)
-            if not isinstance(identification, dict):
-                raise ValueError("identification must be a JSON object")
-            definition = self.capture.save_capture(
-                self.repository_path,
-                component_id,
-                captured,
-                identification=identification,
-            )
+            if captured.candidate_strategy().type == "anchored_visual":
+                definition = self.capture.save_capture(self.repository_path, component_id, captured)
+            else:
+                candidate = captured.candidate_identification().to_dict()
+                identity_raw = simpledialog.askstring(
+                    "Object identification",
+                    "AT-SPI identity JSON. Mandatory properties always match; assistive properties are applied in order only if needed. Add ordinal only as an explicit last resort.",
+                    initialvalue=json.dumps(candidate, separators=(",", ":")),
+                )
+                if identity_raw is None:
+                    return
+                identification = json.loads(identity_raw)
+                if not isinstance(identification, dict):
+                    raise ValueError("identification must be a JSON object")
+                definition = self.capture.save_capture(
+                    self.repository_path,
+                    component_id,
+                    captured,
+                    identification=identification,
+                )
         except Exception as exc:
             messagebox.showerror("Object identification", f"{type(exc).__name__}: {exc}")
             return
         self.repository = self._load_repository()
         self.refresh_objects()
         self.status.configure(text=f"Saved {definition.component_id} revision {definition.revision}")
+        if captured.bounds and messagebox.askyesno("Visual capture", "Stage a component-bounds visual candidate now?"):
+            try:
+                result = self.capture.stage_visual_capture(self.repository_path, component_id, captured)
+                self.status.configure(text=f"Staged visual candidate: {result['variant_key']}")
+                messagebox.showinfo("Visual candidate", json.dumps(result, indent=2, default=str))
+            except Exception as exc:
+                messagebox.showerror("Visual capture", f"{type(exc).__name__}: {exc}")
+
+    def highlight_last_capture(self) -> None:
+        """Temporarily hide the editor and outline the most recently captured object."""
+        if self._last_capture is None or self._last_capture.bounds is None:
+            messagebox.showinfo("Highlight capture", "Capture an object with screen bounds first.")
+            return
+        self.root.withdraw()
+        self._show_highlight(self._last_capture.bounds, restore_editor=True)
+
+    def _show_highlight_then_present(self, captured) -> None:
+        self._last_capture = captured
+        if not captured.bounds:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self._present_capture(captured)
+            return
+        self.root.withdraw()
+        self._show_highlight(captured.bounds, restore_editor=False)
+        self.root.after(1600, lambda result=captured: self._restore_after_highlight(result))
+
+    def _show_highlight(self, bounds: tuple[int, int, int, int], *, restore_editor: bool) -> None:
+        self._clear_highlight()
+        for x, y, width, height in _highlight_rectangles(bounds):
+            edge = tk.Toplevel(self.root)
+            edge.overrideredirect(True)
+            edge.configure(background="#ff3b30")
+            try:
+                edge.attributes("-topmost", True)
+                edge.attributes("-alpha", 0.88)
+            except tk.TclError:
+                pass
+            edge.geometry(f"{width}x{height}+{x}+{y}")
+            edge.deiconify()
+            self._highlight_windows.append(edge)
+        if restore_editor:
+            self._highlight_after = self.root.after(1600, self._restore_after_highlight)
+
+    def _restore_after_highlight(self, captured=None) -> None:
+        self._clear_highlight()
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        if captured is not None:
+            self._present_capture(captured)
+
+    def _clear_highlight(self) -> None:
+        if self._highlight_after is not None:
+            self.root.after_cancel(self._highlight_after)
+            self._highlight_after = None
+        for edge in self._highlight_windows:
+            try:
+                edge.destroy()
+            except tk.TclError:
+                pass
+        self._highlight_windows.clear()
+
+    def _open_object_context_menu(self, event) -> None:
+        item_id = self.object_tree.identify_row(event.y)
+        if not item_id:
+            return
+        self.object_tree.selection_set(item_id)
+        self.object_tree.focus(item_id)
+        self.object_context_menu.tk_popup(event.x_root, event.y_root)
+
+    def highlight_selected_object(self) -> None:
+        selected = self.object_tree.selection()
+        if not selected:
+            return
+        if not self.capture.available:
+            messagebox.showerror("Highlight", "pyatspi is not installed on this host.")
+            return
+        definition = self.repository.get(selected[0])
+        self.status.configure(text=f"Resolving {definition.component_id} for highlight…")
+        threading.Thread(
+            target=self._resolve_selected_for_highlight,
+            args=(definition,),
+            name="automation-object-highlight",
+            daemon=True,
+        ).start()
+
+    def _resolve_selected_for_highlight(self, definition) -> None:
+        deadline = time.monotonic() + 5.0
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            for strategy in definition.strategies:
+                if strategy.type == "anchored_visual":
+                    try:
+                        captured = self.capture.resolve_anchored_visual(strategy.options)
+                    except Exception as exc:
+                        last_error = exc
+                        continue
+                    self.root.after(0, lambda result=captured: self._finish_repository_highlight(result))
+                    return
+                if strategy.type not in {"atspi", "java_accessibility"}:
+                    continue
+                try:
+                    captured = self.capture.capture_by_locator(
+                        identification=strategy.options.get("identification"),
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                self.root.after(0, lambda result=captured: self._finish_repository_highlight(result))
+                return
+            time.sleep(0.2)
+        detail = f" Last error: {last_error}" if last_error else ""
+        error = LookupError(f"No live object matched {definition.component_id!r} within 5 seconds.{detail}")
+        self.root.after(0, lambda result=error: self._finish_repository_highlight(error=result))
+
+    def _finish_repository_highlight(self, captured=None, error: Exception | None = None) -> None:
+        if error is not None:
+            self.status.configure(text="Ready")
+            messagebox.showerror("Highlight failed", str(error))
+            return
+        self._last_capture = captured
+        if hasattr(self, "highlight_button"):
+            self.highlight_button.configure(state="normal" if captured.bounds else "disabled")
+        if captured.bounds is None:
+            self.status.configure(text="Resolved object has no screen bounds")
+            messagebox.showerror("Highlight failed", "The resolved object has no screen bounds to highlight.")
+            return
+        self.status.configure(text="Highlighting resolved object")
+        self.root.withdraw()
+        self._show_highlight(captured.bounds, restore_editor=True)
+
+    def approve_visual_candidate(self) -> None:
+        if self.repository_path is None:
+            messagebox.showerror("Visual approval", "Open an editable repository first.")
+            return
+        selected = self.object_tree.selection()
+        if not selected:
+            messagebox.showinfo("Visual approval", "Select a component first.")
+            return
+        key = simpledialog.askstring("Approve visual candidate", "Variant key:")
+        if not key:
+            return
+        mask_path = None
+        if messagebox.askyesno("Visual mask", "Attach or replace a grayscale mask for this baseline?"):
+            selected_mask = filedialog.askopenfilename(filetypes=[("PNG images", "*.png")])
+            if not selected_mask:
+                return
+            mask_path = Path(selected_mask)
+        try:
+            definition = approve_visual_candidate(self.repository_path, selected[0], key, mask=mask_path)
+            self.repository = self._load_repository()
+            self.refresh_objects()
+            self.status.configure(text=f"Approved visual revision {definition.visual['revision']}")
+        except Exception as exc:
+            messagebox.showerror("Visual approval", f"{type(exc).__name__}: {exc}")
+
+    def reject_visual_candidate(self) -> None:
+        if self.repository_path is None:
+            messagebox.showerror("Visual rejection", "Open an editable repository first.")
+            return
+        selected = self.object_tree.selection()
+        if not selected:
+            messagebox.showinfo("Visual rejection", "Select a component first.")
+            return
+        key = simpledialog.askstring("Reject visual candidate", "Variant key:")
+        if not key:
+            return
+        try:
+            reject_visual_candidate(self.repository_path, selected[0], key)
+            self.status.configure(text=f"Rejected visual candidate {key}")
+        except Exception as exc:
+            messagebox.showerror("Visual rejection", f"{type(exc).__name__}: {exc}")
 
     def refresh_steps(self) -> None:
         self.step_tree.delete(*self.step_tree.get_children())
@@ -526,6 +814,22 @@ def _decode_gui(value: Any) -> Any:
     if isinstance(value, list):
         return [_decode_gui(item) for item in value]
     return value
+
+
+def _highlight_rectangles(
+    bounds: tuple[int, int, int, int], *, thickness: int = 4,
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Return four always-visible edge rectangles for a desktop-space bound."""
+    x, y, width, height = bounds
+    if width <= 0 or height <= 0:
+        raise ValueError("highlight bounds require positive width and height")
+    edge = max(1, min(thickness, width, height))
+    return (
+        (x, y, width, edge),
+        (x, y + height - edge, width, edge),
+        (x, y, edge, height),
+        (x + width - edge, y, edge, height),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

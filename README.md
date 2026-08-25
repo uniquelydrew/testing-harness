@@ -154,9 +154,9 @@ target:
   startup_timeout: 20
 ```
 
-On Windows, enable the x64 Java Access Bridge provided with the JDK. On Ubuntu/X11 install `libatk-wrapper-java` and `libatk-wrapper-java-jni` in addition to the GUI requirements above. The Linux backend enables the Java ATK wrapper at launch; custom Swing components and JavaFX nodes must still expose a meaningful accessible name and role.
+On Windows, enable the x64 Java Access Bridge provided with the JDK. On Ubuntu/X11 install `libatk-wrapper-java` and `libatk-wrapper-java-jni` in addition to the GUI requirements above. The Linux backend enables the Java ATK wrapper at launch; custom Swing components and JavaFX nodes must still expose a meaningful accessible name and role. Some Linux JavaFX runtimes expose an embedded `JFXPanel` as one accessible panel rather than exposing its child controls. Object Capture handles that case with a read-only `anchored_visual` strategy: it segments the clicked visual region and stores normalized bounds relative to the durable accessible panel anchor.
 
-Use `java_accessibility` component strategies for application controls. They use Java Access Bridge on Windows and AT-SPI through the Java ATK wrapper on Linux. For visuals, resolve a stable canvas/panel, then pass its bounds to `vision.wait_for_color` or `vision.compare_baseline`. Baseline comparison stores expected, actual, and diff images; a black pixel in an optional grayscale mask ignores volatile regions.
+Use `java_accessibility` component strategies for application controls. They use Java Access Bridge on Windows and AT-SPI through the Java ATK wrapper on Linux. For visuals, resolve a stable canvas/panel, then use `ctx.component("logical.id").assert_visual()` for an approved component-bound gold, or `vision.wait_for_color` for a lightweight color check. Approved PNGs and optional grayscale masks live under the repository's `visual/` directory; the exact host visual profile selects the variant. Stage and review a new candidate with `automation-run visual stage`, then promote it explicitly with `automation-run visual approve`. Baseline comparison stores expected, actual, and diff images; a black pixel in an optional grayscale mask ignores volatile regions.
 
 The packaged `automation_harness/examples/java_desktop` directory is a template, not a runnable fixture: copy it, provide the application command, and approve its baseline images for each supported platform.
 
@@ -1047,9 +1047,29 @@ If `pyatspi` is not installed, capture controls report AT-SPI as unavailable rat
 
 ## Capture methods
 
-There are two supported capture workflows.
+There are three supported capture workflows.
 
-### 1. Capture by pointer
+### 1. Capture next click
+
+Use **Capture Next Click** for the normal object-spy workflow. The authoring
+window withdraws and a nearly transparent desktop picker owns exactly one full
+mouse click. After release, the picker closes and resolution proceeds in one
+scoped operation: first the application at the desktop coordinate, then the
+deepest component inside that application. The picker consumes both press and
+release, so capture does not activate or mutate the inspected control.
+
+The captured bounds are outlined in red before the naming prompt opens. Use
+**Highlight Last Capture** to repeat that check. Every repository row also has
+a right-click **Highlight** command; it retries live resolution for five
+seconds and reports an error when no match is found.
+
+When a bridge exposes only a generic panel/canvas, Object Capture segments the
+visual region under the click and authors a read-only `anchored_visual`
+strategy. It resolves the accessible container at runtime, scales the stored
+relative bounds to its current size, and supports the same capture and
+repository highlight checks.
+
+### 2. Capture by pointer
 
 Use this when you can point at the object visually.
 
@@ -1089,7 +1109,7 @@ backend properties
 candidate locator strategy
 ```
 
-### 2. Capture by locator
+### 3. Capture by locator
 
 Use **Capture by locator** when you already know some accessibility properties.
 
