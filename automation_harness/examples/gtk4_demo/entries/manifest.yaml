@@ -1,0 +1,6 @@
+name: gtk4-demo-entries
+version: 1
+target: {kind: gtk-demo, example: entry_undo}
+requires: [local-only, gui, components, atspi, text-input]
+components: resources/components.yaml
+tests: [tests/test_entries.py]

@@ -1,0 +1,10 @@
+version: 1
+components:
+  gtk_demo.dialogs.open:
+    description: GTK 4.14 dialog-launch button; captured baseline locator.
+    actions: [resolve, activate]
+    strategies:
+      - type: atspi
+        identification:
+          mandatory: {name: Message Dialog, role: push button}
+          assistive: {application: gtk4-demo, window: Dialogs}

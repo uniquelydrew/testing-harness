@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from automation_harness.drivers.atspi_driver import AtspiDriver
+from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
 from automation_harness.utils.wait import wait_for as wait_for_value
 
@@ -139,6 +140,38 @@ class ComponentHandle:
             f"unable to activate {self.definition.component_id!r}; " + "; ".join(errors)
         )
 
+    def get_text(self) -> str:
+        return self._atspi_operation("read text", "get_text")
+
+    def set_text(self, value: str) -> dict[str, Any]:
+        return self._atspi_operation("set text", "set_text", value)
+
+    def get_selection(self) -> list[str]:
+        return self._atspi_operation("read selection", "get_selection")
+
+    def select_child(self, child_index: int) -> dict[str, Any]:
+        return self._atspi_operation("select child", "select_child", child_index)
+
+    def get_value(self) -> float:
+        return self._atspi_operation("read value", "get_value")
+
+    def set_value(self, value: float) -> dict[str, Any]:
+        return self._atspi_operation("set value", "set_value", value)
+
+    def _atspi_operation(self, label: str, method: str, *args: Any):
+        errors: list[str] = []
+        for strategy in self.definition.strategies:
+            if strategy.type not in {"atspi", "java_accessibility"}:
+                continue
+            try:
+                driver = AtspiDriver(self.context) if strategy.type == "atspi" else JavaAccessibilityDriver(self.context)
+                result = getattr(driver, method)(*args, identification=strategy.options.get("identification"))
+                self.context.evidence.record("component_atspi_operation", component_id=self.definition.component_id, operation=method, result=result)
+                return result
+            except Exception as exc:
+                errors.append(f"atspi: {type(exc).__name__}: {exc}")
+        raise ComponentResolutionError(f"unable to {label} for {self.definition.component_id!r}; " + "; ".join(errors or ["no AT-SPI strategy"]))
+
     def _resolve_strategy(self, strategy_type: str, options: dict[str, Any]) -> ResolvedComponent:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).resolve(
@@ -147,6 +180,11 @@ class ComponentHandle:
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
+            )
+        if strategy_type == "java_accessibility":
+            return JavaAccessibilityDriver(self.context).resolve(
+                self.definition.component_id,
+                identification=options.get("identification"),
             )
         if strategy_type == "reference_inspection":
             reference = self.context.require_reference()
@@ -169,6 +207,8 @@ class ComponentHandle:
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
+        if strategy_type == "java_accessibility":
+            return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "reference_inspection":
             reference = self.context.require_reference()
             component_id = str(options.get("component_id", self.definition.component_id))
@@ -206,6 +246,8 @@ class ComponentHandle:
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
+        if strategy_type == "java_accessibility":
+            return JavaAccessibilityDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "reference_inspection":
             raise UnsupportedComponentAction(
                 "reference_inspection is read-only and cannot activate UI components"

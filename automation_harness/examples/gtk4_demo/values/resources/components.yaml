@@ -1,0 +1,10 @@
+version: 1
+components:
+  gtk_demo.values.spin:
+    description: GTK 4.14 spin button value control; captured baseline locator.
+    actions: [resolve]
+    strategies:
+      - type: atspi
+        identification:
+          mandatory: {name: Numeric, role: spin button}
+          assistive: {application: gtk4-demo, window: Spin Buttons}

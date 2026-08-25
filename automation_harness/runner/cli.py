@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from automation_harness.backends.protected import ProtectedBackend
 from automation_harness.backends.reference import ReferenceBackend
+from automation_harness.backends.gtk_demo import GtkDemoBackend
+from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -16,7 +21,7 @@ from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.runner.validator import validate_bundle
 
 
-def _backend(name: str, args: argparse.Namespace):
+def _backend(name: str, args: argparse.Namespace, target: dict | None = None):
     if name == "reference":
         return ReferenceBackend(
             gui=getattr(args, "reference_mode", "gui") == "gui",
@@ -24,6 +29,21 @@ def _backend(name: str, args: argparse.Namespace):
         )
     if name == "protected":
         return ProtectedBackend()
+    if name == "gtk-demo":
+        target = target or {}
+        example = target.get("example") or getattr(args, "gtk_demo_example", None)
+        if not isinstance(example, str) or not example:
+            raise ValueError("GTK Demo backend requires bundle target.example")
+        return GtkDemoBackend(
+            example=example,
+            executable=getattr(args, "gtk_demo_executable", None),
+            display_mode=getattr(args, "gtk_demo_display", "virtual"),
+        )
+    if name == "java-desktop":
+        target = target or {}
+        if target.get("kind") != "java-desktop":
+            raise ValueError("java-desktop backend requires manifest.target.kind: java-desktop")
+        return JavaDesktopBackend(target, display_mode=getattr(args, "reference_display", "virtual"))
     raise ValueError(name)
 
 
@@ -34,6 +54,11 @@ def _add_reference_options(parser: argparse.ArgumentParser) -> None:
         default="gui",
         help="synthetic reference target mode (default: gui)",
     )
+
+
+def _add_gtk_demo_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--gtk-demo-executable", help="gtk4-demo executable (default: AUTOMATION_HARNESS_GTK_DEMO or gtk4-demo)")
+    parser.add_argument("--gtk-demo-display", choices=("virtual", "native", "auto"), default="virtual")
     parser.add_argument(
         "--reference-display",
         choices=("virtual", "native", "auto"),
@@ -48,8 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="statically validate a test bundle without starting any target")
     validate.add_argument("bundle", type=Path)
-    validate.add_argument("--backend", choices=("reference", "protected"), default="reference")
+    validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     _add_reference_options(validate)
+    _add_gtk_demo_options(validate)
 
     inspect = sub.add_parser("inspect", help="print normalized bundle metadata")
     inspect.add_argument("bundle", type=Path)
@@ -67,19 +93,21 @@ def build_parser() -> argparse.ArgumentParser:
     plan_sub = plan.add_subparsers(dest="plan_command", required=True)
     plan_validate = plan_sub.add_parser("validate", help="validate a declarative TestPlan against the registered step catalog")
     plan_validate.add_argument("path", type=Path)
-    plan_validate.add_argument("--backend", choices=("reference", "protected"), help="also validate backend capabilities/risk policy")
+    plan_validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), help="also validate backend capabilities/risk policy")
     plan_validate.add_argument("--components", type=Path, help="additional object repository to overlay for validation")
     _add_reference_options(plan_validate)
+    _add_gtk_demo_options(plan_validate)
     plan_status = plan_sub.add_parser("status", help="show the initial managed queue projection for a TestPlan")
     plan_status.add_argument("path", type=Path)
     plan_status.add_argument("--json", action="store_true")
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
-    plan_run.add_argument("--backend", choices=("reference", "protected"), default="reference")
+    plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     plan_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
     _add_reference_options(plan_run)
+    _add_gtk_demo_options(plan_run)
 
     selftest = sub.add_parser("selftest", help="run the built-in synthetic reference regression suites")
     selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -98,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="validate and execute a bundle")
     run.add_argument("bundle", type=Path)
-    run.add_argument("--backend", choices=("reference", "protected"), default="reference")
+    run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     run.add_argument("-v", "--verbose", action="store_true")
     run.add_argument(
@@ -110,11 +138,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="initialize/override a test-global variable; VALUE is parsed as JSON when possible",
     )
     _add_reference_options(run)
+    _add_gtk_demo_options(run)
+
+    gtk_demo = sub.add_parser("gtk-demo", help="run the version-pinned GTK 4.14 Demo baseline")
+    gtk_demo_sub = gtk_demo.add_subparsers(dest="gtk_demo_command", required=True)
+    gtk_selftest = gtk_demo_sub.add_parser("selftest", help="run all built-in GTK Demo bundles")
+    gtk_selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    gtk_selftest.add_argument("--gtk-demo-executable")
+    gtk_selftest.add_argument("--gtk-demo-display", choices=("virtual", "native", "auto"), default="virtual")
+    gtk_selftest.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "gtk-demo":
+        examples = Path(__file__).resolve().parents[1] / "examples" / "gtk4_demo"
+        suite_paths = sorted(path.parent for path in examples.glob("*/manifest.yaml"))
+        results, exit_code = [], 0
+        for suite_path in suite_paths:
+            bundle = TestBundle.load(suite_path)
+            backend = _backend("gtk-demo", args, bundle.target)
+            result = execute_bundle(bundle, backend, runs_dir=args.runs_dir.resolve(), verbose=args.verbose)
+            results.append(result.to_dict())
+            exit_code = exit_code or int(result.exit_code or 0)
+        print(json.dumps({"gtk_demo_selftest": results, "exit_code": exit_code}, indent=2, default=str))
+        return exit_code
 
     if args.command == "plan":
         try:
@@ -236,6 +286,27 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
+            if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+                if os.environ.get("AUTOMATION_HARNESS_ATSPI_SESSION"):
+                    print(
+                        "ERROR: --require-atspi needs a D-Bus session, but none was created",
+                        file=sys.stderr,
+                    )
+                    return 2
+                launcher = shutil.which("dbus-run-session")
+                if launcher is None:
+                    print(
+                        "ERROR: --require-atspi needs a D-Bus session; install dbus-run-session or run inside a desktop session",
+                        file=sys.stderr,
+                    )
+                    return 2
+                environment = os.environ.copy()
+                environment["AUTOMATION_HARNESS_ATSPI_SESSION"] = "1"
+                return subprocess.run(
+                    [launcher, "--", sys.executable, "-m", "automation_harness.runner.cli", *sys.argv[1:]],
+                    env=environment,
+                    check=False,
+                ).returncode
 
         examples = Path(__file__).resolve().parents[1] / "examples"
         suite_paths = [examples / "reference_suite", examples / "reference_ui"]
@@ -278,11 +349,16 @@ def main(argv: list[str] | None = None) -> int:
             "components": str(bundle.components.relative_to(bundle.root)) if bundle.components else None,
             "step_libraries": [str(path.relative_to(bundle.root)) for path in bundle.step_libraries],
             "variables": bundle.variables or {},
+            "target": bundle.target,
             "root": str(bundle.root),
         }, indent=2))
         return 0
 
-    backend = _backend(args.backend, args)
+    try:
+        backend = _backend(args.backend, args, bundle.target)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     if args.command == "validate":
         issues = validate_bundle(bundle, backend_capabilities=backend.capabilities)
         preflight = backend.preflight_issues()

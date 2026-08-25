@@ -1,0 +1,6 @@
+name: gtk4-demo-values
+version: 1
+target: {kind: gtk-demo, example: spinbutton}
+requires: [local-only, gui, components, atspi, value-control]
+components: resources/components.yaml
+tests: [tests/test_values.py]

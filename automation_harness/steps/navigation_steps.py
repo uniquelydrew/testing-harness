@@ -80,3 +80,33 @@ def wait_component_state(
 )
 def assert_component_state(ctx: TestContext, component_id: str, state_name: str, expected):
     return ctx.component(component_id).assert_state(**{state_name: expected})
+
+
+@step("component.text.get", domain="component", capabilities={"text-input"}, outputs={"text": "$"})
+def get_component_text(ctx: TestContext, component_id: str) -> str:
+    return ctx.component(component_id).get_text()
+
+
+@step("component.text.set", domain="component", capabilities={"text-input"}, risk="application_control", outputs={"result": "$"})
+def set_component_text(ctx: TestContext, component_id: str, value: str) -> dict:
+    return ctx.component(component_id).set_text(value)
+
+
+@step("component.selection.get", domain="component", capabilities={"selection"}, outputs={"selected": "$"})
+def get_component_selection(ctx: TestContext, component_id: str) -> list[str]:
+    return ctx.component(component_id).get_selection()
+
+
+@step("component.selection.select", domain="component", capabilities={"selection"}, risk="application_control", outputs={"result": "$"})
+def select_component_child(ctx: TestContext, component_id: str, child_index: int) -> dict:
+    return ctx.component(component_id).select_child(child_index)
+
+
+@step("component.value.get", domain="component", capabilities={"value-control"}, outputs={"value": "$"})
+def get_component_value(ctx: TestContext, component_id: str) -> float:
+    return ctx.component(component_id).get_value()
+
+
+@step("component.value.set", domain="component", capabilities={"value-control"}, risk="application_control", outputs={"result": "$"})
+def set_component_value(ctx: TestContext, component_id: str, value: float) -> dict:
+    return ctx.component(component_id).set_value(value)

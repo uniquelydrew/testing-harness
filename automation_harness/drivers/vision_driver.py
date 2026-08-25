@@ -26,6 +26,16 @@ class VisionMatch:
         return (self.x + self.width // 2, self.y + self.height // 2)
 
 
+@dataclass(frozen=True)
+class BaselineComparison:
+    changed_pixels: int
+    compared_pixels: int
+    difference_ratio: float
+    actual: Path
+    expected: Path
+    diff: Path
+
+
 @dataclass
 class VisionDriver:
     context: TestContext
@@ -50,6 +60,102 @@ class VisionDriver:
             height=image.height,
         )
         return path
+
+    def capture_region(self, bounds: tuple[int, int, int, int], *, name: str = "region") -> Path:
+        """Capture a desktop-coordinate region, usually resolved from an accessible component."""
+        try:
+            from PIL import ImageGrab
+        except ImportError as exc:
+            raise VisionUnavailable("Pillow is required for screen capture") from exc
+        x, y, width, height = bounds
+        if width <= 0 or height <= 0:
+            raise ValueError("capture bounds must have positive width and height")
+        try:
+            image = ImageGrab.grab().crop((x, y, x + width, y + height))
+        except Exception as exc:
+            raise VisionUnavailable(f"screen capture failed: {exc}") from exc
+        screenshots = self.context.run_dir / "screenshots"
+        screenshots.mkdir(parents=True, exist_ok=True)
+        path = _unique_path(screenshots, name, ".png")
+        image.save(path)
+        self.context.evidence.record("region_captured", bounds=list(bounds), path=str(path.relative_to(self.context.run_dir)))
+        return path
+
+    def compare_baseline(
+        self,
+        baseline: Path,
+        *,
+        bounds: tuple[int, int, int, int] | None = None,
+        mask: Path | None = None,
+        pixel_tolerance: int = 12,
+        max_difference_ratio: float = 0.01,
+        name: str = "baseline",
+    ) -> BaselineComparison:
+        """Compare a screenshot against an approved baseline and retain diff evidence.
+
+        White mask pixels participate in comparison; black pixels are ignored.
+        """
+        from PIL import Image, ImageChops, ImageGrab
+
+        if not baseline.is_file():
+            raise FileNotFoundError(f"baseline image does not exist: {baseline}")
+        if pixel_tolerance < 0 or max_difference_ratio < 0 or max_difference_ratio > 1:
+            raise ValueError("invalid baseline comparison tolerance")
+        try:
+            actual_image = ImageGrab.grab().convert("RGB")
+        except Exception as exc:
+            raise VisionUnavailable(f"screen capture failed: {exc}") from exc
+        if bounds is not None:
+            x, y, width, height = bounds
+            actual_image = actual_image.crop((x, y, x + width, y + height))
+        expected_image = Image.open(baseline).convert("RGB")
+        if actual_image.size != expected_image.size:
+            raise AssertionError(f"baseline size {expected_image.size} does not match actual size {actual_image.size}")
+        mask_image = None
+        if mask is not None:
+            if not mask.is_file():
+                raise FileNotFoundError(f"baseline mask does not exist: {mask}")
+            mask_image = Image.open(mask).convert("L")
+            if mask_image.size != actual_image.size:
+                raise AssertionError(f"baseline mask size {mask_image.size} does not match actual size {actual_image.size}")
+        difference = ImageChops.difference(actual_image, expected_image)
+        pixels = difference.load()
+        active_mask = mask_image.load() if mask_image is not None else None
+        changed = compared = 0
+        for y in range(difference.height):
+            for x in range(difference.width):
+                if active_mask is not None and active_mask[x, y] == 0:
+                    continue
+                compared += 1
+                if max(pixels[x, y]) > pixel_tolerance:
+                    changed += 1
+        ratio = changed / max(1, compared)
+        vision_dir = self.context.run_dir / "vision"
+        vision_dir.mkdir(parents=True, exist_ok=True)
+        actual_path = _unique_path(vision_dir, f"{name}-actual", ".png")
+        expected_path = _unique_path(vision_dir, f"{name}-expected", ".png")
+        diff_path = _unique_path(vision_dir, f"{name}-diff", ".png")
+        actual_image.save(actual_path)
+        expected_image.save(expected_path)
+        difference.save(diff_path)
+        comparison = BaselineComparison(changed, compared, ratio, actual_path, expected_path, diff_path)
+        self.context.evidence.record(
+            "baseline_compared",
+            baseline=str(baseline),
+            bounds=list(bounds) if bounds else None,
+            mask=str(mask) if mask else None,
+            changed_pixels=changed,
+            compared_pixels=compared,
+            difference_ratio=ratio,
+            actual=str(actual_path.relative_to(self.context.run_dir)),
+            expected=str(expected_path.relative_to(self.context.run_dir)),
+            diff=str(diff_path.relative_to(self.context.run_dir)),
+        )
+        if ratio > max_difference_ratio:
+            raise AssertionError(
+                f"baseline difference ratio {ratio:.4%} exceeds allowed {max_difference_ratio:.4%}; diff={diff_path}"
+            )
+        return comparison
 
 
     def wait_for_color(

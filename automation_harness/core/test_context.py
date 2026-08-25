@@ -97,6 +97,16 @@ class TestContext:
                 globals=global_variables,
                 reference=ReferenceClient(socket_path),
             )
+        if backend in {"gtk-demo", "java-desktop"}:
+            return cls(
+                backend=backend,
+                run_dir=run_dir,
+                evidence=evidence,
+                components=components,
+                capabilities=capabilities,
+                steps=steps,
+                globals=global_variables,
+            )
         raise RuntimeError(f"unsupported or unsafe backend in test context: {backend!r}")
 
     def component(self, component_id: str) -> ComponentHandle:

@@ -1,0 +1,6 @@
+name: gtk4-demo-listbox
+version: 1
+target: {kind: gtk-demo, example: listbox}
+requires: [local-only, gui, components, atspi, selection]
+components: resources/components.yaml
+tests: [tests/test_listbox.py]

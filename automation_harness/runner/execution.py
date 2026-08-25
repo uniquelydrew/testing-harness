@@ -47,6 +47,7 @@ def execute_bundle(
 
     try:
         backend_env = backend.start(run_dir=artifacts.root)
+        recorder.record("backend_started", environment=backend_env)
         health = backend.health_check()
         recorder.record("backend_health", healthy=health.healthy, details=health.details)
         if not health.healthy:
@@ -123,6 +124,7 @@ def _finalize_run(
                 "platform": platform.platform(),
                 "bundle_root": str(bundle.root),
                 "initial_globals": initial_globals,
+                "backend_details": backend.health_check().details,
             },
             indent=2,
             sort_keys=True,

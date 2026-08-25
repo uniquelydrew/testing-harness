@@ -175,6 +175,75 @@ class AtspiDriver:
             )
         raise RuntimeError("AT-SPI component exposes no actions")
 
+    def get_text(self, *, identification: Mapping[str, Any] | AtspiIdentification) -> str:
+        match, _ = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            text = match.queryText()
+            return str(text.getText(0, text.characterCount))
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose readable text") from exc
+
+    def set_text(self, value: str, *, identification: Mapping[str, Any] | AtspiIdentification) -> dict[str, Any]:
+        match, trace = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            editable = match.queryEditableText()
+            # pyatspi implementations commonly return ``None`` for a
+            # successful D-Bus void method; only an explicit False is failure.
+            if editable.setTextContents(value) is False:
+                raise RuntimeError("AT-SPI editable text interface rejected the value")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose editable text") from exc
+        return {"text": value, "resolution_stages": [stage.to_dict() for stage in trace]}
+
+    def get_selection(self, *, identification: Mapping[str, Any] | AtspiIdentification) -> list[str]:
+        match, _ = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            selection = match.querySelection()
+            return [str(selection.getSelectedChild(index).name) for index in range(selection.nSelectedChildren)]
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose selection") from exc
+
+    def select_child(self, child_index: int, *, identification: Mapping[str, Any] | AtspiIdentification) -> dict[str, Any]:
+        if child_index < 0:
+            raise ValueError("AT-SPI selection child index must be non-negative")
+        match, trace = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            selection = match.querySelection()
+            if not selection.selectChild(child_index):
+                raise RuntimeError(f"AT-SPI selection rejected child index {child_index}")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose selectable children") from exc
+        return {"child_index": child_index, "resolution_stages": [stage.to_dict() for stage in trace]}
+
+    def get_value(self, *, identification: Mapping[str, Any] | AtspiIdentification) -> float:
+        match, _ = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            return float(match.queryValue().currentValue)
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose a numeric value") from exc
+
+    def set_value(self, value: float, *, identification: Mapping[str, Any] | AtspiIdentification) -> dict[str, Any]:
+        match, trace = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
+        try:
+            value_interface = match.queryValue()
+            setter = getattr(value_interface, "set_currentValue", None)
+            if callable(setter):
+                result = setter(float(value))
+            else:
+                value_interface.currentValue = float(value)
+                result = None
+            if result is False:
+                raise RuntimeError(f"AT-SPI value interface rejected {value}")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("AT-SPI component does not expose a writable numeric value") from exc
+        return {"value": float(value), "resolution_stages": [stage.to_dict() for stage in trace]}
+
 
 def _pyatspi():
     try:

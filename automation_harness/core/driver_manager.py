@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from automation_harness.core.test_context import TestContext
 from automation_harness.drivers.atspi_driver import AtspiDriver
+from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.tracking_driver import TrackingDriver
 from automation_harness.drivers.vision_driver import VisionDriver
 
@@ -15,6 +16,7 @@ class DriverManager:
     tracking: TrackingDriver
     vision: VisionDriver
     atspi: AtspiDriver
+    java_accessibility: JavaAccessibilityDriver
 
     @classmethod
     def from_context(cls, context: TestContext) -> "DriverManager":
@@ -22,4 +24,5 @@ class DriverManager:
             tracking=TrackingDriver(context),
             vision=VisionDriver(context),
             atspi=AtspiDriver(context),
+            java_accessibility=JavaAccessibilityDriver(context),
         )
