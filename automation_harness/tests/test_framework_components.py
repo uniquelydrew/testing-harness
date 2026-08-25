@@ -38,6 +38,33 @@ components:
     assert definition.strategies[0].options["identification"]["mandatory"]["name"] == "New"
 
 
+def test_component_repository_parses_editor_document_without_a_file():
+    repository = ComponentRepository.from_document(
+        {
+            "version": 1,
+            "components": {
+                "demo.button": {
+                    "actions": ["resolve"],
+                    "strategies": [{"type": "atspi", "name": "Save", "role": "push button"}],
+                }
+            },
+        },
+        source="editor",
+    )
+
+    assert repository.get("demo.button").strategies[0].options["identification"]["mandatory"]["name"] == "Save"
+
+
+def test_component_repository_normalizes_java_accessibility_locator():
+    repository = ComponentRepository.from_document(
+        {"version": 1, "components": {"demo.java_button": {"actions": ["resolve", "activate"], "strategies": [{"type": "java_accessibility", "name": "Save", "role": "push button"}]}}},
+        source="editor",
+    )
+    strategy = repository.get("demo.java_button").strategies[0]
+    assert strategy.type == "java_accessibility"
+    assert strategy.options["identification"]["mandatory"] == {"name": "Save", "role": "push button"}
+
+
 def test_component_repository_suggests_close_match(tmp_path: Path):
     path = tmp_path / "components.yaml"
     path.write_text(

@@ -14,6 +14,9 @@ def test_component_state_distinguishes_unknown_from_false():
 
 
 def test_captured_component_can_be_persisted_and_revisioned(tmp_path: Path):
+    class OfflineDriver:
+        available = False
+
     captured = CapturedComponent(
         name="Follow",
         role="push button",
@@ -26,7 +29,10 @@ def test_captured_component_can_be_persisted_and_revisioned(tmp_path: Path):
         state=ComponentState(present=True, visible=True, enabled=False),
         backend_properties={"class": "button"},
     )
-    service = ObjectCaptureService()
+    # Persistence is independent of whether this test host happens to have a
+    # live AT-SPI desktop.  Runtime identity validation belongs to the
+    # accessibility integration tests.
+    service = ObjectCaptureService(driver=OfflineDriver())
     path = tmp_path / "components.yaml"
     first = service.save_capture(
         path,

@@ -18,6 +18,8 @@ dependencies = [
 automation-run = "automation_harness.runner.cli:main"
 automation-reference = "automation_harness.reference.app:main"
 automation-author = "automation_harness.authoring.app:main"
+automation-capture = "automation_harness.authoring.app:capture_main"
+automation-repository = "automation_harness.authoring.app:repository_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

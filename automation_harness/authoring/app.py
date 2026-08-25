@@ -20,9 +20,10 @@ from automation_harness.runner.plan_execution import execute_plan
 class AuthoringApp:
     """Local desktop authoring client over the framework's core models."""
 
-    def __init__(self, root: tk.Tk, repository_path: Path | None = None) -> None:
+    def __init__(self, root: tk.Tk, repository_path: Path | None = None, *, mode: str = "author") -> None:
         self.root = root
-        self.root.title("Automation Harness Author")
+        self.mode = mode
+        self.root.title({"capture": "Automation Harness Object Capture", "repository": "Automation Harness Object Repository"}.get(mode, "Automation Harness Author"))
         self.root.geometry("1180x760")
         self.registry = default_step_registry()
         self.capture = ObjectCaptureService()
@@ -57,6 +58,7 @@ class AuthoringApp:
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
+        self.notebook = notebook
         self.objects_tab = ttk.Frame(notebook)
         self.steps_tab = ttk.Frame(notebook)
         self.plan_tab = ttk.Frame(notebook)
@@ -69,6 +71,10 @@ class AuthoringApp:
         notebook.add(self.state_tab, text="Execution State")
 
         self._build_objects()
+        if self.mode == "capture":
+            return
+        if self.mode == "repository":
+            return
         self._build_steps()
         self._build_plan()
         self._build_variables()
@@ -90,8 +96,11 @@ class AuthoringApp:
         buttons = ttk.Frame(left)
         buttons.pack(fill="x", pady=6)
         ttk.Button(buttons, text="Inspect", command=self.show_object).pack(side="left")
-        ttk.Button(buttons, text="Capture at Pointer (2s)", command=self.capture_pointer_delayed).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Capture by Locator", command=self.capture_by_locator).pack(side="left")
+        if self.mode != "repository":
+            ttk.Button(buttons, text="Capture at Pointer (2s)", command=self.capture_pointer_delayed).pack(side="left", padx=4)
+            ttk.Button(buttons, text="Capture by Locator", command=self.capture_by_locator).pack(side="left")
+        if self.mode != "capture":
+            ttk.Button(buttons, text="Edit Selected", command=self.edit_selected_object).pack(side="left", padx=4)
 
         right = ttk.Frame(self.objects_tab, padding=6)
         right.pack(side="left", fill="both", expand=True)
@@ -165,6 +174,8 @@ class AuthoringApp:
 
     def refresh_all(self) -> None:
         self.refresh_objects()
+        if self.mode != "author":
+            return
         self.refresh_steps()
         self.refresh_plan()
         self.refresh_variables()
@@ -189,6 +200,33 @@ class AuthoringApp:
             "strategies": [{"type": item.type, **item.options} for item in definition.strategies],
         }
         self._set_text(self.object_detail, json.dumps(payload, indent=2, default=str))
+
+    def edit_selected_object(self) -> None:
+        selected = self.object_tree.selection()
+        if not selected:
+            messagebox.showinfo("Object Repository", "Select a component to edit.")
+            return
+        if self.repository_path is None:
+            messagebox.showerror("Object Repository", "Open or create an editable repository first.")
+            return
+        component_id = selected[0]
+        definition = self.repository.get(component_id)
+        document = ComponentRepository({component_id: definition}).to_document()["components"][component_id]
+        raw = simpledialog.askstring("Edit component", "Component definition JSON:", initialvalue=json.dumps(document, indent=2))
+        if raw is None:
+            return
+        try:
+            value = json.loads(raw)
+            parsed = ComponentRepository.from_document({"version": 1, "components": {component_id: value}}, source="editor")
+            editable = ComponentRepository.load([self.repository_path]) if self.repository_path.exists() else ComponentRepository({})
+            editable.with_component(parsed.get(component_id)).save(self.repository_path)
+            self.repository = self._load_repository()
+            self.refresh_objects()
+            self.object_tree.selection_set(component_id)
+            self.show_object()
+            self.status.configure(text=f"Saved {component_id}")
+        except Exception as exc:
+            messagebox.showerror("Object Repository", f"{type(exc).__name__}: {exc}")
 
     def capture_pointer_delayed(self) -> None:
         if not self.capture.available:
@@ -491,9 +529,21 @@ def _decode_gui(value: Any) -> Any:
 
 
 def main(argv: list[str] | None = None) -> int:
+    return _launch(argv, mode="author", prog="automation-author", description="Local automation authoring GUI")
+
+
+def capture_main(argv: list[str] | None = None) -> int:
+    return _launch(argv, mode="capture", prog="automation-capture", description="Object Capture / Object Spy GUI")
+
+
+def repository_main(argv: list[str] | None = None) -> int:
+    return _launch(argv, mode="repository", prog="automation-repository", description="Object Repository editor GUI")
+
+
+def _launch(argv: list[str] | None, *, mode: str, prog: str, description: str) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(prog="automation-author", description="Local automation authoring GUI")
+    parser = argparse.ArgumentParser(prog=prog, description=description)
     parser.add_argument("--repository", type=Path)
     parser.add_argument(
         "--smoke-test",
@@ -502,7 +552,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     root = tk.Tk()
-    AuthoringApp(root, args.repository)
+    AuthoringApp(root, args.repository, mode=mode)
     if args.smoke_test:
         root.update_idletasks()
         root.update()

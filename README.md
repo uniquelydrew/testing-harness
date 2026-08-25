@@ -115,11 +115,17 @@ automation-author
 
 ## Linux GUI requirements
 
-The graphical reference target uses Tk.
+The graphical reference target uses GTK when PyGObject and Cairo are available, so its controls are visible to AT-SPI. It falls back to Tk on hosts without the Linux GTK stack; that fallback supports visual testing but not real AT-SPI interaction.
 
 Virtual-display execution uses Xvfb. This is the default for the built-in GUI regression environment because it isolates the synthetic desktop from the user's normal display.
 
 AT-SPI object capture and real accessibility interaction require the host system's `pyatspi` binding. It is intentionally not bundled inside the Python wheel.
+
+On Ubuntu 24.04, install the qualification dependencies with:
+
+```bash
+sudo apt-get install -y xvfb xauth python3-pyatspi python3-gi python3-cairo python3-gi-cairo gir1.2-gtk-3.0 at-spi2-core dbus-x11
+```
 
 You can verify the installation with:
 
@@ -134,6 +140,25 @@ automation-run selftest --require-atspi
 ```
 
 The second form fails qualification if the host cannot run the real AT-SPI integration test.
+When it is launched outside a desktop session, the harness creates an isolated D-Bus session automatically with `dbus-run-session`.
+
+## Java Swing and JavaFX targets
+
+Use `target.kind: java-desktop` for a managed, black-box Java GUI run. The manifest supplies the command that starts the application; the harness records its logs, waits for an accessible application window, and terminates it after the test run.
+
+```yaml
+target:
+  kind: java-desktop
+  command: [java, -jar, /opt/example/application.jar]
+  expected_application: Example Java Application
+  startup_timeout: 20
+```
+
+On Windows, enable the x64 Java Access Bridge provided with the JDK. On Ubuntu/X11 install `libatk-wrapper-java` and `libatk-wrapper-java-jni` in addition to the GUI requirements above. The Linux backend enables the Java ATK wrapper at launch; custom Swing components and JavaFX nodes must still expose a meaningful accessible name and role.
+
+Use `java_accessibility` component strategies for application controls. They use Java Access Bridge on Windows and AT-SPI through the Java ATK wrapper on Linux. For visuals, resolve a stable canvas/panel, then pass its bounds to `vision.wait_for_color` or `vision.compare_baseline`. Baseline comparison stores expected, actual, and diff images; a black pixel in an optional grayscale mask ignores volatile regions.
+
+The packaged `automation_harness/examples/java_desktop` directory is a template, not a runnable fixture: copy it, provide the application command, and approve its baseline images for each supported platform.
 
 ---
 
@@ -977,9 +1002,38 @@ AT-SPI absence is represented as `present: false`, allowing disappearance waits 
 
 # Object Capture / Object Spy
 
+# GTK 4.14 Demo baseline
+
+The GTK Demo baseline is a Linux-only, real-AT-SPI qualification target. It is pinned to **GTK 4.14.x**: an intentional minor-version upgrade requires recapturing the component repositories and reviewing the expected accessibility tree.
+
+Install GTK Demo, `pyatspi`, Xvfb, and run within a desktop or `dbus-run-session` environment. The executable is resolved from `--gtk-demo-executable`, `AUTOMATION_HARNESS_GTK_DEMO`, or `gtk4-demo`.
+
+Run the complete catalog:
+
+```bash
+automation-run gtk-demo selftest
+```
+
+Run an individual bundle:
+
+```bash
+automation-run run automation_harness/examples/gtk4_demo/buttons --backend gtk-demo
+```
+
+Each example starts in a fresh process and has its own object repository. Use `automation-capture` against the upgraded target to replace its semantic AT-SPI locators; avoid geometry and ordinals unless no stable accessible identity exists.
+
 Object Capture is the mechanism for converting a live Linux desktop accessibility object into a reusable logical repository object.
 
 The capture service is available through the local authoring GUI.
+
+For focused tools, launch Object Capture or the Object Repository editor independently:
+
+```bash
+automation-capture --repository ./components.yaml
+automation-repository --repository ./components.yaml
+```
+
+The repository launcher lets you inspect and edit the selected component as JSON; it validates the definition before saving it back to the supplied YAML repository.
 
 ## Launch with an editable repository
 

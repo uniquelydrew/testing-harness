@@ -31,17 +31,25 @@ class ComponentRepository:
                 raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             except yaml.YAMLError as exc:
                 raise ComponentRepositoryError(f"invalid YAML in {path}: {exc}") from exc
-            if not isinstance(raw, dict):
-                raise ComponentRepositoryError(f"{path}: root must be a mapping")
-            version = raw.get("version", 1)
-            if version != 1:
-                raise ComponentRepositoryError(f"{path}: unsupported component schema version {version!r}")
-            entries = raw.get("components", {})
-            if not isinstance(entries, dict):
-                raise ComponentRepositoryError(f"{path}: components must be a mapping")
-            for component_id, value in entries.items():
-                merged[str(component_id)] = _parse_component(path, str(component_id), value)
+            repository = cls.from_document(raw, source=str(path))
+            merged.update(repository.components)
         return cls(merged)
+
+    @classmethod
+    def from_document(cls, raw: Any, *, source: str = "repository") -> "ComponentRepository":
+        """Parse a repository document supplied by an editor or a YAML file."""
+        if not isinstance(raw, dict):
+            raise ComponentRepositoryError(f"{source}: root must be a mapping")
+        version = raw.get("version", 1)
+        if version != 1:
+            raise ComponentRepositoryError(f"{source}: unsupported component schema version {version!r}")
+        entries = raw.get("components", {})
+        if not isinstance(entries, dict):
+            raise ComponentRepositoryError(f"{source}: components must be a mapping")
+        return cls({
+            str(component_id): _parse_component(Path(source), str(component_id), value)
+            for component_id, value in entries.items()
+        })
 
     def get(self, component_id: str) -> ComponentDefinition:
         try:
@@ -138,7 +146,7 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
                 "synthetic inspection may locate evidence but may not perform UI interaction"
             )
         options = {k: v for k, v in raw.items() if k != "type"}
-        if strategy_type == "atspi":
+        if strategy_type in {"atspi", "java_accessibility"}:
             options = _normalize_atspi_strategy(path, component_id, index, options)
         strategies.append(ComponentStrategy(strategy_type, options))
     return ComponentDefinition(

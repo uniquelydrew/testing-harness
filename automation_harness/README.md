@@ -977,9 +977,38 @@ AT-SPI absence is represented as `present: false`, allowing disappearance waits 
 
 # Object Capture / Object Spy
 
+# GTK 4.14 Demo baseline
+
+The GTK Demo baseline is a Linux-only, real-AT-SPI qualification target. It is pinned to **GTK 4.14.x**: an intentional minor-version upgrade requires recapturing the component repositories and reviewing the expected accessibility tree.
+
+Install GTK Demo, `pyatspi`, Xvfb, and run within a desktop or `dbus-run-session` environment. The executable is resolved from `--gtk-demo-executable`, `AUTOMATION_HARNESS_GTK_DEMO`, or `gtk4-demo`.
+
+Run the complete catalog:
+
+```bash
+automation-run gtk-demo selftest
+```
+
+Run an individual bundle:
+
+```bash
+automation-run run automation_harness/examples/gtk4_demo/buttons --backend gtk-demo
+```
+
+Each example starts in a fresh process and has its own object repository. Use `automation-capture` against the upgraded target to replace its semantic AT-SPI locators; avoid geometry and ordinals unless no stable accessible identity exists.
+
 Object Capture is the mechanism for converting a live Linux desktop accessibility object into a reusable logical repository object.
 
 The capture service is available through the local authoring GUI.
+
+For focused tools, launch Object Capture or the Object Repository editor independently:
+
+```bash
+automation-capture --repository ./components.yaml
+automation-repository --repository ./components.yaml
+```
+
+The repository launcher lets you inspect and edit the selected component as JSON; it validates the definition before saving it back to the supplied YAML repository.
 
 ## Launch with an editable repository
 
