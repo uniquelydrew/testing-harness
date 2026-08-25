@@ -65,6 +65,38 @@ def test_component_repository_normalizes_java_accessibility_locator():
     assert strategy.options["identification"]["mandatory"] == {"name": "Save", "role": "push button"}
 
 
+def test_component_repository_normalizes_anchored_visual_locator():
+    repository = ComponentRepository.from_document(
+        {"version": 1, "components": {"demo.visual": {
+            "actions": ["resolve"],
+            "strategies": [{
+                "type": "anchored_visual",
+                "anchor_identification": {"mandatory": {"name": "Canvas", "role": "panel"}},
+                "relative_bounds": [0.1, 0.2, 0.3, 0.4],
+            }],
+        }}},
+        source="editor",
+    )
+    strategy = repository.get("demo.visual").strategies[0]
+    assert strategy.options["anchor_identification"]["mandatory"] == {"name": "Canvas", "role": "panel"}
+    assert strategy.options["relative_bounds"] == [0.1, 0.2, 0.3, 0.4]
+
+
+def test_anchored_visual_is_read_only():
+    with pytest.raises(ComponentRepositoryError, match="cannot declare activate"):
+        ComponentRepository.from_document(
+            {"version": 1, "components": {"demo.visual": {
+                "actions": ["resolve", "activate"],
+                "strategies": [{
+                    "type": "anchored_visual",
+                    "anchor_identification": {"mandatory": {"name": "Canvas", "role": "panel"}},
+                    "relative_bounds": [0.1, 0.2, 0.3, 0.4],
+                }],
+            }}},
+            source="editor",
+        )
+
+
 def test_component_repository_suggests_close_match(tmp_path: Path):
     path = tmp_path / "components.yaml"
     path.write_text(

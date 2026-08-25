@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -26,6 +27,9 @@ class ComponentDefinition:
     actions: frozenset[str] = frozenset({"resolve", "activate"})
     expected_states: Mapping[str, Any] = field(default_factory=dict)
     revision: int = 1
+    # Persisted paths in ``visual`` are relative to this runtime-only source.
+    visual: Mapping[str, Any] | None = None
+    repository_path: Path | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,7 @@ class CapturedComponent:
     parent_name: str | None = None
     parent_role: str | None = None
     parent_accessible_id: str | None = None
+    authored_strategy: ComponentStrategy | None = None
 
     def candidate_identification(self) -> AtspiIdentification:
         """Build a durable, multi-property identity from the capture.
@@ -178,6 +183,8 @@ class CapturedComponent:
         return AtspiIdentification(mandatory=mandatory, assistive=assistive)
 
     def candidate_strategy(self) -> ComponentStrategy:
+        if self.authored_strategy is not None:
+            return self.authored_strategy
         return ComponentStrategy(
             "atspi",
             {"identification": self.candidate_identification().to_dict()},

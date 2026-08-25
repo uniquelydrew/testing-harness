@@ -111,6 +111,7 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
     expected_states = value.get("expected_states", {})
     if not isinstance(expected_states, Mapping):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.expected_states must be a mapping")
+    visual = _normalize_visual(path, component_id, value.get("visual"))
 
     raw_actions = value.get("actions", ["resolve", "activate"])
     if not isinstance(raw_actions, list) or not raw_actions or not all(isinstance(item, str) and item for item in raw_actions):
@@ -145,9 +146,16 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
                 f"{path}: component {component_id!r} cannot declare activate with reference_inspection; "
                 "synthetic inspection may locate evidence but may not perform UI interaction"
             )
+        if strategy_type == "anchored_visual" and "activate" in actions:
+            raise ComponentRepositoryError(
+                f"{path}: component {component_id!r} cannot declare activate with anchored_visual; "
+                "visual targets are externally resolved and read-only"
+            )
         options = {k: v for k, v in raw.items() if k != "type"}
         if strategy_type in {"atspi", "java_accessibility"}:
             options = _normalize_atspi_strategy(path, component_id, index, options)
+        elif strategy_type == "anchored_visual":
+            options = _normalize_anchored_visual_strategy(path, component_id, index, options)
         strategies.append(ComponentStrategy(strategy_type, options))
     return ComponentDefinition(
         component_id=component_id,
@@ -156,6 +164,8 @@ def _parse_component(path: Path, component_id: str, value: Any) -> ComponentDefi
         actions=actions,
         expected_states=dict(expected_states),
         revision=revision,
+        visual=visual,
+        repository_path=path if path.name not in {"repository", "editor"} else None,
     )
 
 
@@ -205,6 +215,30 @@ def _normalize_atspi_strategy(
     return {"identification": identity}
 
 
+def _normalize_anchored_visual_strategy(
+    path: Path, component_id: str, index: int, options: Mapping[str, Any],
+) -> dict[str, Any]:
+    prefix = f"{path}: component {component_id!r}.strategies[{index}]"
+    if set(options) != {"anchor_identification", "relative_bounds"}:
+        raise ComponentRepositoryError(
+            f"{prefix} must contain only anchor_identification and relative_bounds"
+        )
+    normalized_anchor = _normalize_atspi_strategy(
+        path, component_id, index, {"identification": options["anchor_identification"]},
+    )["identification"]
+    relative = options["relative_bounds"]
+    if not isinstance(relative, list) or len(relative) != 4 or any(
+        not isinstance(value, (int, float)) or isinstance(value, bool) for value in relative
+    ):
+        raise ComponentRepositoryError(f"{prefix}.relative_bounds must be four numbers")
+    rx, ry, rw, rh = (float(value) for value in relative)
+    if min(rx, ry, rw, rh) < 0 or rw <= 0 or rh <= 0 or rx + rw > 1.0001 or ry + rh > 1.0001:
+        raise ComponentRepositoryError(
+            f"{prefix}.relative_bounds must be positive normalized coordinates within the anchor"
+        )
+    return {"anchor_identification": normalized_anchor, "relative_bounds": [rx, ry, rw, rh]}
+
+
 def _validate_locator_conditions(prefix: str, conditions: Mapping[str, Any]) -> None:
     for key, value in conditions.items():
         if key in _ATSPI_SIMPLE_KEYS:
@@ -245,4 +279,60 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
     }
     if definition.expected_states:
         payload["expected_states"] = dict(definition.expected_states)
+    if definition.visual:
+        payload["visual"] = dict(definition.visual)
     return payload
+
+
+def _normalize_visual(path: Path, component_id: str, value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    prefix = f"{path}: component {component_id!r}.visual"
+    if not isinstance(value, Mapping):
+        raise ComponentRepositoryError(f"{prefix} must be a mapping")
+    if value.get("bounds", "component") != "component":
+        raise ComponentRepositoryError(f"{prefix}.bounds must be 'component'")
+    revision = value.get("revision", 0)
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        raise ComponentRepositoryError(f"{prefix}.revision must be a non-negative integer")
+    variants = value.get("variants", {})
+    if not isinstance(variants, Mapping):
+        raise ComponentRepositoryError(f"{prefix}.variants must be a mapping")
+    normalized: dict[str, Any] = {"bounds": "component", "revision": revision, "variants": {}}
+    for key, raw in variants.items():
+        if not isinstance(key, str) or not key or not all(ch.isalnum() or ch in "-_" for ch in key):
+            raise ComponentRepositoryError(f"{prefix}.variants keys must be safe non-empty identifiers")
+        if not isinstance(raw, Mapping):
+            raise ComponentRepositoryError(f"{prefix}.variants.{key} must be a mapping")
+        image = raw.get("image")
+        if not isinstance(image, str) or not image:
+            raise ComponentRepositoryError(f"{prefix}.variants.{key}.image must be a non-empty relative path")
+        _validate_visual_path(prefix, image)
+        item: dict[str, Any] = {"image": image}
+        mask = raw.get("mask")
+        if mask is not None:
+            if not isinstance(mask, str) or not mask:
+                raise ComponentRepositoryError(f"{prefix}.variants.{key}.mask must be a relative path")
+            _validate_visual_path(prefix, mask)
+            item["mask"] = mask
+        profile = raw.get("profile")
+        if not isinstance(profile, Mapping) or not profile or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in profile.items()):
+            raise ComponentRepositoryError(f"{prefix}.variants.{key}.profile must be a non-empty string mapping")
+        item["profile"] = dict(profile)
+        component_revision = raw.get("component_revision")
+        if not isinstance(component_revision, int) or isinstance(component_revision, bool) or component_revision < 1:
+            raise ComponentRepositoryError(f"{prefix}.variants.{key}.component_revision must be a positive integer")
+        item["component_revision"] = component_revision
+        for field, default in (("pixel_tolerance", 12), ("max_difference_ratio", 0.01)):
+            field_value = raw.get(field, default)
+            if not isinstance(field_value, (int, float)) or isinstance(field_value, bool) or field_value < 0 or (field == "max_difference_ratio" and field_value > 1):
+                raise ComponentRepositoryError(f"{prefix}.variants.{key}.{field} is invalid")
+            item[field] = field_value
+        normalized["variants"][key] = item
+    return normalized
+
+
+def _validate_visual_path(prefix: str, value: str) -> None:
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts or candidate.parts[0] != "visual":
+        raise ComponentRepositoryError(f"{prefix}: visual assets must be relative paths under visual/")

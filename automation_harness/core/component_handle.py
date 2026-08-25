@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
+from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
 from automation_harness.utils.wait import wait_for as wait_for_value
 
@@ -91,6 +92,11 @@ class ComponentHandle:
             )
             raise AssertionError(f"component {self.definition.component_id!r} state mismatch: {details}")
         return observed
+
+    def assert_visual(self, *, profile=None):
+        """Assert this component's framebuffer bounds match its approved visual gold."""
+        from automation_harness.drivers.vision_driver import VisionDriver
+        return VisionDriver(self.context).compare_component_baseline(self, profile=profile)
 
     def wait_for(self, *, timeout: float = 5.0, interval: float = 0.1, **expected: Any) -> ComponentState:
         last: ComponentState | None = None
@@ -186,6 +192,12 @@ class ComponentHandle:
                 self.definition.component_id,
                 identification=options.get("identification"),
             )
+        if strategy_type == "anchored_visual":
+            return AnchoredVisualDriver(self.context).resolve(
+                self.definition.component_id,
+                anchor_identification=options.get("anchor_identification"),
+                relative_bounds=options.get("relative_bounds"),
+            )
         if strategy_type == "reference_inspection":
             reference = self.context.require_reference()
             component_id = str(options.get("component_id", self.definition.component_id))
@@ -209,6 +221,11 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
+        if strategy_type == "anchored_visual":
+            return AnchoredVisualDriver(self.context).state(
+                anchor_identification=options.get("anchor_identification"),
+                relative_bounds=options.get("relative_bounds"),
+            )
         if strategy_type == "reference_inspection":
             reference = self.context.require_reference()
             component_id = str(options.get("component_id", self.definition.component_id))

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from automation_harness.core.test_context import TestContext
+from automation_harness.core.visual_baselines import VisualBaselineError, VisualProfile, select_visual_variant
 
 
 class VisionUnavailable(RuntimeError):
@@ -155,6 +156,44 @@ class VisionDriver:
             raise AssertionError(
                 f"baseline difference ratio {ratio:.4%} exceeds allowed {max_difference_ratio:.4%}; diff={diff_path}"
             )
+        return comparison
+
+    def compare_component_baseline(self, component, *, profile: VisualProfile | None = None) -> BaselineComparison:
+        """Compare a resolved logical component to its exact approved visual variant."""
+        resolved = component.resolve()
+        bounds = resolved.metadata.get("bounds")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            raise VisualBaselineError(
+                f"component {component.definition.component_id!r} did not resolve desktop bounds for visual comparison"
+            )
+        try:
+            bounds = tuple(int(value) for value in bounds)
+        except (TypeError, ValueError) as exc:
+            raise VisualBaselineError("component visual bounds are invalid") from exc
+        if bounds[2] <= 0 or bounds[3] <= 0:
+            raise VisualBaselineError("component visual bounds must be positive")
+        key, variant = select_visual_variant(component.definition, profile)
+        source = component.definition.repository_path
+        if source is None:
+            raise VisualBaselineError(
+                f"component {component.definition.component_id!r} has visual metadata but no repository source path"
+            )
+        root = source.parent.resolve()
+        baseline = (root / variant["image"]).resolve()
+        mask = (root / variant["mask"]).resolve() if variant.get("mask") else None
+        visual_root = (root / "visual").resolve()
+        if visual_root not in baseline.parents or (mask is not None and visual_root not in mask.parents):
+            raise VisualBaselineError("component visual baseline escapes repository visual directory")
+        comparison = self.compare_baseline(
+            baseline, bounds=bounds, mask=mask,
+            pixel_tolerance=int(variant["pixel_tolerance"]),
+            max_difference_ratio=float(variant["max_difference_ratio"]),
+            name=f"{component.definition.component_id}-visual",
+        )
+        self.context.evidence.record(
+            "component_visual_compared", component_id=component.definition.component_id,
+            variant_key=key, visual_revision=(component.definition.visual or {}).get("revision", 0),
+        )
         return comparison
 
 

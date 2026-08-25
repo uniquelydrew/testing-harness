@@ -26,7 +26,10 @@ where = ["."]
 include = ["automation_harness*"]
 
 [tool.setuptools.package-data]
-automation_harness = ["resources/**/*.yaml", "examples/**/*.yaml", "examples/**/*.py"]
+automation_harness = ["resources/**/*.yaml", "examples/**/*.yaml", "examples/**/*.py", "examples/**/*.png"]
+
+[tool.setuptools.exclude-package-data]
+automation_harness = ["examples/**/visual/.staging/**"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

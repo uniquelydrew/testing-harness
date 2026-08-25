@@ -11,3 +11,7 @@ dist/
 
 # Generated execution evidence
 runs/
+
+# Unapproved visual-baseline review artifacts
+visual/.staging/
+**/visual/.staging/

@@ -13,6 +13,7 @@ from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
 from automation_harness.runner.bundle import BundleError, TestBundle
@@ -89,6 +90,28 @@ def build_parser() -> argparse.ArgumentParser:
     steps_describe.add_argument("name")
     steps_describe.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
+    visual = sub.add_parser("visual", help="stage and review component-bound visual baselines")
+    visual_sub = visual.add_subparsers(dest="visual_command", required=True)
+    visual_stage = visual_sub.add_parser("stage", help="capture a candidate from component bounds")
+    visual_stage.add_argument("repository", type=Path)
+    visual_stage.add_argument("component_id")
+    visual_stage.add_argument("--bounds", required=True, metavar="X,Y,WIDTH,HEIGHT")
+    visual_stage.add_argument("--profile", action="append", default=[], metavar="KEY=VALUE")
+    visual_stage.add_argument("--pixel-tolerance", type=int, default=12)
+    visual_stage.add_argument("--max-difference-ratio", type=float, default=0.01)
+    visual_approve = visual_sub.add_parser("approve", help="promote a staged candidate")
+    visual_approve.add_argument("repository", type=Path)
+    visual_approve.add_argument("component_id")
+    visual_approve.add_argument("variant_key")
+    visual_approve.add_argument("--mask", type=Path)
+    visual_reject = visual_sub.add_parser("reject", help="discard a staged candidate")
+    visual_reject.add_argument("repository", type=Path)
+    visual_reject.add_argument("component_id")
+    visual_reject.add_argument("variant_key")
+    visual_status = visual_sub.add_parser("status", help="show approved visual variants")
+    visual_status.add_argument("repository", type=Path)
+    visual_status.add_argument("component_id")
+
     plan = sub.add_parser("plan", help="inspect and validate declarative TestPlan files")
     plan_sub = plan.add_subparsers(dest="plan_command", required=True)
     plan_validate = plan_sub.add_parser("validate", help="validate a declarative TestPlan against the registered step catalog")
@@ -152,6 +175,33 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "visual":
+        try:
+            repository_path = args.repository.resolve()
+            if args.visual_command == "stage":
+                bounds = tuple(int(part.strip()) for part in args.bounds.split(","))
+                if len(bounds) != 4:
+                    raise ValueError("--bounds requires X,Y,WIDTH,HEIGHT")
+                definition = ComponentRepository.load([repository_path]).get(args.component_id)
+                result = stage_visual_candidate(
+                    repository_path, definition, bounds, profile=VisualProfile.current(_parse_profile_overrides(args.profile)),
+                    pixel_tolerance=args.pixel_tolerance, max_difference_ratio=args.max_difference_ratio,
+                )
+                print(json.dumps(result, indent=2, default=str))
+            elif args.visual_command == "approve":
+                result = approve_visual_candidate(repository_path, args.component_id, args.variant_key, mask=args.mask)
+                print(json.dumps({"component_id": result.component_id, "visual": result.visual}, indent=2))
+            elif args.visual_command == "reject":
+                reject_visual_candidate(repository_path, args.component_id, args.variant_key)
+                print(f"REJECTED: {args.component_id} {args.variant_key}")
+            else:
+                definition = ComponentRepository.load([repository_path]).get(args.component_id)
+                print(json.dumps(definition.visual or {"variants": {}}, indent=2))
+            return 0
+        except Exception as exc:
+            print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
 
     if args.command == "gtk-demo":
         examples = Path(__file__).resolve().parents[1] / "examples" / "gtk4_demo"
@@ -401,6 +451,18 @@ def _parse_variable_overrides(values: list[str]) -> dict[str, object]:
         except json.JSONDecodeError:
             value = raw
         result[name] = value
+    return result
+
+
+def _parse_profile_overrides(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(f"--profile requires KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        if not key or not value:
+            raise ValueError(f"--profile requires non-empty KEY=VALUE, got {item!r}")
+        result[key] = value
     return result
 
 

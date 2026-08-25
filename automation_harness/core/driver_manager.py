@@ -7,6 +7,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.tracking_driver import TrackingDriver
 from automation_harness.drivers.vision_driver import VisionDriver
+from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class DriverManager:
     vision: VisionDriver
     atspi: AtspiDriver
     java_accessibility: JavaAccessibilityDriver
+    anchored_visual: AnchoredVisualDriver
 
     @classmethod
     def from_context(cls, context: TestContext) -> "DriverManager":
@@ -25,4 +27,5 @@ class DriverManager:
             vision=VisionDriver(context),
             atspi=AtspiDriver(context),
             java_accessibility=JavaAccessibilityDriver(context),
+            anchored_visual=AnchoredVisualDriver(context),
         )
