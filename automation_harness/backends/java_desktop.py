@@ -12,8 +12,15 @@ from automation_harness.backends.base import ExecutionBackend
 from automation_harness.models.run import BackendHealth
 
 
+_JAVA_ATK_WRAPPER_ENV = "AUTOMATION_HARNESS_JAVA_ATK_WRAPPER"
+_JAVA_ATK_WRAPPER_CANDIDATES = (
+    Path("/usr/share/java/java-atk-wrapper.jar"),
+    Path("/usr/share/java/java-atk-wrapper/java-atk-wrapper.jar"),
+)
+
+
 class JavaDesktopBackend(ExecutionBackend):
-    """Managed black-box Swing/JavaFX target for Windows and Ubuntu/X11."""
+    """Managed black-box Swing/JavaFX target for Windows and Linux/X11."""
 
     name = "java-desktop"
 
@@ -57,17 +64,18 @@ class JavaDesktopBackend(ExecutionBackend):
             except Exception as exc:
                 return [f"Windows Java Access Bridge is unavailable: {exc}"]
             return []
+
         issues: list[str] = []
-        for package in ("libatk-wrapper-java", "libatk-wrapper-java-jni"):
-            completed = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Status}", package], text=True, capture_output=True)
-            if completed.returncode != 0 or completed.stdout.strip() != "installed":
-                issues.append(f"Linux Java accessibility requires package {package}")
-        if not Path("/usr/share/java/java-atk-wrapper.jar").is_file():
-            issues.append("Linux Java accessibility requires /usr/share/java/java-atk-wrapper.jar")
+        wrapper = _find_java_atk_wrapper()
+        if wrapper is None:
+            issues.append(
+                "Linux Java accessibility requires the Java ATK wrapper JAR; "
+                f"set {_JAVA_ATK_WRAPPER_ENV} if it is installed outside a standard location"
+            )
         try:
             import pyatspi  # type: ignore # noqa: F401
         except ImportError:
-            issues.append("Linux Java accessibility requires the system pyatspi binding")
+            issues.append("Linux Java accessibility requires a pyatspi binding importable by the harness runtime")
         if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
             issues.append("Linux Java accessibility requires a D-Bus session")
         if self.display_mode == "virtual" and shutil.which("Xvfb") is None:
@@ -163,21 +171,43 @@ class JavaDesktopBackend(ExecutionBackend):
         raise RuntimeError("no Xvfb display was available in range :200-:249")
 
 
+def _find_java_atk_wrapper() -> Path | None:
+    override = os.environ.get(_JAVA_ATK_WRAPPER_ENV)
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path
+    for path in _JAVA_ATK_WRAPPER_CANDIDATES:
+        if path.is_file():
+            return path
+    for root in (Path("/usr/share/java"), Path("/usr/lib/java"), Path("/usr/lib64/java")):
+        if not root.is_dir():
+            continue
+        matches = sorted(root.glob("**/java-atk-wrapper*.jar"))
+        if matches:
+            return matches[0]
+    return None
+
+
 def _enable_java_atk_wrapper(env: dict[str, str], command: list[str]) -> None:
-    """Enable the Java ATK wrapper without requiring an application test hook."""
+    """Enable the Java ATK wrapper without depending on a distribution package layout."""
+    wrapper = _find_java_atk_wrapper()
+    if wrapper is None:
+        raise RuntimeError("Java ATK wrapper JAR is unavailable")
+
     property_arg = "-Djavax.accessibility.assistive_technologies=org.GNOME.Accessibility.AtkWrapper"
     javafx_accessibility_arg = "-Dglass.accessible.force=true"
-    bootclasspath_arg = "-Xbootclasspath/a:/usr/share/java/java-atk-wrapper.jar"
+    bootclasspath_arg = f"-Xbootclasspath/a:{wrapper}"
     if Path(command[0]).name.casefold().startswith("java"):
         if not any(arg.startswith("-Djavax.accessibility.assistive_technologies=") for arg in command):
             command.insert(1, property_arg)
         if javafx_accessibility_arg not in command:
             command.insert(1, javafx_accessibility_arg)
-        if not any(arg.startswith("-Xbootclasspath/a:") and "java-atk-wrapper.jar" in arg for arg in command):
+        if not any(arg.startswith("-Xbootclasspath/a:") and "java-atk-wrapper" in arg for arg in command):
             command.insert(1, bootclasspath_arg)
     else:
         options = env.get("JAVA_TOOL_OPTIONS", "").strip()
         extra = [property_arg, javafx_accessibility_arg]
-        if "java-atk-wrapper.jar" not in options:
+        if "java-atk-wrapper" not in options:
             extra.append(bootclasspath_arg)
         env["JAVA_TOOL_OPTIONS"] = " ".join(filter(None, [options, *extra]))
