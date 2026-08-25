@@ -1,0 +1,14 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'automation.harness'
+version = '0.1.0'
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }
+}
+
+jar {
+    manifest { attributes('Premain-Class': 'automation.harness.agent.AutomationAgent') }
+}
