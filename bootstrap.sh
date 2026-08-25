@@ -8,7 +8,7 @@ PYTHON_SOURCE_VERSION="${AUTOMATION_HARNESS_PYTHON_VERSION:-3.11.9}"
 PYTHON_PREFIX="$RUNTIME_DIR/python-$PYTHON_SOURCE_VERSION"
 ALLOW_PARTIAL="${AUTOMATION_HARNESS_ALLOW_PARTIAL:-0}"
 
-log() { printf '[bootstrap] %s\n' "$*"; }
+log() { printf '[bootstrap] %s\n' "$*" >&2; }
 warn() { printf '[bootstrap] WARNING: %s\n' "$*" >&2; }
 die() { printf '[bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -44,21 +44,56 @@ is_debian_family() {
     [[ "$HOST_ID" =~ ^(debian|ubuntu|linuxmint|pop)$ ]] || [[ " $HOST_LIKE " == *" debian " ]]
 }
 
-install_rhel_packages() {
-    command -v dnf >/dev/null 2>&1 || die "RHEL-family host detected but dnf is unavailable"
+python_is_supported() {
+    local exe="$1"
+    "$exe" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
 
+find_python311() {
+    local candidate
+    for candidate in \
+        "$PYTHON_PREFIX/bin/python3.11" \
+        python3.13 python3.12 python3.11 python3; do
+        if [[ "$candidate" == /* ]]; then
+            [[ -x "$candidate" ]] && python_is_supported "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+        elif command -v "$candidate" >/dev/null 2>&1 && python_is_supported "$candidate"; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_rhel_required_packages() {
     local required=(
         gcc gcc-c++ make curl tar gzip
         openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel
-        readline-devel sqlite-devel tk-devel
+        readline-devel sqlite-devel tk-devel libuuid-devel ncurses-devel gdbm-devel
         pkgconf-pkg-config
         glib2-devel cairo-devel gobject-introspection-devel gtk3-devel
         at-spi2-core at-spi2-atk
         xorg-x11-server-Xvfb xorg-x11-xauth dbus-x11
     )
+    as_root dnf install -y "${required[@]}"
+}
+
+install_rhel_packages() {
+    command -v dnf >/dev/null 2>&1 || die "RHEL-family host detected but dnf is unavailable"
 
     log "Installing RHEL-family native prerequisites"
-    as_root dnf install -y "${required[@]}"
+    if ! install_rhel_required_packages; then
+        if [[ "$HOST_ID" == "rhel" ]] && command -v subscription-manager >/dev/null 2>&1; then
+            local arch
+            arch="$(uname -m)"
+            local major="${HOST_VERSION%%.*}"
+            local repo="codeready-builder-for-rhel-${major}-${arch}-rpms"
+            warn "Initial dependency install failed; attempting to enable $repo"
+            as_root subscription-manager repos --enable "$repo" || true
+            install_rhel_required_packages || die "required RHEL native prerequisites could not be installed"
+        else
+            die "required RHEL-family native prerequisites could not be installed"
+        fi
+    fi
 
     local optional=(java-atk-wrapper python3-pyatspi)
     local package
@@ -83,7 +118,7 @@ install_debian_packages() {
     as_root apt-get install -y \
         build-essential curl tar gzip \
         libssl-dev libbz2-dev libffi-dev zlib1g-dev liblzma-dev \
-        libreadline-dev libsqlite3-dev tk-dev pkg-config \
+        libreadline-dev libsqlite3-dev tk-dev uuid-dev libncurses-dev libgdbm-dev pkg-config \
         libcairo2-dev libgirepository1.0-dev libgtk-3-dev \
         at-spi2-core xvfb xauth dbus-x11
 
@@ -106,26 +141,6 @@ install_native_packages() {
     else
         die "Unsupported Linux distribution: ID=$HOST_ID ID_LIKE=$HOST_LIKE"
     fi
-}
-
-python_is_supported() {
-    local exe="$1"
-    "$exe" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
-}
-
-find_python311() {
-    local candidate
-    for candidate in \
-        "$PYTHON_PREFIX/bin/python3.11" \
-        python3.13 python3.12 python3.11 python3; do
-        if [[ "$candidate" == /* ]]; then
-            [[ -x "$candidate" ]] && python_is_supported "$candidate" && { printf '%s\n' "$candidate"; return 0; }
-        elif command -v "$candidate" >/dev/null 2>&1 && python_is_supported "$candidate"; then
-            command -v "$candidate"
-            return 0
-        fi
-    done
-    return 1
 }
 
 build_python() {
@@ -181,8 +196,6 @@ install_python_stack() {
     log "Installing Automation Harness into the isolated environment"
     "$py" -m pip install "$ROOT_DIR"
 
-    # RHEL 8 ships an older GLib stack. Keep the PyGObject build line compatible
-    # with enterprise Linux rather than unconditionally selecting the newest ABI.
     log "Installing Python GUI bindings"
     if ! "$py" -m pip install 'pycairo<1.28' 'PyGObject>=3.42,<3.48'; then
         if [[ "$ALLOW_PARTIAL" == "1" ]]; then
