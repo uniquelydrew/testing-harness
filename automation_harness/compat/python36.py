@@ -198,11 +198,11 @@ def run_reference():
 
 
 def run_author():
-    return _run("automation_harness.authoring.app", "main")
+    return _run("automation_harness.authoring.capture_runtime", "run_author")
 
 
 def run_capture():
-    return _run("automation_harness.authoring.app", "capture_main")
+    return _run("automation_harness.authoring.capture_runtime", "run_capture")
 
 
 def run_repository():
