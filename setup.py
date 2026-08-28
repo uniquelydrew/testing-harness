@@ -19,10 +19,9 @@ setup(
     },
     install_requires=[
         "PyYAML>=3.12,<6.0",
-        "Pillow>=5.1,<9.0",
+        "Pillow==8.4.0",
         "dataclasses==0.8; python_version < '3.7'",
-        "typing_extensions>=3.7.4,<4.2",
-        "contextvars>=2.4; python_version < '3.7'",
+        "typing_extensions==4.1.1",
     ],
     extras_require={
         "test": ["pytest>=4.5,<7.0"],
