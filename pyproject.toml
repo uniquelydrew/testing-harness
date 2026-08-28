@@ -1,35 +1,6 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools>=39.2,<60", "wheel<0.38"]
 build-backend = "setuptools.build_meta"
-
-[project]
-name = "automation-harness"
-version = "0.5.2"
-description = "Protected-target-safe automation harness with an isolated synthetic reference backend"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-  "PyYAML>=6.0",
-  "pytest>=8.0",
-  "Pillow>=10.0",
-]
-
-[project.scripts]
-automation-run = "automation_harness.runner.cli:main"
-automation-reference = "automation_harness.reference.app:main"
-automation-author = "automation_harness.authoring.app:main"
-automation-capture = "automation_harness.authoring.app:capture_main"
-automation-repository = "automation_harness.authoring.app:repository_main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["automation_harness*"]
-
-[tool.setuptools.package-data]
-automation_harness = ["resources/**/*.yaml", "examples/**/*.yaml", "examples/**/*.py", "examples/**/*.png"]
-
-[tool.setuptools.exclude-package-data]
-automation_harness = ["examples/**/visual/.staging/**"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
