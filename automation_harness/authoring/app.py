@@ -49,6 +49,7 @@ class AuthoringApp:
         self._highlight_timeout = None
         self.last_run_dir = None
         self._build()
+        self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
         self.window.show_all()
 
@@ -79,12 +80,12 @@ class AuthoringApp:
         notebook = Gtk.Notebook()
         outer.pack_start(notebook, True, True, 0)
         self.notebook = notebook
-        self.objects_tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.objects_tab = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         notebook.append_page(self.objects_tab, Gtk.Label(label="Object Repository"))
         self._build_objects()
         if self.mode == "capture" or self.mode == "repository":
             return
-        self.steps_tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.steps_tab = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.plan_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.vars_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.state_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -125,7 +126,16 @@ class AuthoringApp:
 
     def _build_objects(self) -> None:
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.objects_tab.pack_start(left, True, True, 0)
+        self.objects_tab.pack1(left, resize=True, shrink=False)
+        filter_row = Gtk.Box(spacing=6)
+        left.pack_start(filter_row, False, False, 0)
+        filter_row.pack_start(Gtk.Label(label="Filter:"), False, False, 0)
+        self.object_filter = Gtk.SearchEntry()
+        self.object_filter.set_placeholder_text("ID, description, type, framework, or class")
+        self.object_filter.connect("search-changed", lambda *_args: self.refresh_objects())
+        filter_row.pack_start(self.object_filter, True, True, 0)
+        self.object_count = Gtk.Label(label="0 objects")
+        filter_row.pack_end(self.object_count, False, False, 0)
         self.object_tree, self.object_store = self._tree((("Component", 260), ("Rev", 50), ("Type", 110), ("Actions", 180)))
         self.object_tree.get_selection().connect("changed", lambda *_args: self.show_object())
         left.pack_start(self._scrolled(self.object_tree), True, True, 0)
@@ -133,25 +143,39 @@ class AuthoringApp:
         left.pack_start(buttons, False, False, 0)
         self._button(buttons, "Inspect", self.show_object)
         self._button(buttons, "Highlight", self.highlight_selected_object)
-        if self.mode != "repository":
-            self._button(buttons, "Capture Next Click", self.capture_next_click)
-            self._button(buttons, "Capture at Pointer (2s)", self.capture_pointer_delayed)
-            self._button(buttons, "Capture by Locator", self.capture_by_locator)
-            self.highlight_button = self._button(buttons, "Highlight Last Capture", self.highlight_last_capture)
-            self.highlight_button.set_sensitive(False)
-            self._button(buttons, "Approve Visual", self.approve_visual_candidate)
-            self._button(buttons, "Reject Visual", self.reject_visual_candidate)
         if self.mode != "capture":
             self._button(buttons, "Edit Selected", self.edit_selected_object)
+        if self.mode != "repository":
+            capture_buttons = Gtk.Box(spacing=5)
+            left.pack_start(capture_buttons, False, False, 0)
+            self._button(capture_buttons, "Capture Next Click", self.capture_next_click)
+            self._button(capture_buttons, "Capture at Pointer (2s)", self.capture_pointer_delayed)
+            self._button(capture_buttons, "Capture by Locator", self.capture_by_locator)
+            visual_buttons = Gtk.Box(spacing=5)
+            left.pack_start(visual_buttons, False, False, 0)
+            self.highlight_button = self._button(visual_buttons, "Highlight Last Capture", self.highlight_last_capture)
+            self.highlight_button.set_sensitive(False)
+            self._button(visual_buttons, "Approve Visual", self.approve_visual_candidate)
+            self._button(visual_buttons, "Reject Visual", self.reject_visual_candidate)
 
         self.object_detail = Gtk.TextView()
         self.object_detail.set_editable(False)
         self.object_detail.set_monospace(True)
-        self.objects_tab.pack_start(self._scrolled(self.object_detail), True, True, 0)
+        self.objects_tab.pack2(self._scrolled(self.object_detail), resize=True, shrink=False)
+        self.objects_tab.set_position(620)
 
     def _build_steps(self) -> None:
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.steps_tab.pack_start(left, True, True, 0)
+        self.steps_tab.pack1(left, resize=True, shrink=False)
+        filter_row = Gtk.Box(spacing=6)
+        left.pack_start(filter_row, False, False, 0)
+        filter_row.pack_start(Gtk.Label(label="Filter:"), False, False, 0)
+        self.step_filter = Gtk.SearchEntry()
+        self.step_filter.set_placeholder_text("Step ID, domain, or signature")
+        self.step_filter.connect("search-changed", lambda *_args: self.refresh_steps())
+        filter_row.pack_start(self.step_filter, True, True, 0)
+        self.step_count = Gtk.Label(label="0 steps")
+        filter_row.pack_end(self.step_count, False, False, 0)
         self.step_tree, self.step_store = self._tree((("Step", 300), ("Domain", 120), ("Signature", 420)))
         self.step_tree.get_selection().connect("changed", lambda *_args: self.show_step())
         self.step_tree.connect("row-activated", lambda *_args: self.add_selected_step())
@@ -160,7 +184,8 @@ class AuthoringApp:
         self.step_detail = Gtk.TextView()
         self.step_detail.set_editable(False)
         self.step_detail.set_monospace(True)
-        self.steps_tab.pack_start(self._scrolled(self.step_detail), True, True, 0)
+        self.steps_tab.pack2(self._scrolled(self.step_detail), resize=True, shrink=False)
+        self.steps_tab.set_position(690)
 
     def _build_plan(self) -> None:
         top = Gtk.Box(spacing=6)
@@ -170,9 +195,37 @@ class AuthoringApp:
         self.plan_name.set_text(self.plan.name)
         top.pack_start(self.plan_name, False, False, 0)
         self._button(top, "Edit Selected", self.edit_plan_step)
+        self._button(top, "Duplicate", self.duplicate_plan_step)
+        self._button(top, "Move Up", lambda: self.move_plan_step(-1))
+        self._button(top, "Move Down", lambda: self.move_plan_step(1))
         self._button(top, "Remove Selected", self.remove_plan_step)
         self.plan_tree, self.plan_store = self._tree((("Node", 100), ("Registered Step", 260), ("Inputs", 300), ("Outputs", 220), ("Depends", 140)))
+        self.plan_tree.connect("row-activated", lambda *_args: self.edit_plan_step())
+        self.plan_tree.connect("key-press-event", self._on_plan_tree_key_press)
         self.plan_tab.pack_start(self._scrolled(self.plan_tree), True, True, 0)
+
+    def _on_key_press(self, _widget, event):
+        control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        if not control:
+            return False
+        key = (Gdk.keyval_name(event.keyval) or "").lower()
+        if key == "f":
+            page = self.notebook.get_current_page()
+            if page == 0:
+                self.object_filter.grab_focus()
+            elif self.mode == "author" and page == 1:
+                self.step_filter.grab_focus()
+            return True
+        if self.mode == "author" and key == "o":
+            self.open_plan_dialog(); return True
+        if self.mode == "author" and key == "s":
+            self.save_plan_dialog(); return True
+        return False
+
+    def _on_plan_tree_key_press(self, _widget, event):
+        if event.keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
+            self.remove_plan_step(); return True
+        return False
 
     def _build_variables(self) -> None:
         self.vars_tab.pack_start(Gtk.Label(label="Plan globals (JSON object)"), False, False, 0)
@@ -193,6 +246,19 @@ class AuthoringApp:
         model, iterator = tree.get_selection().get_selected()
         return model.get_value(iterator, column) if iterator is not None else None
 
+    @staticmethod
+    def _select_value(tree, value, column=0):
+        if value is None:
+            return
+        model = tree.get_model()
+        iterator = model.get_iter_first()
+        while iterator is not None:
+            if model.get_value(iterator, column) == value:
+                tree.get_selection().select_iter(iterator)
+                tree.scroll_to_cell(model.get_path(iterator))
+                return
+            iterator = model.iter_next(iterator)
+
     def _set_status(self, value):
         self.status.set_text(value)
 
@@ -212,9 +278,19 @@ class AuthoringApp:
         self.refresh_steps(); self.refresh_plan(); self.refresh_variables(); self.refresh_state()
 
     def refresh_objects(self) -> None:
+        selected = self._selected(self.object_tree)
         self.object_store.clear()
+        query = self.object_filter.get_text().strip().casefold()
+        visible = 0
         for component_id, definition in sorted(self.repository.components.items()):
+            searchable = " ".join((component_id, definition.description, definition.object_type.value, definition.framework or "", definition.native_class or "")).casefold()
+            if query and query not in searchable:
+                continue
             self.object_store.append((component_id, str(definition.revision), definition.object_type.value, ",".join(sorted(item.value for item in definition.semantic_actions))))
+            visible += 1
+        total = len(self.repository.components)
+        self.object_count.set_text("%d of %d" % (visible, total) if query else "%d objects" % total)
+        self._select_value(self.object_tree, selected)
 
     def show_object(self) -> None:
         component_id = self._selected(self.object_tree)
@@ -488,8 +564,19 @@ class AuthoringApp:
         except Exception as exc: self._error("Visual rejection", "%s: %s" % (type(exc).__name__, exc))
 
     def refresh_steps(self) -> None:
+        selected = self._selected(self.step_tree)
         self.step_store.clear()
-        for definition in self.registry.definitions(): self.step_store.append((definition.name, definition.domain, str(definition.invocation_signature)))
+        query = self.step_filter.get_text().strip().casefold()
+        definitions = self.registry.definitions()
+        visible = 0
+        for definition in definitions:
+            searchable = "%s %s %s" % (definition.name, definition.domain, definition.invocation_signature)
+            if query and query not in searchable.casefold():
+                continue
+            self.step_store.append((definition.name, definition.domain, str(definition.invocation_signature)))
+            visible += 1
+        self.step_count.set_text("%d of %d" % (visible, len(definitions)) if query else "%d steps" % len(definitions))
+        self._select_value(self.step_tree, selected)
 
     def show_step(self) -> None:
         name = self._selected(self.step_tree)
@@ -499,9 +586,28 @@ class AuthoringApp:
     def add_selected_step(self) -> None:
         name = self._selected(self.step_tree)
         if not name: return
-        definition = self.registry.get(name); node_id = "step-%03d" % (len(self.plan.steps) + 1)
+        definition = self.registry.get(name); node_id = _next_node_id(self.plan.steps)
         inputs = {item.name: item.default for item in definition.inputs if not item.required}
         self.plan = replace(self.plan, steps=self.plan.steps + (StepCall(node_id=node_id, step_id=definition.name, inputs=inputs),)); self.refresh_plan(); self.refresh_state()
+
+    def duplicate_plan_step(self) -> None:
+        node_id = self._selected(self.plan_tree)
+        if not node_id: return
+        steps = list(self.plan.steps)
+        index = next(index for index, item in enumerate(steps) if item.node_id == node_id)
+        duplicate = replace(steps[index], node_id=_next_node_id(self.plan.steps))
+        steps.insert(index + 1, duplicate)
+        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, duplicate.node_id)
+
+    def move_plan_step(self, offset) -> None:
+        node_id = self._selected(self.plan_tree)
+        if not node_id: return
+        steps = list(self.plan.steps)
+        index = next(index for index, item in enumerate(steps) if item.node_id == node_id)
+        target = index + offset
+        if target < 0 or target >= len(steps): return
+        steps[index], steps[target] = steps[target], steps[index]
+        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, node_id)
 
     def edit_plan_step(self) -> None:
         node_id = self._selected(self.plan_tree)
@@ -623,6 +729,14 @@ def _decode_gui(value: Any) -> Any:
         return {key: _decode_gui(item) for key, item in value.items()}
     if isinstance(value, list): return [_decode_gui(item) for item in value]
     return value
+
+
+def _next_node_id(steps):
+    existing = {item.node_id for item in steps}
+    index = 1
+    while "step-%03d" % index in existing:
+        index += 1
+    return "step-%03d" % index
 
 
 def _highlight_rectangles(bounds, thickness=4):

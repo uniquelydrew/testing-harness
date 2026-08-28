@@ -1,16 +1,18 @@
-import tkinter as tk
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
 
 from automation_harness.authoring.app import AuthoringApp
 
 
 def test_authoring_gui_constructs_on_reference_display():
-    root = tk.Tk()
+    app = AuthoringApp()
     try:
-        app = AuthoringApp(root)
-        root.update_idletasks()
-        root.update()
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
         assert app.plan.name == "new-test-plan"
-        assert app.step_tree.get_children()
-        assert app.object_tree.get_children()
+        assert len(app.step_store) > 0
+        assert len(app.object_store) > 0
     finally:
-        root.destroy()
+        app.window.destroy()
