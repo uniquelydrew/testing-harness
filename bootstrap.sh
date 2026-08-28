@@ -36,9 +36,7 @@ verify_python() {
     "$SYSTEM_PYTHON" - <<'PY' || exit $?
 import sys
 if not ((3, 6) <= sys.version_info[:2] < (3, 7)):
-    raise SystemExit(
-        "Automation Harness RHEL-8 backport requires Python 3.6.x; found %s" % sys.version.split()[0]
-    )
+    raise SystemExit("Automation Harness RHEL-8 backport requires Python 3.6.x; found %s" % sys.version.split()[0])
 print("[bootstrap] System Python: %s" % sys.version.split()[0])
 PY
 }
@@ -46,7 +44,7 @@ PY
 install_available_rpms() {
     command -v dnf >/dev/null 2>&1 || return 0
     local package
-    for package in python3-pyatspi at-spi2-core at-spi2-atk dbus-x11 xorg-x11-xauth xorg-x11-server-Xvfb java-atk-wrapper; do
+    for package in python3-gobject python3-cairo python3-pyatspi at-spi2-core at-spi2-atk gtk3 dbus-x11 xorg-x11-xauth xorg-x11-server-Xvfb java-atk-wrapper; do
         if rpm -q "$package" >/dev/null 2>&1; then
             log "RPM present: $package"
         elif dnf -q list --available "$package" >/dev/null 2>&1; then
@@ -74,20 +72,11 @@ create_venv() {
 install_python_dependencies() {
     local py="$VENV_DIR/bin/python"
     log "Updating Python packaging tools to the last Python-3.6-compatible line"
-    "$py" -m pip install --upgrade 'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1' || \
-        warn "Packaging-tool upgrade failed; continuing with the venv's existing tools"
-
+    "$py" -m pip install --upgrade 'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1' || warn "Packaging-tool upgrade failed; continuing with existing tools"
     log "Installing Python 3.6 compatibility/runtime dependencies"
-    "$py" -m pip install \
-        'dataclasses==0.8' \
-        'typing_extensions==4.1.1' \
-        'Pillow==8.4.0' || die "Python runtime dependencies could not be installed"
-
+    "$py" -m pip install 'dataclasses==0.8' 'typing_extensions==4.1.1' 'Pillow==8.4.0' || die "Python runtime dependencies could not be installed"
     log "Installing Automation Harness from the extracted source tree"
-    (
-        cd "$ROOT_DIR"
-        "$py" setup.py develop
-    ) || die "Automation Harness installation failed"
+    (cd "$ROOT_DIR" && "$py" setup.py develop) || die "Automation Harness installation failed"
 }
 
 verify_native_python_bindings() {
@@ -102,6 +91,14 @@ for module in modules:
     except Exception as exc:
         failed.append((module, exc))
         print("[bootstrap] Python binding FAIL: %s (%s: %s)" % (module, type(exc).__name__, exc))
+try:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+    print("[bootstrap] GTK binding OK: %s.%s" % (Gtk.get_major_version(), Gtk.get_minor_version()))
+except Exception as exc:
+    failed.append(("Gtk", exc))
+    print("[bootstrap] GTK binding FAIL: %s: %s" % (type(exc).__name__, exc))
 if failed:
     raise SystemExit(1)
 PY
@@ -132,13 +129,19 @@ qualify() {
     log "Checking CLI import and registered-step catalog"
     "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.6"
 
+    if [[ -n "${DISPLAY:-}" ]]; then
+        log "Smoke-testing GTK Object Capture on native display $DISPLAY"
+        "$VENV_DIR/bin/automation-capture" --smoke-test || die "GTK Object Capture smoke test failed"
+    else
+        warn "DISPLAY is not set; GTK authoring UI cannot be smoke-tested in this shell"
+    fi
+
     local display_mode=""
     if [[ -n "${DISPLAY:-}" ]]; then
         display_mode="auto"
     elif command -v Xvfb >/dev/null 2>&1; then
         display_mode="virtual"
     fi
-
     if [[ -n "$display_mode" ]]; then
         log "Running reference self-test with display mode: $display_mode"
         "$run" selftest --reference-display "$display_mode" || warn "reference GUI self-test did not fully qualify"
@@ -150,11 +153,7 @@ qualify() {
 
     local wrapper
     wrapper="$(find_java_atk_wrapper)"
-    if [[ -n "$wrapper" ]]; then
-        log "Java ATK wrapper: $wrapper"
-    else
-        warn "Java ATK wrapper is not installed; Swing/JavaFX accessibility remains unavailable"
-    fi
+    if [[ -n "$wrapper" ]]; then log "Java ATK wrapper: $wrapper"; else warn "Java ATK wrapper is not installed; Swing/JavaFX accessibility remains unavailable"; fi
 }
 
 main() {
@@ -163,7 +162,7 @@ main() {
     install_available_rpms
     create_venv
     install_python_dependencies
-    verify_native_python_bindings || die "required RHEL Python/AT-SPI bindings are not visible inside the virtual environment"
+    verify_native_python_bindings || die "required RHEL GTK/AT-SPI bindings are not visible inside the virtual environment"
     write_environment
     qualify
     log "Bootstrap complete"
