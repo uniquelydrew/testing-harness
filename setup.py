@@ -19,11 +19,11 @@ setup(
     },
     install_requires=[
         "PyYAML>=3.12,<6.0",
-        "Pillow==8.4.0",
         "dataclasses==0.8; python_version < '3.7'",
         "typing_extensions==4.1.1",
     ],
     extras_require={
+        "vision": ["Pillow==8.4.0"],
         "test": ["pytest>=4.5,<7.0"],
     },
     entry_points={

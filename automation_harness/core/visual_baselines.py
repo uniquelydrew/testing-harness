@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from PIL import Image, ImageChops, ImageGrab
-
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import ComponentDefinition
 
@@ -70,6 +68,16 @@ def _asset_path(repository: Path, relative: str) -> Path:
     return result
 
 
+def _require_pillow():
+    try:
+        from PIL import Image, ImageChops, ImageGrab
+    except ImportError as exc:
+        raise VisualBaselineError(
+            "Pillow is required for visual baseline capture/approval; core GTK/AT-SPI object capture does not require it"
+        ) from exc
+    return Image, ImageChops, ImageGrab
+
+
 def stage_visual_candidate(
     repository_path: Path,
     definition: ComponentDefinition,
@@ -78,8 +86,9 @@ def stage_visual_candidate(
     profile: VisualProfile | None = None,
     pixel_tolerance: int = DEFAULT_PIXEL_TOLERANCE,
     max_difference_ratio: float = DEFAULT_MAX_DIFFERENCE_RATIO,
-    image: Image.Image | None = None,
+    image: Any = None,
 ) -> dict[str, Any]:
+    Image, ImageChops, ImageGrab = _require_pillow()
     x, y, width, height = bounds
     if width <= 0 or height <= 0:
         raise VisualBaselineError("visual capture requires positive component bounds")
@@ -117,6 +126,7 @@ def stage_visual_candidate(
 
 
 def approve_visual_candidate(repository_path: Path, component_id: str, variant_key: str, *, mask: Path | None = None) -> ComponentDefinition:
+    Image, _ImageChops, _ImageGrab = _require_pillow()
     repository = ComponentRepository.load([repository_path])
     definition = repository.get(component_id)
     stage_dir = _repository_root(repository_path) / "visual" / ".staging" / _component_path(component_id) / variant_key

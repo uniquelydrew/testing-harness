@@ -4,6 +4,8 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
 SYSTEM_PYTHON="${AUTOMATION_HARNESS_PYTHON:-/usr/bin/python3}"
+DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-20}"
+PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
 
 log() { printf '[bootstrap] %s\n' "$*" >&2; }
 warn() { printf '[bootstrap] WARNING: %s\n' "$*" >&2; }
@@ -31,6 +33,37 @@ as_root() {
     fi
 }
 
+with_timeout() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --foreground "${seconds}s" "$@"
+    else
+        "$@"
+    fi
+}
+
+dnf_query() {
+    with_timeout "$DNF_TIMEOUT" dnf -q \
+        --setopt=timeout="$DNF_TIMEOUT" \
+        --setopt=retries=1 \
+        "$@"
+}
+
+dnf_install() {
+    if command -v timeout >/dev/null 2>&1; then
+        as_root timeout --foreground "${DNF_TIMEOUT}s" dnf -y \
+            --setopt=timeout="$DNF_TIMEOUT" \
+            --setopt=retries=1 \
+            install "$@"
+    else
+        as_root dnf -y \
+            --setopt=timeout="$DNF_TIMEOUT" \
+            --setopt=retries=1 \
+            install "$@"
+    fi
+}
+
 verify_python() {
     [[ -x "$SYSTEM_PYTHON" ]] || die "RHEL system Python was not found at $SYSTEM_PYTHON"
     "$SYSTEM_PYTHON" - <<'PY' || exit $?
@@ -43,17 +76,40 @@ PY
 
 install_available_rpms() {
     command -v dnf >/dev/null 2>&1 || return 0
-    local package
-    for package in python3-gobject python3-cairo python3-pyatspi at-spi2-core at-spi2-atk gtk3 dbus-x11 xorg-x11-xauth xorg-x11-server-Xvfb java-atk-wrapper; do
+
+    local packages=(
+        python3-gobject
+        python3-cairo
+        python3-pyatspi
+        at-spi2-core
+        at-spi2-atk
+        gtk3
+        dbus-x11
+        xorg-x11-xauth
+        xorg-x11-server-Xvfb
+        java-atk-wrapper
+    )
+    local available=() package
+
+    for package in "${packages[@]}"; do
         if rpm -q "$package" >/dev/null 2>&1; then
             log "RPM present: $package"
-        elif dnf -q list --available "$package" >/dev/null 2>&1; then
-            log "Installing available RPM: $package"
-            as_root dnf install -y "$package" || warn "Could not install $package"
+            continue
+        fi
+        log "Checking RHEL repository for: $package"
+        if dnf_query list --available "$package" >/dev/null 2>&1; then
+            available+=("$package")
         else
-            warn "RPM unavailable from enabled repositories: $package"
+            warn "RPM unavailable or repository probe timed out: $package"
         fi
     done
+
+    if ((${#available[@]})); then
+        log "Installing ${#available[@]} available native RPM(s): ${available[*]}"
+        if ! dnf_install "${available[@]}"; then
+            warn "Native RPM installation failed or timed out; continuing to capability checks"
+        fi
+    fi
 }
 
 create_venv() {
@@ -69,12 +125,48 @@ create_venv() {
     fi
 }
 
+install_optional_pillow() {
+    local py="$VENV_DIR/bin/python"
+    if "$py" -c 'import PIL; from PIL import Image; print(PIL.__version__)' >/dev/null 2>&1; then
+        log "Pillow vision capability is already available"
+        return 0
+    fi
+
+    if rpm -q python3-pillow >/dev/null 2>&1; then
+        log "RHEL python3-pillow RPM is installed"
+    elif command -v dnf >/dev/null 2>&1; then
+        log "Checking RHEL repository for optional vision package: python3-pillow"
+        if dnf_query list --available python3-pillow >/dev/null 2>&1; then
+            log "Installing optional RHEL vision package: python3-pillow"
+            dnf_install python3-pillow || warn "Could not install python3-pillow"
+        else
+            warn "python3-pillow is unavailable from the enabled repositories"
+        fi
+    fi
+
+    if "$py" -c 'import PIL; from PIL import Image; print(PIL.__version__)' >/dev/null 2>&1; then
+        log "Pillow vision capability is available through the RHEL Python stack"
+        return 0
+    fi
+
+    warn "Pillow is unavailable. Core GTK/AT-SPI Object Capture remains supported, but screenshots, visual baselines, masks, and image-based matching are disabled."
+    return 1
+}
+
 install_python_dependencies() {
     local py="$VENV_DIR/bin/python"
     log "Updating Python packaging tools to the last Python-3.6-compatible line"
-    "$py" -m pip install --upgrade 'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1' || warn "Packaging-tool upgrade failed; continuing with existing tools"
+    "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install --upgrade \
+        'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1' || \
+        warn "Packaging-tool upgrade failed; continuing with existing tools"
+
     log "Installing Python 3.6 compatibility/runtime dependencies"
-    "$py" -m pip install 'dataclasses==0.8' 'typing_extensions==4.1.1' 'Pillow==8.4.0' || die "Python runtime dependencies could not be installed"
+    "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install \
+        'dataclasses==0.8' \
+        'typing_extensions==4.1.1' || die "Python runtime dependencies could not be installed"
+
+    install_optional_pillow || true
+
     log "Installing Automation Harness from the extracted source tree"
     (cd "$ROOT_DIR" && "$py" setup.py develop) || die "Automation Harness installation failed"
 }
@@ -82,7 +174,7 @@ install_python_dependencies() {
 verify_native_python_bindings() {
     local py="$VENV_DIR/bin/python"
     "$py" - <<'PY'
-modules = ("yaml", "gi", "cairo", "pyatspi", "PIL")
+modules = ("yaml", "gi", "cairo", "pyatspi")
 failed = []
 for module in modules:
     try:
@@ -99,6 +191,11 @@ try:
 except Exception as exc:
     failed.append(("Gtk", exc))
     print("[bootstrap] GTK binding FAIL: %s: %s" % (type(exc).__name__, exc))
+try:
+    import PIL
+    print("[bootstrap] Optional Pillow binding OK: %s (%s)" % (getattr(PIL, "__version__", "unknown"), getattr(PIL, "__file__", "built-in")))
+except Exception as exc:
+    print("[bootstrap] Optional Pillow binding unavailable: %s: %s" % (type(exc).__name__, exc))
 if failed:
     raise SystemExit(1)
 PY
@@ -153,7 +250,11 @@ qualify() {
 
     local wrapper
     wrapper="$(find_java_atk_wrapper)"
-    if [[ -n "$wrapper" ]]; then log "Java ATK wrapper: $wrapper"; else warn "Java ATK wrapper is not installed; Swing/JavaFX accessibility remains unavailable"; fi
+    if [[ -n "$wrapper" ]]; then
+        log "Java ATK wrapper: $wrapper"
+    else
+        warn "Java ATK wrapper is not installed; Swing/JavaFX accessibility remains unavailable"
+    fi
 }
 
 main() {
