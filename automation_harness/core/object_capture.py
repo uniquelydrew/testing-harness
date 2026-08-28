@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -32,21 +36,60 @@ class LocatorAssessment:
 
 
 class ObjectCaptureService:
-    """Local Object Spy service used by both CLI and authoring GUI."""
+    """Local Object Spy service used by both CLI and authoring GUI.
+
+    Capture operations write JSON-lines diagnostics by default.  The log is
+    intentionally independent from the normal run/evidence system because
+    Object Capture is commonly used before a test plan or run directory exists.
+    Set ``AUTOMATION_HARNESS_CAPTURE_LOG`` to choose the file or set it to an
+    empty string to disable capture diagnostics.
+    """
 
     def __init__(self, driver: AtspiDriver | None = None) -> None:
         self.driver = driver or AtspiDriver()
+        configured = os.environ.get("AUTOMATION_HARNESS_CAPTURE_LOG")
+        if configured == "":
+            self._diagnostic_path = None
+        elif configured:
+            self._diagnostic_path = Path(configured).expanduser()
+        else:
+            root = Path(os.environ.get("AUTOMATION_HARNESS_ROOT", Path.cwd()))
+            self._diagnostic_path = root / "logs" / "object-capture.jsonl"
+        self._diagnostic_lock = threading.Lock()
+        self._log(
+            "capture_service_started",
+            pyatspi_available=self.driver.available,
+            display=os.environ.get("DISPLAY"),
+            session_type=os.environ.get("XDG_SESSION_TYPE"),
+            desktop=os.environ.get("XDG_CURRENT_DESKTOP"),
+        )
 
     @property
     def available(self) -> bool:
         return self.driver.available
 
+    @property
+    def diagnostic_path(self) -> Path | None:
+        return self._diagnostic_path
+
     def capture_at_point(self, x: int, y: int) -> CapturedComponent:
-        return self.driver.capture_at_point(x, y)
+        self._log("capture_at_point_started", x=x, y=y)
+        try:
+            captured = self.driver.capture_at_point(x, y)
+        except Exception as exc:
+            self._log_capture_failure("capture_at_point_failed", x, y, exc)
+            raise
+        self._log("capture_at_point_succeeded", x=x, y=y, capture=captured.to_dict())
+        return captured
 
     def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
         """Resolve the application at a point, then its deepest component."""
-        captured = self.driver.capture_scoped_at_point(x, y)
+        self._log("capture_scoped_at_point_started", x=x, y=y)
+        try:
+            captured = self.driver.capture_scoped_at_point(x, y)
+        except Exception as exc:
+            self._log_capture_failure("capture_scoped_at_point_failed", x, y, exc)
+            raise
         if (captured.role or "").casefold() in {"panel", "canvas", "drawing area"} and captured.bounds:
             visual_bounds = _visual_region_at_point(captured.bounds, x, y)
             if visual_bounds is not None and visual_bounds != captured.bounds:
@@ -73,11 +116,19 @@ class ObjectCaptureService:
                     },
                     authored_strategy=strategy,
                 )
+        self._log("capture_scoped_at_point_succeeded", x=x, y=y, capture=captured.to_dict())
         return captured
 
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
         """Capture the next accessible object selected by a desktop click."""
-        return self.driver.capture_next_click(timeout=timeout)
+        self._log("capture_next_click_started", timeout=timeout)
+        try:
+            captured = self.driver.capture_next_click(timeout=timeout)
+        except Exception as exc:
+            self._log("capture_next_click_failed", error_type=type(exc).__name__, error=str(exc))
+            raise
+        self._log("capture_next_click_succeeded", capture=captured.to_dict())
+        return captured
 
     def resolve_anchored_visual(self, options: Mapping[str, Any]) -> CapturedComponent:
         anchor_identification = options.get("anchor_identification")
@@ -109,9 +160,22 @@ class ObjectCaptureService:
         role: str | None = None,
         accessible_id: str | None = None,
     ) -> CapturedComponent:
-        return self.driver.inspect(
-            identification=identification, name=name, role=role, accessible_id=accessible_id,
+        self._log(
+            "capture_by_locator_started",
+            identification=dict(identification) if identification is not None else None,
+            name=name,
+            role=role,
+            accessible_id=accessible_id,
         )
+        try:
+            captured = self.driver.inspect(
+                identification=identification, name=name, role=role, accessible_id=accessible_id,
+            )
+        except Exception as exc:
+            self._log("capture_by_locator_failed", error_type=type(exc).__name__, error=str(exc))
+            raise
+        self._log("capture_by_locator_succeeded", capture=captured.to_dict())
+        return captured
 
     def assess(self, captured: CapturedComponent) -> tuple[LocatorAssessment, ...]:
         if captured.candidate_strategy().type == "anchored_visual":
@@ -282,6 +346,135 @@ class ObjectCaptureService:
             )
         return identification
 
+    def _log_capture_failure(self, event: str, x: int, y: int, exc: Exception) -> None:
+        payload = {
+            "x": x,
+            "y": y,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        try:
+            payload["atspi_snapshot"] = _atspi_point_snapshot(x, y)
+        except Exception as diagnostic_error:
+            payload["diagnostic_error"] = "%s: %s" % (
+                type(diagnostic_error).__name__, diagnostic_error,
+            )
+        self._log(event, **payload)
+
+    def _log(self, event: str, **payload: Any) -> None:
+        path = self._diagnostic_path
+        if path is None:
+            return
+        record = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "event": event,
+            "pid": os.getpid(),
+            "thread": threading.current_thread().name,
+        }
+        record.update(payload)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, default=str, sort_keys=True)
+            with self._diagnostic_lock:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(line + "\n")
+        except Exception:
+            # Diagnostics must never change capture behavior.
+            pass
+
+
+def _atspi_point_snapshot(x: int, y: int) -> dict[str, Any]:
+    """Return a bounded AT-SPI tree snapshot useful for failed hit-tests."""
+    import pyatspi  # type: ignore
+
+    desktop = pyatspi.Registry.getDesktop(0)
+    applications = []
+    containing = []
+    for index in range(int(getattr(desktop, "childCount", 0))):
+        try:
+            app = desktop.getChildAtIndex(index)
+        except Exception:
+            continue
+        if app is None:
+            continue
+        app_name = getattr(app, "name", None)
+        app_record = {
+            "name": app_name,
+            "role": _diagnostic_role(app),
+            "child_count": int(getattr(app, "childCount", 0)),
+        }
+        applications.append(app_record)
+        _diagnostic_collect_containing(app, x, y, pyatspi, containing, depth=0, max_depth=12)
+    containing.sort(key=lambda item: item.get("area", 2 ** 63 - 1))
+    return {
+        "desktop_child_count": int(getattr(desktop, "childCount", 0)),
+        "applications": applications,
+        "containing_objects": containing[:40],
+    }
+
+
+def _diagnostic_collect_containing(node, x, y, pyatspi, output, depth, max_depth):
+    if depth > max_depth:
+        return
+    bounds = _diagnostic_bounds(node, pyatspi)
+    contains = False
+    if bounds is not None:
+        left, top, width, height = bounds
+        contains = left <= x < left + width and top <= y < top + height
+        if contains:
+            output.append({
+                "depth": depth,
+                "name": getattr(node, "name", None),
+                "role": _diagnostic_role(node),
+                "bounds": list(bounds),
+                "area": width * height,
+                "child_count": int(getattr(node, "childCount", 0)),
+                "attributes": _diagnostic_attributes(node),
+            })
+    # Structural containers can lack bounds, so traverse them regardless.
+    if bounds is not None and not contains:
+        return
+    try:
+        child_count = int(node.childCount)
+    except Exception:
+        return
+    for index in range(child_count):
+        try:
+            child = node.getChildAtIndex(index)
+        except Exception:
+            continue
+        if child is not None:
+            _diagnostic_collect_containing(child, x, y, pyatspi, output, depth + 1, max_depth)
+
+
+def _diagnostic_bounds(node, pyatspi):
+    try:
+        extents = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        bounds = (int(extents.x), int(extents.y), int(extents.width), int(extents.height))
+        return bounds if bounds[2] > 0 and bounds[3] > 0 else None
+    except Exception:
+        return None
+
+
+def _diagnostic_role(node):
+    try:
+        return str(node.getRoleName())
+    except Exception:
+        return None
+
+
+def _diagnostic_attributes(node):
+    try:
+        raw = node.getAttributes()
+    except Exception:
+        return {}
+    result = {}
+    for item in raw or []:
+        if isinstance(item, str) and ":" in item:
+            key, value = item.split(":", 1)
+            result[key] = value
+    return result
+
 
 def _visual_region_at_point(
     anchor_bounds: tuple[int, int, int, int], x: int, y: int,
@@ -298,8 +491,6 @@ def _visual_region_at_point(
         image = ImageGrab.grab().convert("RGB").crop((left, top, left + width, top + height))
     except Exception:
         return None
-    # The most frequent quantized color is the container background. All
-    # sufficiently different connected pixels form controls/canvases.
     histogram: dict[tuple[int, int, int], int] = {}
     sample = image.resize((max(1, width // 4), max(1, height // 4)))
     sample_pixels = sample.load()
@@ -320,8 +511,6 @@ def _visual_region_at_point(
         return max(abs(color[index] - background[index]) for index in range(3)) >= threshold
 
     if not foreground(px, py):
-        # Text or a tiny blank gap may be clicked; find the nearest foreground
-        # seed without turning arbitrary container whitespace into a target.
         seeds = [
             (cx, cy)
             for radius in range(1, 9)
@@ -340,9 +529,6 @@ def _visual_region_at_point(
         cx, cy = pending.pop()
         min_x, max_x = min(min_x, cx), max(max_x, cx)
         min_y, max_y = min(min_y, cy), max(max_y, cy)
-        # Bridge antialiased/interior gaps up to three pixels. This joins a
-        # progress fill to its enclosing border without merging neighboring
-        # controls, whose layout spacing is materially larger.
         neighbors = (
             (cx + dx, cy + dy)
             for dx in range(-3, 4)

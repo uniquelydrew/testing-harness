@@ -4,4 +4,26 @@ The package defaults to a synthetic, local-only reference backend. Protected-sys
 execution is intentionally opt-in and implemented behind a separate backend.
 """
 
+import sys
+
 __version__ = "0.5.2"
+
+if sys.version_info < (3, 7):
+    # Python 3.6 exposes ast.Constant but ast.parse still produces the legacy
+    # Str/Num/Bytes/NameConstant nodes. The framework's static validators were
+    # written against the unified Constant API. Normalize those legacy nodes
+    # before installing the source-compatibility loader so validation semantics
+    # remain identical on the fixed RHEL 8.6 runtime.
+    import ast
+
+    if not hasattr(ast.Str, "value"):
+        ast.Str.value = property(lambda node: node.s)
+    if not hasattr(ast.Num, "value"):
+        ast.Num.value = property(lambda node: node.n)
+    if not hasattr(ast.Bytes, "value"):
+        ast.Bytes.value = property(lambda node: node.s)
+    ast.Constant = (ast.Str, ast.Num, ast.Bytes, ast.NameConstant)
+
+    from automation_harness.compat.python36 import install
+
+    install()

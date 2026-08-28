@@ -36,15 +36,7 @@ class ReferenceBackend(ExecutionBackend):
 
     @property
     def capabilities(self) -> set[str]:
-        capabilities = {
-            "reference",
-            "local-only",
-            "synthetic-events",
-            "tracking",
-            "mosaic",
-            "threat-state",
-            "triangulation",
-        }
+        capabilities = {"reference", "local-only", "synthetic-events", "tracking", "mosaic", "threat-state", "triangulation"}
         if self.gui:
             capabilities.update({"gui", "components", "screen-capture", "synthetic-video"})
         return capabilities
@@ -54,13 +46,17 @@ class ReferenceBackend(ExecutionBackend):
         if not self.gui:
             return issues
         try:
-            import tkinter  # noqa: F401
-        except ImportError:
-            issues.append("GUI reference mode requires Python tkinter support")
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from gi.repository import Gtk  # noqa: F401
+        except (ImportError, ValueError):
+            issues.append("GUI reference mode requires PyGObject/GTK 3 support")
         if self.display_mode == "virtual" and shutil.which("Xvfb") is None:
             issues.append("virtual GUI reference mode requires Xvfb on PATH")
         if self.display_mode == "native" and not os.environ.get("DISPLAY"):
             issues.append("native GUI reference mode requires DISPLAY to be set")
+        if self.display_mode == "auto" and not os.environ.get("DISPLAY") and shutil.which("Xvfb") is None:
+            issues.append("auto GUI reference mode requires either DISPLAY or Xvfb")
         try:
             from PIL import ImageGrab  # noqa: F401
         except ImportError:
@@ -77,20 +73,12 @@ class ReferenceBackend(ExecutionBackend):
         env = os.environ.copy()
         package_parent = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [package_parent, env.get("PYTHONPATH", "")]))
-
         if self.gui:
             self._display = self._prepare_display(run_dir, env)
             env["DISPLAY"] = self._display
-
         command = [sys.executable, "-m", "automation_harness.reference.app", "--socket", str(socket_path)]
         command.append("--gui" if self.gui else "--headless")
-        self._process = subprocess.Popen(
-            command,
-            stdout=self._stdout_handle,
-            stderr=self._stderr_handle,
-            text=True,
-            env=env,
-        )
+        self._process = subprocess.Popen(command, stdout=self._stdout_handle, stderr=self._stderr_handle, text=True, env=env)
         deadline = time.monotonic() + 8.0
         last_error: Exception | None = None
         while time.monotonic() < deadline:
@@ -101,11 +89,7 @@ class ReferenceBackend(ExecutionBackend):
                     health = ReferenceClient(socket_path).request("health")
                     gui_ready = bool(health.get("ui_ready"))
                     if health.get("status") == "ok" and (not self.gui or gui_ready):
-                        result = {
-                            "AUTOMATION_HARNESS_BACKEND": self.name,
-                            "AUTOMATION_HARNESS_SOCKET": str(socket_path),
-                            "AUTOMATION_HARNESS_REFERENCE_MODE": "gui" if self.gui else "headless",
-                        }
+                        result = {"AUTOMATION_HARNESS_BACKEND": self.name, "AUTOMATION_HARNESS_SOCKET": str(socket_path), "AUTOMATION_HARNESS_REFERENCE_MODE": "gui" if self.gui else "headless"}
                         if self._display is not None:
                             result["DISPLAY"] = self._display
                         return result
@@ -132,12 +116,7 @@ class ReferenceBackend(ExecutionBackend):
         display = f":{display_number}"
         self._xvfb_stdout_handle = (run_dir / "logs" / "xvfb.stdout.log").open("w", encoding="utf-8")
         self._xvfb_stderr_handle = (run_dir / "logs" / "xvfb.stderr.log").open("w", encoding="utf-8")
-        self._xvfb_process = subprocess.Popen(
-            [executable, display, "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-ac"],
-            stdout=self._xvfb_stdout_handle,
-            stderr=self._xvfb_stderr_handle,
-            text=True,
-        )
+        self._xvfb_process = subprocess.Popen([executable, display, "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-ac"], stdout=self._xvfb_stdout_handle, stderr=self._xvfb_stderr_handle, text=True)
         socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
         deadline = time.monotonic() + 4.0
         while time.monotonic() < deadline:
@@ -154,23 +133,18 @@ class ReferenceBackend(ExecutionBackend):
         try:
             result = ReferenceClient(self._socket_path).request("health")
             healthy = result.get("status") == "ok" and (not self.gui or bool(result.get("ui_ready")))
-            details = dict(result)
-            details["mode"] = "gui" if self.gui else "headless"
-            details["display"] = self._display
+            details = dict(result); details["mode"] = "gui" if self.gui else "headless"; details["display"] = self._display
             return BackendHealth(healthy, self.name, details)
         except Exception as exc:
             return BackendHealth(False, self.name, {"error": str(exc)})
 
     def stop(self) -> None:
-        self._stop_process(self._process)
-        self._process = None
-        self._stop_process(self._xvfb_process)
-        self._xvfb_process = None
+        self._stop_process(self._process); self._process = None
+        self._stop_process(self._xvfb_process); self._xvfb_process = None
         for handle_name in ("_stdout_handle", "_stderr_handle", "_xvfb_stdout_handle", "_xvfb_stderr_handle"):
             handle = getattr(self, handle_name)
             if handle is not None:
-                handle.close()
-                setattr(self, handle_name, None)
+                handle.close(); setattr(self, handle_name, None)
         if self._socket_path is not None:
             try:
                 self._socket_path.unlink(missing_ok=True)
@@ -186,8 +160,7 @@ class ReferenceBackend(ExecutionBackend):
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
+                process.kill(); process.wait(timeout=3)
 
 
 def _choose_display_number() -> int:
