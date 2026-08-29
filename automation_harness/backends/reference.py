@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+import socket
 from pathlib import Path
 
 from automation_harness.backends.base import ExecutionBackend
@@ -24,6 +25,7 @@ class ReferenceBackend(ExecutionBackend):
         self._process: subprocess.Popen[str] | None = None
         self._xvfb_process: subprocess.Popen[str] | None = None
         self._socket_path: Path | None = None
+        self._endpoint: str | None = None
         self._stdout_handle = None
         self._stderr_handle = None
         self._xvfb_stdout_handle = None
@@ -66,8 +68,11 @@ class ReferenceBackend(ExecutionBackend):
     def start(self, *, run_dir: Path) -> dict[str, str]:
         if self._process is not None:
             raise RuntimeError("reference backend already started")
+        use_tcp = os.name == "nt"
         socket_path = Path("/tmp") / f"automation-run-{os.getpid()}-{uuid.uuid4().hex[:12]}.sock"
-        self._socket_path = socket_path
+        endpoint = f"tcp://127.0.0.1:{_choose_tcp_port()}" if use_tcp else str(socket_path)
+        self._socket_path = Path(endpoint) if not use_tcp else None
+        self._endpoint = endpoint
         self._stdout_handle = (run_dir / "logs" / "reference.stdout.log").open("w", encoding="utf-8")
         self._stderr_handle = (run_dir / "logs" / "reference.stderr.log").open("w", encoding="utf-8")
         env = os.environ.copy()
@@ -76,27 +81,52 @@ class ReferenceBackend(ExecutionBackend):
         if self.gui:
             self._display = self._prepare_display(run_dir, env)
             env["DISPLAY"] = self._display
-        command = [sys.executable, "-m", "automation_harness.reference.app", "--socket", str(socket_path)]
+        command = [sys.executable, "-m", "automation_harness.reference.app"]
+        if use_tcp:
+            command.extend(["--tcp-port", endpoint.rsplit(":", 1)[1]])
+        else:
+            command.extend(["--socket", str(socket_path)])
         command.append("--gui" if self.gui else "--headless")
         self._process = subprocess.Popen(command, stdout=self._stdout_handle, stderr=self._stderr_handle, text=True, env=env)
         deadline = time.monotonic() + 8.0
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                raise RuntimeError(f"reference backend exited during startup with code {self._process.returncode}")
-            if socket_path.exists():
+                raise RuntimeError(self._startup_failure(command, env))
+            if use_tcp or socket_path.exists():
                 try:
-                    health = ReferenceClient(socket_path).request("health")
+                    health = ReferenceClient(endpoint).request("health")
                     gui_ready = bool(health.get("ui_ready"))
                     if health.get("status") == "ok" and (not self.gui or gui_ready):
-                        result = {"AUTOMATION_HARNESS_BACKEND": self.name, "AUTOMATION_HARNESS_SOCKET": str(socket_path), "AUTOMATION_HARNESS_REFERENCE_MODE": "gui" if self.gui else "headless"}
+                        result = {
+                            "AUTOMATION_HARNESS_BACKEND": self.name,
+                            "AUTOMATION_HARNESS_SOCKET": endpoint,
+                            "AUTOMATION_HARNESS_REFERENCE_MODE": "gui" if self.gui else "headless",
+                        }
                         if self._display is not None:
                             result["DISPLAY"] = self._display
                         return result
                 except Exception as exc:
                     last_error = exc
             time.sleep(0.05)
-        raise RuntimeError(f"reference backend did not become healthy: {last_error}")
+        raise RuntimeError(f"reference backend did not become healthy: {last_error}; {self._startup_failure(command, env)}")
+
+    def _startup_failure(self, command: list[str], env: dict[str, str]) -> str:
+        """Return evidence-safe startup diagnostics for runner error evidence."""
+        exit_code = self._process.returncode if self._process is not None else None
+        def tail(handle) -> str:
+            if handle is None:
+                return ""
+            handle.flush()
+            try:
+                return Path(handle.name).read_text(encoding="utf-8")[-4000:]
+            except OSError:
+                return "<unavailable>"
+        environment = {key: env.get(key) for key in ("DISPLAY", "PYTHONPATH", "PATH") if env.get(key)}
+        return (
+            f"reference backend startup diagnostics: exit_code={exit_code}; command={command!r}; "
+            f"environment={environment!r}; stdout={tail(self._stdout_handle)!r}; stderr={tail(self._stderr_handle)!r}"
+        )
 
     def _prepare_display(self, run_dir: Path, env: dict[str, str]) -> str:
         current = env.get("DISPLAY")
@@ -128,10 +158,10 @@ class ReferenceBackend(ExecutionBackend):
         raise RuntimeError(f"Xvfb did not create display socket for {display}")
 
     def health_check(self) -> BackendHealth:
-        if self._process is None or self._socket_path is None or self._process.poll() is not None:
+        if self._process is None or self._endpoint is None or self._process.poll() is not None:
             return BackendHealth(False, self.name, {"reason": "not running"})
         try:
-            result = ReferenceClient(self._socket_path).request("health")
+            result = ReferenceClient(self._endpoint).request("health")
             healthy = result.get("status") == "ok" and (not self.gui or bool(result.get("ui_ready")))
             details = dict(result); details["mode"] = "gui" if self.gui else "headless"; details["display"] = self._display
             return BackendHealth(healthy, self.name, details)
@@ -151,6 +181,7 @@ class ReferenceBackend(ExecutionBackend):
             except OSError:
                 pass
             self._socket_path = None
+        self._endpoint = None
         self._display = None
 
     @staticmethod
@@ -168,3 +199,9 @@ def _choose_display_number() -> int:
         if not Path(f"/tmp/.X11-unix/X{number}").exists():
             return number
     raise RuntimeError("no free X display number found in range 90..149")
+
+
+def _choose_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
