@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
 from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
@@ -104,9 +105,9 @@ class ComponentHandle:
     def execute(self, action: GuiAction | ActionType | str | dict, *, strategy: str | None = None) -> ExecutionResult:
         """Execute one validated semantic action through the configured strategies.
 
-        The current accessibility implementations are deliberately the first
-        concrete executor.  Unsupported requested strategies are retained in
-        the diagnostic trail instead of silently changing test intent.
+        Accessibility-backed strategies are concrete executors. Unsupported
+        requested strategies are retained in the diagnostic trail instead of
+        silently changing test intent.
         """
         semantic = GuiAction.from_value(action)
         if not self.supports(semantic.type):
@@ -115,7 +116,7 @@ class ComponentHandle:
                 f"object {self.definition.component_id!r} type {self.definition.object_type.value} does not support "
                 f"{semantic.type.value}; supported actions: {available}"
             )
-        if strategy not in {None, "accessibility", "atspi", "java_accessibility"}:
+        if strategy not in {None, "accessibility", "atspi", "java_accessibility", "javafx"}:
             raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
         try:
             if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.ACTIVATE}:
@@ -221,36 +222,50 @@ class ComponentHandle:
         )
 
     def get_text(self) -> str:
-        return self._atspi_operation("read text", "get_text")
+        return self._accessibility_operation("read text", "get_text")
 
     def set_text(self, value: str) -> dict[str, Any]:
-        return self._atspi_operation("set text", "set_text", value)
+        return self._accessibility_operation("set text", "set_text", value)
 
     def get_selection(self) -> list[str]:
-        return self._atspi_operation("read selection", "get_selection")
+        return self._accessibility_operation("read selection", "get_selection")
 
     def select_child(self, child_index: int) -> dict[str, Any]:
-        return self._atspi_operation("select child", "select_child", child_index)
+        return self._accessibility_operation("select child", "select_child", child_index)
 
     def get_value(self) -> float:
-        return self._atspi_operation("read value", "get_value")
+        return self._accessibility_operation("read value", "get_value")
 
     def set_value(self, value: float) -> dict[str, Any]:
-        return self._atspi_operation("set value", "set_value", value)
+        return self._accessibility_operation("set value", "set_value", value)
 
-    def _atspi_operation(self, label: str, method: str, *args: Any):
+    def _accessibility_operation(self, label: str, method: str, *args: Any):
         errors: list[str] = []
         for strategy in self.definition.strategies:
-            if strategy.type not in {"atspi", "java_accessibility"}:
+            if strategy.type not in {"atspi", "java_accessibility", "javafx"}:
                 continue
             try:
-                driver = AtspiDriver(self.context) if strategy.type == "atspi" else JavaAccessibilityDriver(self.context)
+                if strategy.type == "atspi":
+                    driver = AtspiDriver(self.context)
+                elif strategy.type == "java_accessibility":
+                    driver = JavaAccessibilityDriver(self.context)
+                else:
+                    driver = JavaFxBridgeDriver(self.context)
                 result = getattr(driver, method)(*args, identification=strategy.options.get("identification"))
-                self.context.evidence.record("component_atspi_operation", component_id=self.definition.component_id, operation=method, result=result)
+                self.context.evidence.record(
+                    "component_accessibility_operation",
+                    component_id=self.definition.component_id,
+                    strategy=strategy.type,
+                    operation=method,
+                    result=result,
+                )
                 return result
             except Exception as exc:
-                errors.append(f"atspi: {type(exc).__name__}: {exc}")
-        raise ComponentResolutionError(f"unable to {label} for {self.definition.component_id!r}; " + "; ".join(errors or ["no AT-SPI strategy"]))
+                errors.append(f"{strategy.type}: {type(exc).__name__}: {exc}")
+        raise ComponentResolutionError(
+            f"unable to {label} for {self.definition.component_id!r}; "
+            + "; ".join(errors or ["no compatible accessibility strategy"])
+        )
 
     def _resolve_strategy(self, strategy_type: str, options: dict[str, Any]) -> ResolvedComponent:
         if strategy_type == "atspi":
@@ -263,6 +278,11 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).resolve(
+                self.definition.component_id,
+                identification=options.get("identification"),
+            )
+        if strategy_type == "javafx":
+            return JavaFxBridgeDriver(self.context).resolve(
                 self.definition.component_id,
                 identification=options.get("identification"),
             )
@@ -295,6 +315,8 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
+        if strategy_type == "javafx":
+            return JavaFxBridgeDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "anchored_visual":
             return AnchoredVisualDriver(self.context).state(
                 anchor_identification=options.get("anchor_identification"),
@@ -339,6 +361,8 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).activate(identification=options.get("identification"))
+        if strategy_type == "javafx":
+            return JavaFxBridgeDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "reference_inspection":
             raise UnsupportedComponentAction(
                 "reference_inspection is read-only and cannot activate UI components"

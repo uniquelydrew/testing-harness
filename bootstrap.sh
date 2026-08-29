@@ -6,6 +6,7 @@ VENV_DIR="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
 SYSTEM_PYTHON="${AUTOMATION_HARNESS_PYTHON:-/usr/bin/python3}"
 DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-20}"
 PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
+JAVAFX_AGENT_JAR="$ROOT_DIR/javafx_agent/build/automation-harness-javafx-agent.jar"
 
 log() { printf '[bootstrap] %s\n' "$*" >&2; }
 warn() { printf '[bootstrap] WARNING: %s\n' "$*" >&2; }
@@ -171,6 +172,19 @@ install_python_dependencies() {
     (cd "$ROOT_DIR" && "$py" setup.py develop) || die "Automation Harness installation failed"
 }
 
+build_javafx_agent() {
+    if ! command -v javac >/dev/null 2>&1 || ! command -v jar >/dev/null 2>&1; then
+        warn "JDK compiler tools are unavailable; JavaFX native bridge agent was not built"
+        return 0
+    fi
+    log "Building JavaFX native bridge agent with $(javac -version 2>&1)"
+    if bash "$ROOT_DIR/javafx_agent/build.sh" >/dev/null && [[ -f "$JAVAFX_AGENT_JAR" ]]; then
+        log "JavaFX native bridge agent: $JAVAFX_AGENT_JAR"
+    else
+        warn "JavaFX native bridge agent build failed; Swing/AT-SPI capture remains available"
+    fi
+}
+
 verify_native_python_bindings() {
     local py="$VENV_DIR/bin/python"
     "$py" - <<'PY'
@@ -203,10 +217,14 @@ PY
 
 find_java_atk_wrapper() {
     local candidate
-    for candidate in /usr/share/java/java-atk-wrapper.jar /usr/share/java/java-atk-wrapper/java-atk-wrapper.jar; do
+    for candidate in \
+        /usr/share/java/java-atk-wrapper.jar \
+        /usr/share/java/java-atk-wrapper/java-atk-wrapper.jar \
+        /usr/lib64/java-atk-wrapper/java-atk-wrapper.jar; do
         [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
     done
-    find /usr/share/java /usr/lib/java /usr/lib64/java -type f -name 'java-atk-wrapper*.jar' -print -quit 2>/dev/null || true
+    find /usr/share/java /usr/lib/java /usr/lib64/java /usr/lib64/java-atk-wrapper \
+        -type f -name 'java-atk-wrapper*.jar' -print -quit 2>/dev/null || true
 }
 
 write_environment() {
@@ -218,6 +236,7 @@ write_environment() {
         printf 'export AUTOMATION_HARNESS_VENV=%q\n' "$VENV_DIR"
         printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"
         [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"
+        [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"
     } > "$ROOT_DIR/.automation-harness-env"
 }
 
@@ -251,9 +270,14 @@ qualify() {
     local wrapper
     wrapper="$(find_java_atk_wrapper)"
     if [[ -n "$wrapper" ]]; then
-        log "Java ATK wrapper: $wrapper"
+        log "Java ATK wrapper for Swing accessibility: $wrapper"
     else
-        warn "Java ATK wrapper is not installed; Swing/JavaFX accessibility remains unavailable"
+        warn "Java ATK wrapper is not installed; Swing accessibility remains unavailable"
+    fi
+    if [[ -f "$JAVAFX_AGENT_JAR" ]]; then
+        log "JavaFX bridge agent ready. Instrument JavaFX targets with: -javaagent:$JAVAFX_AGENT_JAR"
+    else
+        warn "JavaFX bridge agent is unavailable; Linux JavaFX Node capture is disabled"
     fi
 }
 
@@ -263,6 +287,7 @@ main() {
     install_available_rpms
     create_venv
     install_python_dependencies
+    build_javafx_agent
     verify_native_python_bindings || die "required RHEL GTK/AT-SPI bindings are not visible inside the virtual environment"
     write_environment
     qualify

@@ -207,3 +207,7 @@ def run_capture():
 
 def run_repository():
     return _run("automation_harness.authoring.app", "repository_main")
+
+
+def run_javafx():
+    return _run("automation_harness.javafx_cli", "main")
