@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from automation_harness.core.completion import await_step_completion
+from automation_harness.core.completion import _effects_condition, await_step_completion
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.execution_context import bind_component_lineage
 from automation_harness.core.execution_context import ExecutionSignals
@@ -82,6 +82,18 @@ def test_dispatch_only_completion_does_not_observe_objects(tmp_path: Path):
     )
     await_step_completion(Context(), call, {})
     assert Context.evidence.events[0][0] == "step_completion_skipped"
+
+
+def test_completion_effects_compile_to_all_affected_object_predicates():
+    assert _effects_condition([
+        {"object": "checkout.processing", "transition": "becomes-visible"},
+        {"object": "checkout.dialog", "transition": "becomes-absent"},
+    ]) == {
+        "all": [
+            {"object": "checkout.processing", "state": "visible", "equals": True},
+            {"object": "checkout.dialog", "state": "absent", "equals": True},
+        ]
+    }
 
 
 def test_execution_signals_use_generation_baselines():

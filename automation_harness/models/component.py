@@ -38,6 +38,7 @@ class ComponentDefinition:
     native_class: str | None = None
     subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     assertions: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    action_completion: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     scope: Mapping[str, Any] = field(default_factory=dict)
 
     @property

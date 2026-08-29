@@ -71,11 +71,29 @@ def _infer_condition(context, call: StepCall, inputs: Mapping[str, Any]) -> Mapp
     component_id = inputs.get("component_id")
     if not isinstance(component_id, str) or not context.components.contains(component_id):
         return None
-    if call.step_id == "component.text.set" and isinstance(inputs.get("value"), str):
+    invocation_effects = call.completion.get("effects")
+    if invocation_effects is not None:
+        return _effects_condition(invocation_effects)
+    action = _action_name(call.step_id, inputs)
+    component = context.components.get(component_id)
+    object_contract = component.action_completion.get(action) if action else None
+    if object_contract:
+        effects = object_contract.get("effects")
+        if effects is not None:
+            return _effects_condition(effects)
+        if isinstance(object_contract.get("condition"), Mapping):
+            return dict(object_contract["condition"])
+    if call.step_id in {"component.text.set", "gui.text.set"} and isinstance(inputs.get("value"), str):
         return {"object": component_id, "property": "text", "equals": inputs["value"]}
     if call.step_id == "component.value.set" and isinstance(inputs.get("value"), (int, float)):
         return {"object": component_id, "property": "value", "equals": inputs["value"]}
-    expected = context.components.get(component_id).expected_states
+    if action in {"clear_text"}:
+        return {"object": component_id, "property": "text", "equals": ""}
+    if action in {"expand", "collapse"}:
+        return {"object": component_id, "state": "expanded", "equals": action == "expand"}
+    if action in {"close"}:
+        return {"object": component_id, "state": "absent", "equals": True}
+    expected = component.expected_states
     if expected:
         return {
             "object": component_id,
@@ -85,6 +103,45 @@ def _infer_condition(context, call: StepCall, inputs: Mapping[str, Any]) -> Mapp
             ],
         }
     return None
+
+
+def _action_name(step_id: str, inputs: Mapping[str, Any]) -> str | None:
+    """Normalize supported semantic action spellings without coupling adapters."""
+    direct = {
+        "component.text.set": "set_text", "gui.text.set": "set_text",
+        "component.value.set": "set_value", "component.selection.select": "select",
+        "gui.selection.select": "select", "gui.button.click": "click",
+    }
+    if step_id in direct:
+        return direct[step_id]
+    if step_id == "gui.object.action":
+        action = inputs.get("action")
+        if isinstance(action, str):
+            return action
+        if isinstance(action, Mapping) and isinstance(action.get("type"), str):
+            return str(action["type"])
+    return None
+
+
+def _effects_condition(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, list) or not value or not all(isinstance(item, Mapping) for item in value):
+        raise CompletionError("completion effects must be a non-empty list of mappings")
+    conditions: list[dict[str, Any]] = []
+    transitions = {
+        "becomes-visible": {"state": "visible", "equals": True},
+        "becomes-hidden": {"state": "visible", "equals": False},
+        "becomes-absent": {"state": "absent", "equals": True},
+        "becomes-selected": {"state": "selected", "equals": True},
+        "becomes-expanded": {"state": "expanded", "equals": True},
+        "becomes-collapsed": {"state": "expanded", "equals": False},
+    }
+    for effect in value:
+        object_id = effect.get("object", effect.get("component"))
+        transition = effect.get("transition")
+        if not isinstance(object_id, str) or not isinstance(transition, str) or transition not in transitions:
+            raise CompletionError("each completion effect requires object and a supported transition")
+        conditions.append({"object": object_id, **transitions[transition]})
+    return conditions[0] if len(conditions) == 1 else {"all": conditions}
 
 
 def _evaluate(context, condition: Mapping[str, Any], signal_baseline: Mapping[str, int]) -> bool:
