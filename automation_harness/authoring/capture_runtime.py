@@ -11,6 +11,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.identity_editor import edit_identity, edit_locator
+from automation_harness.authoring.object_identity_workbench import open_capture_workbench
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.repository_merge import component_diff, definitions_equal
@@ -78,11 +79,11 @@ def _install_repository_workspace(app_module):
         original_init(self, initial_path, mode=mode)
         self._repository_dirty = False
         self._pending_capture = None
+        self._capture_workbench = None
         if mode == "capture":
             self.repository_path = None
             self.repository = ComponentRepository({})
             self.refresh_objects()
-            self._set_pending_capture_controls(False)
             self._set_status("New empty repository — capture an object to begin")
             self._update_repository_title()
 
@@ -102,25 +103,15 @@ def _install_repository_workspace(app_module):
         self._button(toolbar, "Merge Repository", self.merge_repository)
 
     def build_objects(self):
+        # The compound Object Identity Workbench owns post-capture naming,
+        # identity editing, highlighting, and save actions.  Keep the main
+        # Object Capture tab focused on repository navigation and capture.
         original_build_objects(self)
-        if self.mode != "capture":
-            return
-        left = self.objects_tab.get_child1()
-        if left is None:
-            return
-        row = Gtk.Box(spacing=5)
-        left.pack_start(row, False, False, 0)
-        self.pending_add_button = self._button(row, "Add Capture to Repository", self.add_pending_capture)
-        self.pending_discard_button = self._button(row, "Discard Capture", self.discard_pending_capture)
-        self.pending_add_button.set_sensitive(False)
-        self.pending_discard_button.set_sensitive(False)
-        row.show_all()
 
     def set_pending_capture_controls(self, enabled):
-        for name in ("pending_add_button", "pending_discard_button"):
-            button = getattr(self, name, None)
-            if button is not None:
-                button.set_sensitive(bool(enabled))
+        # Compatibility hook retained for older capture paths.  The workbench
+        # no longer requires a separate Add Capture / Discard Capture row.
+        return None
 
     def mark_repository_dirty(self, dirty=True):
         self._repository_dirty = bool(dirty)
@@ -240,15 +231,13 @@ def _install_repository_workspace(app_module):
 
 
 def _install_javafx_authoring(app_module):
-    """Make capture inspection non-modal and structured identity first-class."""
+    """Make the compound identity workbench the primary post-capture surface."""
 
     def present_capture(self, captured):
         self._last_capture = captured
         self._pending_capture = captured
         if hasattr(self, "highlight_button"):
             self.highlight_button.set_sensitive(bool(captured.bounds))
-        if hasattr(self, "_set_pending_capture_controls"):
-            self._set_pending_capture_controls(True)
 
         strategy = captured.candidate_strategy()
         if strategy.type == "javafx":
@@ -263,10 +252,8 @@ def _install_javafx_authoring(app_module):
         except Exception as exc:
             assessments = [{"error": "%s: %s" % (type(exc).__name__, exc)}]
 
-        # The first post-capture state is inspection, not a naming or save
-        # dialog. Authors can inspect all discovered properties and proposed
-        # identity evidence before deciding whether this object belongs in the
-        # working repository.
+        # Retain a compact diagnostic snapshot in the main capture tab, while
+        # all authoring interaction occurs in the structured workbench.
         self._set_text(
             self.object_detail,
             json.dumps(
@@ -279,69 +266,25 @@ def _install_javafx_authoring(app_module):
                 default=str,
             ),
         )
-        self._set_status("Captured object — review properties, then add or discard")
+        open_capture_workbench(self, captured)
+        self._set_status("Captured object — Object Identity Workbench opened")
 
     def add_pending_capture(self):
+        # Legacy command kept callable for compatibility, but normal capture no
+        # longer routes through a separate naming/identity dialog sequence.
         captured = getattr(self, "_pending_capture", None)
         if captured is None:
             return self._info("Object Capture", "Capture an object first.")
-
-        strategy = captured.candidate_strategy()
-        identification = None
-        if strategy.type != "anchored_visual":
-            if strategy.type == "javafx":
-                candidate = strategy.options.get("identification")
-            else:
-                candidate = captured.candidate_identification().to_dict()
-            if not isinstance(candidate, dict):
-                return self._error("Object identification", "Captured object has no editable identity mapping.")
-            identification = edit_identity(self.window, candidate, framework=strategy.type)
-            if identification is None:
-                return
-
-        # Naming is intentionally the final authoring step, after the capture
-        # and identity have already been inspectable.
-        component_id = self._ask_text("Add capture", "Logical component ID:")
-        if not component_id:
-            return
-        component_id = component_id.strip()
-        if not component_id:
-            return
-
-        existing = self.repository.components.get(component_id)
-        revision = 1
-        if existing is not None:
-            if not self._confirm(
-                "Replace repository object?",
-                "%s already exists. Replace it with this capture?" % component_id,
-            ):
-                return
-            revision = existing.revision + 1
-
-        try:
-            definition = self.capture.definition_from_capture(
-                component_id,
-                captured,
-                identification=identification,
-                revision=revision,
-            )
-        except Exception as exc:
-            return self._error("Object identification", "%s: %s" % (type(exc).__name__, exc))
-
-        self.repository = self.repository.with_component(definition)
-        if hasattr(self, "_mark_repository_dirty"):
-            self._mark_repository_dirty(True)
-        self.refresh_objects()
-        self._select_value(self.object_tree, component_id)
-        self._pending_capture = None
-        if hasattr(self, "_set_pending_capture_controls"):
-            self._set_pending_capture_controls(False)
-        self._set_status("Added %s revision %s to working repository" % (component_id, definition.revision))
+        return open_capture_workbench(self, captured)
 
     def discard_pending_capture(self):
         self._pending_capture = None
-        if hasattr(self, "_set_pending_capture_controls"):
-            self._set_pending_capture_controls(False)
+        workbench = getattr(self, "_capture_workbench", None)
+        if workbench is not None:
+            try:
+                workbench.window.destroy()
+            except Exception:
+                pass
         self._set_text(self.object_detail, "")
         self._set_status("Capture discarded")
 

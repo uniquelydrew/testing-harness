@@ -75,13 +75,15 @@ class CaptureContext:
         window = root.payload.get("window")
         if window:
             result["window"] = window
-        for ancestor in path[1:-1]:
-            descriptor = stable_descriptor(ancestor.payload)
-            if not descriptor:
-                continue
-            prefix = "ancestor"
-            for prop, value in descriptor.items():
-                result["%s.%s" % (prefix, prop)] = value
+
+        ancestors = path[1:-1]
+        if ancestors:
+            parent = ancestors[-1]
+            for prop, value in stable_descriptor(parent.payload).items():
+                result["parent.%s" % prop] = value
+            for index, ancestor in enumerate(ancestors[:-1]):
+                for prop, value in stable_descriptor(ancestor.payload).items():
+                    result["ancestor[%s].%s" % (index, prop)] = value
         return result
 
     def common_peer_descriptors(self, key: str) -> dict[str, Any]:
@@ -124,8 +126,8 @@ def build_capture_context(captured, javafx_driver=None, max_depth=64):
     """Build a window-rooted semantic tree around a captured object.
 
     JavaFX capture loads the live window tree and collapses implementation-only
-    containers.  The captured node, stable application nodes, controls, and
-    semantically named nodes remain.  Non-JavaFX backends fall back to the
+    containers. The captured node, stable application nodes, controls, and
+    semantically named nodes remain. Non-JavaFX backends fall back to the
     hierarchy already present on CapturedComponent.
     """
     framework = str(getattr(captured, "framework", "") or "")
@@ -169,13 +171,9 @@ def _build_javafx_context(captured, driver, max_depth=64):
             is_target=str(root_payload.get("ref")) == str(target_ref),
             is_window_root=True,
         )
-        # If the root itself was also emitted by semantic compression, remove
-        # that duplicate layer while preserving its promoted descendants.
         root.children = _dedupe_root_child(root, root.children)
         context = CaptureContext("javafx", root, str(target_ref), endpoint=endpoint)
         if context.find(str(target_ref)) is None:
-            # Always retain the actual target even when it is an implementation
-            # node that would otherwise be compressed away.
             target = _find_raw(root_raw, target_ref)
             if target is not None:
                 root.children.append(_context_node(dict(target), target_ref))
