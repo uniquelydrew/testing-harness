@@ -66,9 +66,15 @@ def execute_plan(
         step_repositories=plan.step_repositories,
     )
 
-    package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
-    package_repository = ComponentRepository.load([package_components])
-    components = package_repository if component_repository is None else package_repository.overlay(component_repository)
+    if compiled_artifact is not None:
+        # A compiled artifact is a self-contained execution input.  Loading a
+        # semantic object repository here would let repository edits influence
+        # an already-qualified run.
+        components = component_repository or ComponentRepository({})
+    else:
+        package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
+        package_repository = ComponentRepository.load([package_components])
+        components = package_repository if component_repository is None else package_repository.overlay(component_repository)
 
     issues = validate_plan(runtime_plan, registry)
     issues.extend(validate_plan_components(runtime_plan, components))
