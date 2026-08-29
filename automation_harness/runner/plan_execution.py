@@ -4,7 +4,10 @@ import hashlib
 import json
 import platform
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from automation_harness.core.compiler import CompiledTest
 
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.component_repository import ComponentRepository
@@ -25,6 +28,7 @@ def execute_plan(
     runs_dir: Path,
     variable_overrides: Mapping[str, object] | None = None,
     component_repository: ComponentRepository | None = None,
+    compiled_artifact: "CompiledTest | None" = None,
 ) -> RunResult:
     """Execute a validated declarative TestPlan without importing test code.
 
@@ -42,7 +46,12 @@ def execute_plan(
         artifact_dir=artifacts.root,
     )
     recorder = artifacts.recorder()
-    recorder.record("plan_run_started", plan=plan.name, backend=backend.name)
+    recorder.record(
+        "plan_run_started",
+        plan=plan.name,
+        backend=backend.name,
+        compiled_artifact_sha256=compiled_artifact.digest if compiled_artifact else None,
+    )
 
     registry = default_step_registry()
     initial_variables = dict(plan.variables)
@@ -69,7 +78,7 @@ def execute_plan(
         result.validation_errors = [*issues, *[f"backend preflight: {item}" for item in preflight]]
         result.exit_code = 2
         recorder.record("plan_validation_failed", issues=result.validation_errors)
-        return _finalize(runtime_plan, backend, result, artifacts, recorder, initial_variables, registry=registry)
+        return _finalize(runtime_plan, backend, result, artifacts, recorder, initial_variables, registry=registry, compiled_artifact=compiled_artifact)
 
     queue = ManagedExecutionQueue(runtime_plan)
     plan_hash = _plan_hash(runtime_plan)
@@ -176,7 +185,7 @@ def execute_plan(
     finally:
         backend.stop()
 
-    return _finalize(runtime_plan, backend, result, artifacts, recorder, initial_variables, registry=registry)
+    return _finalize(runtime_plan, backend, result, artifacts, recorder, initial_variables, registry=registry, compiled_artifact=compiled_artifact)
 
 
 def _resolve_plan_value(value: Any, variables: VariableStore) -> Any:
@@ -225,7 +234,7 @@ def _catalog_hash(registry) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, registry):
+def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, registry, compiled_artifact=None):
     result.finished_at = utc_now()
     recorder.record("plan_run_finished", exit_code=result.exit_code)
     artifacts.write_run_json(result.to_dict())
@@ -240,6 +249,7 @@ def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, 
                 "plan_hash": _plan_hash(plan),
                 "step_catalog_hash": _catalog_hash(registry),
                 "allowed_step_risks": sorted(backend.allowed_step_risks),
+                "compiled_artifact_sha256": compiled_artifact.digest if compiled_artifact else None,
             },
             indent=2,
             sort_keys=True,

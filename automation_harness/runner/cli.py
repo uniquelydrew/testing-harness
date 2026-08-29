@@ -13,7 +13,7 @@ from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.compiler import compile_test
+from automation_harness.core.compiler import compile_test, load_compiled_test
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -137,6 +137,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
 
+    compiled = sub.add_parser("compiled", help="inspect or execute immutable compiled test artifacts")
+    compiled_sub = compiled.add_subparsers(dest="compiled_command", required=True)
+    compiled_inspect = compiled_sub.add_parser("inspect", help="verify and print compiled artifact metadata")
+    compiled_inspect.add_argument("path", type=Path)
+    compiled_run = compiled_sub.add_parser("run", help="execute a verified compiled test artifact")
+    compiled_run.add_argument("path", type=Path)
+    compiled_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
+    compiled_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    compiled_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
+    _add_reference_options(compiled_run)
+    _add_gtk_demo_options(compiled_run)
+
     selftest = sub.add_parser("selftest", help="run the built-in synthetic reference regression suites")
     selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
     selftest.add_argument(
@@ -180,6 +192,41 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "compiled":
+        try:
+            artifact = load_compiled_test(args.path)
+            registry = default_step_registry()
+            issues = artifact.validate_runtime(registry)
+            if issues:
+                for issue in issues:
+                    print(f"ERROR: {issue}", file=sys.stderr)
+                return 2
+            if args.compiled_command == "inspect":
+                print(json.dumps({
+                    "format": artifact.document["format"],
+                    "source": artifact.document["source"],
+                    "artifact": artifact.document["artifact"],
+                    "instructions": len(artifact.document["instructions"]),
+                    "step_dependencies": sorted(artifact.document["dependencies"]["steps"]),
+                    "component_dependencies": sorted(artifact.document["dependencies"]["components"]),
+                }, indent=2))
+                return 0
+            variable_overrides = _parse_variable_overrides(args.variables)
+            backend = _backend(args.backend, args)
+            result = execute_plan(
+                artifact.runtime_plan(),
+                backend,
+                runs_dir=args.runs_dir.resolve(),
+                variable_overrides=variable_overrides,
+                component_repository=artifact.component_repository(),
+                compiled_artifact=artifact,
+            )
+            print(json.dumps(result.to_dict(), indent=2, default=str))
+            return int(result.exit_code or 0)
+        except Exception as exc:
+            print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
 
     if args.command == "visual":
         try:

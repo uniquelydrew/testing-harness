@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from automation_harness.core.compiler import COMPILED_TEST_FORMAT, compile_test
+import json
+
+import pytest
+
+from automation_harness.core.compiler import COMPILED_TEST_FORMAT, CompiledTest, compile_test
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
@@ -69,3 +73,19 @@ def test_compilation_is_deterministic():
     first = compile_test(plan, default_step_registry(), ComponentRepository({}))
     second = compile_test(plan, default_step_registry(), ComponentRepository({}))
     assert first.to_json() == second.to_json()
+
+
+def test_compiled_artifact_verifies_integrity_and_builds_runtime_ir():
+    plan = TestPlan(
+        name="verified",
+        steps=(StepCall(node_id="check", step_id="validation.equal", inputs={"name": "x", "actual": 1, "expected": 1}),),
+    )
+    compiled = compile_test(plan, default_step_registry(), ComponentRepository({}))
+    loaded = CompiledTest.from_document(json.loads(compiled.to_json()))
+    assert loaded.runtime_plan() == plan
+    assert loaded.validate_runtime(default_step_registry()) == []
+
+    corrupted = json.loads(compiled.to_json())
+    corrupted["instructions"][0]["inputs"]["expected"] = 2
+    with pytest.raises(ValueError, match="digest mismatch"):
+        CompiledTest.from_document(corrupted)
