@@ -10,23 +10,18 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import (
-    CaptureContext,
-    CaptureContextNode,
     build_capture_context,
-    identity_descriptors,
     suggested_name,
+)
+from automation_harness.authoring.capture_property_policy import (
+    available_properties,
+    property_policy,
 )
 from automation_harness.authoring.identity_editor import _known_classes
 
 
 class ObjectIdentityWorkbench:
-    """Compound capture authoring window.
-
-    The workbench keeps capture scope, naming, identity evidence, highlighting,
-    batch selection, and repository persistence in one place. The left side is
-    a window-rooted semantic object tree; the right side is always the selected
-    node's key=value identity/property view.
-    """
+    """Window-rooted capture tree and structured object-property editor."""
 
     def __init__(self, app, captured):
         self.app = app
@@ -37,6 +32,7 @@ class ObjectIdentityWorkbench:
         self.identity_overrides = {}
         self.identity_fields = []
         self.ordinal_field = None
+        self.name_entry = None
         self.selected_key = None
         self._loading = True
 
@@ -73,9 +69,9 @@ class ObjectIdentityWorkbench:
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         left.set_size_request(390, -1)
         pane.pack1(left, resize=True, shrink=False)
-        scope_label = Gtk.Label(label="Capture Scope")
-        scope_label.set_halign(Gtk.Align.START)
-        left.pack_start(scope_label, False, False, 0)
+        caption = Gtk.Label(label="Capture Scope")
+        caption.set_halign(Gtk.Align.START)
+        left.pack_start(caption, False, False, 0)
 
         self.tree_store = Gtk.TreeStore(bool, str, str)
         self.tree = Gtk.TreeView(model=self.tree_store)
@@ -89,22 +85,12 @@ class ObjectIdentityWorkbench:
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         pane.pack2(right, resize=True, shrink=False)
-
-        name_row = Gtk.Box(spacing=8)
-        right.pack_start(name_row, False, False, 0)
-        name_row.pack_start(Gtk.Label(label="Name / Repository ID:"), False, False, 0)
-        self.name_entry = Gtk.Entry()
-        self.name_entry.set_hexpand(True)
-        self.name_entry.connect("changed", self._name_changed)
-        name_row.pack_start(self.name_entry, True, True, 0)
-
         self.selection_caption = Gtk.Label(label="No object selected")
         self.selection_caption.set_halign(Gtk.Align.START)
         right.pack_start(self.selection_caption, False, False, 0)
 
         self.properties_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         right.pack_start(self._scrolled(self.properties_box), True, True, 0)
-
         pane.set_position(400)
 
     @staticmethod
@@ -167,24 +153,29 @@ class ObjectIdentityWorkbench:
         model, iterator = selection.get_selected()
         if iterator is None:
             return
-        if self.selected_key is not None:
-            self.names[self.selected_key] = self.name_entry.get_text().strip()
+        self._remember_selected_edits()
         key = model.get_value(iterator, 2)
         self.selected_key = key
         node = self.nodes.get(key)
         if node is None:
             return
-        name = self.names.get(key)
-        if not name:
-            name = self._default_component_id(node)
-            self.names[key] = name
-        self.name_entry.set_text(name)
         self.selection_caption.set_text(self._selection_summary(node))
         self._render_properties(node)
 
-    def _name_changed(self, entry):
-        if self.selected_key is not None:
-            self.names[self.selected_key] = entry.get_text().strip()
+    def _remember_selected_edits(self):
+        if self.selected_key is None:
+            return
+        if self.name_entry is not None:
+            name = self.name_entry.get_text().strip()
+            if name:
+                self.names[self.selected_key] = name
+        if self.identity_fields:
+            try:
+                self.identity_overrides[self.selected_key] = self.current_identity()
+            except Exception:
+                # An unfinished edit should not prevent navigation through the
+                # capture tree. Save remains the validation boundary.
+                pass
 
     def _selection_summary(self, node):
         kind = "Window root" if node.is_window_root else "Object"
@@ -198,13 +189,19 @@ class ObjectIdentityWorkbench:
             self.properties_box.remove(child)
         self.identity_fields = []
         self.ordinal_field = None
+        self.name_entry = None
 
+        captured = None
         try:
             captured = self._captured_for_node(node)
             strategy = captured.candidate_strategy()
             identity = self.identity_overrides.get(node.key)
             if identity is None:
-                identity = strategy.options.get("identification") if strategy.type == "javafx" else captured.candidate_identification().to_dict()
+                identity = (
+                    strategy.options.get("identification")
+                    if strategy.type == "javafx"
+                    else captured.candidate_identification().to_dict()
+                )
             if not isinstance(identity, Mapping):
                 identity = {"mandatory": {}}
         except Exception as exc:
@@ -213,14 +210,12 @@ class ObjectIdentityWorkbench:
 
         inherited = self.context.inherited_descriptors(node.key) if self.context else {}
         common = self.context.common_peer_descriptors(node.key) if self.context else {}
-        self._build_identity_section(identity, inherited, common, node)
-        self._build_readonly_section("Inherited Tree Context", inherited, "Inherited from the selected object's window-rooted tree.")
-        self._build_readonly_section("Common Sibling Evidence", common, "Shared by peers in the same semantic parent scope; useful for type/group context but not local discrimination.")
-        self._build_runtime_section(node)
+        framework = self.context.framework if self.context else str(getattr(captured, "framework", "") or "")
+        self._build_property_inventory(node, identity, inherited, common, framework)
         self.properties_box.show_all()
 
-    def _build_identity_section(self, identity, inherited, common, node):
-        frame = Gtk.Frame(label="Identification")
+    def _build_property_inventory(self, node, identity, inherited, common, framework):
+        frame = Gtk.Frame(label="Object Properties")
         grid = Gtk.Grid()
         grid.set_border_width(8)
         grid.set_row_spacing(5)
@@ -228,102 +223,160 @@ class ObjectIdentityWorkbench:
         frame.add(grid)
         self.properties_box.pack_start(frame, False, False, 0)
 
-        known_classes = _known_classes("javafx" if self.context and self.context.framework == "javafx" else "", identity)
-        row = 0
+        headers = ("Use", "Property", "", "Value", "Stability / scope")
+        for column, text in enumerate(headers):
+            label = Gtk.Label(label=text)
+            label.set_halign(Gtk.Align.START)
+            grid.attach(label, column, 0, 1, 1)
+
+        row = 1
+        name = self.names.get(node.key)
+        if not name:
+            name = self._default_component_id(node)
+            self.names[node.key] = name
+        grid.attach(Gtk.Label(label=""), 0, row, 1, 1)
+        name_label = Gtk.Label(label="name")
+        name_label.set_halign(Gtk.Align.START)
+        grid.attach(name_label, 1, row, 1, 1)
+        grid.attach(Gtk.Label(label="="), 2, row, 1, 1)
+        self.name_entry = Gtk.Entry()
+        self.name_entry.set_hexpand(True)
+        self.name_entry.set_text(name)
+        self.name_entry.connect("changed", self._name_changed)
+        grid.attach(self.name_entry, 3, row, 1, 1)
+        source = Gtk.Label(label="authored semantic name")
+        source.set_halign(Gtk.Align.START)
+        grid.attach(source, 4, row, 1, 1)
+        row += 1
+
+        known_classes = _known_classes("javafx" if framework == "javafx" else "", identity)
+        candidate_keys = set()
+
         for section in ("mandatory", "assistive"):
             values = identity.get(section, {})
             if not isinstance(values, Mapping):
                 continue
             for path, value in _flatten(values):
-                full_key = "%s.%s" % (section, _path_text(path))
                 logical_key = _logical_leaf(path)
-                source = _scope_for(logical_key, value, inherited, common)
-                check = Gtk.CheckButton()
-                check.set_active(True)
-                grid.attach(check, 0, row, 1, 1)
-                key_label = Gtk.Label(label=full_key)
-                key_label.set_halign(Gtk.Align.START)
-                grid.attach(key_label, 1, row, 1, 1)
-                grid.attach(Gtk.Label(label="="), 2, row, 1, 1)
-                field, entry = _value_field(logical_key, value, known_classes)
-                field.set_hexpand(True)
-                grid.attach(field, 3, row, 1, 1)
-                source_label = Gtk.Label(label=source)
-                source_label.set_halign(Gtk.Align.START)
-                grid.attach(source_label, 4, row, 1, 1)
-                if source in {"inherited", "common"}:
-                    # Retain the condition in the effective identity for the
-                    # current global resolver, but visually de-emphasize it as
-                    # scope evidence rather than local discrimination.
-                    key_label.set_sensitive(False)
-                    field.set_sensitive(False)
-                    source_label.set_sensitive(False)
-                    check.set_sensitive(False)
-                self.identity_fields.append((section, path, value, check, entry))
-                row += 1
+                candidate_keys.add(logical_key)
+                scope = _scope_for(logical_key, value, inherited, common)
+                policy = property_policy(
+                    logical_key,
+                    value,
+                    candidate_section=section,
+                    source=scope,
+                    framework=framework,
+                )
+                row = self._add_property_row(
+                    grid,
+                    row,
+                    section,
+                    path,
+                    logical_key,
+                    value,
+                    policy,
+                    known_classes,
+                )
 
         ordinal = identity.get("ordinal")
         if isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal >= 0:
+            policy = property_policy(
+                "ordinal",
+                ordinal,
+                candidate_section="assistive",
+                source="local",
+                framework=framework,
+            )
             check = Gtk.CheckButton()
             check.set_active(True)
             grid.attach(check, 0, row, 1, 1)
-            key_label = Gtk.Label(label="ordinal")
-            key_label.set_halign(Gtk.Align.START)
-            grid.attach(key_label, 1, row, 1, 1)
+            label = Gtk.Label(label="ordinal")
+            label.set_halign(Gtk.Align.START)
+            grid.attach(label, 1, row, 1, 1)
             grid.attach(Gtk.Label(label="="), 2, row, 1, 1)
             spin = Gtk.SpinButton.new_with_range(0, 100000, 1)
             spin.set_value(ordinal)
             grid.attach(spin, 3, row, 1, 1)
-            source_label = Gtk.Label(label="final discriminator")
-            source_label.set_halign(Gtk.Align.START)
-            grid.attach(source_label, 4, row, 1, 1)
+            status = Gtk.Label(label="%s · final discriminator" % policy.stability)
+            status.set_halign(Gtk.Align.START)
+            grid.attach(status, 4, row, 1, 1)
             self.ordinal_field = (check, spin)
+            candidate_keys.add("ordinal")
             row += 1
 
-        if row == 0:
-            label = Gtk.Label(label="No durable identity conditions were inferred for this node.")
-            label.set_halign(Gtk.Align.START)
-            grid.attach(label, 0, 0, 5, 1)
+        # Broad capture inventory: weak and runtime values remain available but
+        # are not silently selected as identity. Session plumbing is visible
+        # and permanently non-selectable.
+        for logical_key, value in sorted(available_properties(node.payload).items()):
+            if logical_key in candidate_keys:
+                continue
+            scope = _scope_for(logical_key, value, inherited, common)
+            policy = property_policy(
+                logical_key,
+                value,
+                candidate_section=None,
+                source=scope,
+                framework=framework,
+            )
+            path = _path_from_logical_key(logical_key)
+            row = self._add_property_row(
+                grid,
+                row,
+                "assistive",
+                path,
+                logical_key,
+                value,
+                policy,
+                known_classes,
+            )
 
-    def _build_readonly_section(self, title, values, note):
-        frame = Gtk.Frame(label=title)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_border_width(8)
-        frame.add(box)
-        note_label = Gtk.Label(label=note)
-        note_label.set_halign(Gtk.Align.START)
-        note_label.set_line_wrap(True)
-        note_label.set_sensitive(False)
-        box.pack_start(note_label, False, False, 0)
-        if not values:
-            empty = Gtk.Label(label="None")
-            empty.set_halign(Gtk.Align.START)
-            empty.set_sensitive(False)
-            box.pack_start(empty, False, False, 0)
-        else:
-            for key, value in sorted(values.items()):
-                label = Gtk.Label(label="%s = %s" % (key, _display(value)))
-                label.set_halign(Gtk.Align.START)
-                label.set_selectable(True)
-                label.set_sensitive(False)
-                box.pack_start(label, False, False, 0)
-        self.properties_box.pack_start(frame, False, False, 0)
+        note = Gtk.Label(
+            label=(
+                "Capture collects broadly. Stable identity is selected conservatively; "
+                "weak/runtime evidence is available but off by default. Session-only "
+                "bridge metadata is diagnostic and cannot be authored."
+            )
+        )
+        note.set_halign(Gtk.Align.START)
+        note.set_line_wrap(True)
+        note.set_sensitive(False)
+        grid.attach(note, 0, row, 5, 1)
 
-    def _build_runtime_section(self, node):
-        frame = Gtk.Frame(label="Runtime Properties")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_border_width(8)
-        frame.add(box)
-        values = identity_descriptors(node.payload)
-        for key in ("visible", "disabled", "focused", "managed", "focus_traversable", "sibling_index", "sibling_count", "bounds", "style_classes"):
-            if key in node.payload and node.payload.get(key) is not None:
-                values[key] = node.payload.get(key)
-        for key, value in sorted(values.items()):
-            label = Gtk.Label(label="%s = %s" % (key, _display(value)))
-            label.set_halign(Gtk.Align.START)
-            label.set_selectable(True)
-            box.pack_start(label, False, False, 0)
-        self.properties_box.pack_start(frame, False, False, 0)
+    def _add_property_row(self, grid, row, section, path, logical_key, value, policy, known_classes):
+        check = Gtk.CheckButton()
+        check.set_active(bool(policy.selected))
+        check.set_sensitive(bool(policy.selectable))
+        grid.attach(check, 0, row, 1, 1)
+
+        key_label = Gtk.Label(label=logical_key)
+        key_label.set_halign(Gtk.Align.START)
+        grid.attach(key_label, 1, row, 1, 1)
+        grid.attach(Gtk.Label(label="="), 2, row, 1, 1)
+
+        field, entry = _value_field(logical_key, value, known_classes)
+        field.set_hexpand(True)
+        field.set_sensitive(bool(policy.selectable))
+        grid.attach(field, 3, row, 1, 1)
+
+        status = Gtk.Label(label="%s · %s" % (policy.stability, policy.reason))
+        status.set_halign(Gtk.Align.START)
+        grid.attach(status, 4, row, 1, 1)
+        if not policy.selectable:
+            key_label.set_sensitive(False)
+            status.set_sensitive(False)
+
+        self.identity_fields.append((section, path, value, check, entry, policy.selectable))
+        return row + 1
+
+    def _name_changed(self, entry):
+        if self.selected_key is None:
+            return
+        value = entry.get_text().strip()
+        if value:
+            self.names[self.selected_key] = value
+            iterator = self._iter_for_key(self.selected_key)
+            if iterator is not None:
+                self.tree_store.set_value(iterator, 1, value)
 
     def _add_message(self, text):
         label = Gtk.Label(label=text)
@@ -333,7 +386,7 @@ class ObjectIdentityWorkbench:
 
     def current_identity(self):
         leaves = {"mandatory": {}, "assistive": {}}
-        for section, path, original, check, entry in self.identity_fields:
+        for section, path, original, check, entry, _selectable in self.identity_fields:
             if not check.get_active():
                 continue
             leaves[section][path] = _parse_value(
@@ -341,6 +394,7 @@ class ObjectIdentityWorkbench:
                 original,
                 "%s.%s" % (section, _path_text(path)),
             )
+
         mandatory = _rebuild_from_paths(leaves["mandatory"])
         assistive = _rebuild_from_paths(leaves["assistive"])
         if not mandatory:
@@ -413,9 +467,10 @@ class ObjectIdentityWorkbench:
         try:
             identity = self.current_identity()
             self.identity_overrides[node.key] = identity
-            component_id = self.name_entry.get_text().strip()
+            component_id = (self.name_entry.get_text() if self.name_entry is not None else "").strip()
             if not component_id:
-                raise ValueError("Name / Repository ID is required.")
+                raise ValueError("name is required")
+            self.names[node.key] = component_id
             self._save_node(node, component_id, identity)
             self._set_status("Saved %s to working repository" % component_id)
         except Exception as exc:
@@ -425,13 +480,9 @@ class ObjectIdentityWorkbench:
         checked = self._checked_keys()
         if not checked:
             return self.app._info("Batch save", "Check one or more objects in the capture tree first.")
+        self._remember_selected_edits()
         saved = 0
         errors = []
-        if self.selected_key is not None:
-            try:
-                self.identity_overrides[self.selected_key] = self.current_identity()
-            except Exception:
-                pass
         for key in checked:
             node = self.nodes.get(key)
             if node is None:
@@ -441,7 +492,11 @@ class ObjectIdentityWorkbench:
                 identity = self.identity_overrides.get(key)
                 if identity is None:
                     strategy = captured.candidate_strategy()
-                    identity = strategy.options.get("identification") if strategy.type == "javafx" else captured.candidate_identification().to_dict()
+                    identity = (
+                        strategy.options.get("identification")
+                        if strategy.type == "javafx"
+                        else captured.candidate_identification().to_dict()
+                    )
                 component_id = self.names.get(key) or self._default_component_id(node)
                 self.names[key] = component_id
                 self._save_node(node, component_id, identity)
@@ -591,13 +646,18 @@ def _value_field(logical_key, value, known_classes):
         entry.set_text("" if value is None else str(value))
         return combo, entry
     entry = Gtk.Entry()
-    if isinstance(value, bool):
-        entry.set_text("true" if value else "false")
-    elif value is None:
-        entry.set_text("")
-    else:
-        entry.set_text(str(value))
+    entry.set_text(_editable_text(value))
     return entry, entry
+
+
+def _editable_text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, separators=(",", ":"), default=str)
+    return str(value)
 
 
 def _flatten(value, path=()):
@@ -630,7 +690,17 @@ def _logical_leaf(path):
     root = str(path[0])
     if root in {"layout", "properties", "parent"} and len(path) >= 2:
         return "%s.%s" % (root, path[-1])
+    if root == "lineage":
+        return "lineage"
     return str(path[-1])
+
+
+def _path_from_logical_key(key):
+    if key.startswith("layout."):
+        return ("layout", key[len("layout."):])
+    if key.startswith("properties."):
+        return ("properties", key[len("properties."):])
+    return (key,)
 
 
 def _parse_value(text, original, label):
@@ -649,6 +719,16 @@ def _parse_value(text, original, label):
             return float(text)
         except ValueError:
             raise ValueError("%s must be numeric" % label)
+    if isinstance(original, (dict, list, tuple)):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            raise ValueError("%s must be valid JSON" % label)
+        if isinstance(original, dict) and not isinstance(value, dict):
+            raise ValueError("%s must remain an object" % label)
+        if isinstance(original, (list, tuple)) and not isinstance(value, list):
+            raise ValueError("%s must remain a list" % label)
+        return value
     if original is None:
         return text
     if not text and isinstance(original, str):
@@ -661,47 +741,33 @@ def _rebuild_from_paths(leaves):
     for path, value in leaves.items():
         if not path:
             continue
-        current = root
-        for index, token in enumerate(path):
-            last = index == len(path) - 1
-            next_token = None if last else path[index + 1]
-            if isinstance(token, int):
-                raise ValueError("identity cannot begin with an array index")
-            if last:
-                current[token] = value
-                continue
-            if isinstance(next_token, int):
-                values = current.setdefault(token, [])
-                while len(values) <= next_token:
-                    values.append({})
-                if index + 1 == len(path) - 1:
-                    values[next_token] = value
-                    break
-                child = values[next_token]
-                if not isinstance(child, dict):
-                    child = {}
-                    values[next_token] = child
-                remaining = path[index + 2:]
-                if remaining:
-                    _assign_nested(child, remaining, value)
-                break
-            current = current.setdefault(token, {})
+        _assign_path(root, path, value)
     return root
 
 
-def _assign_nested(root, path, value):
-    current = root
-    for index, token in enumerate(path):
-        last = index == len(path) - 1
-        if isinstance(token, int):
-            raise ValueError("nested array identity editing is unsupported at this level")
-        if last:
-            current[token] = value
-        else:
-            current = current.setdefault(token, {})
-
-
-def _display(value):
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value, separators=(",", ":"), default=str)
-    return str(value)
+def _assign_path(root, path, value):
+    token = path[0]
+    if isinstance(token, int):
+        raise ValueError("identity cannot begin with an array index")
+    if len(path) == 1:
+        root[token] = value
+        return
+    next_token = path[1]
+    if isinstance(next_token, int):
+        values = root.setdefault(token, [])
+        while len(values) <= next_token:
+            values.append({})
+        if len(path) == 2:
+            values[next_token] = value
+            return
+        child = values[next_token]
+        if not isinstance(child, dict):
+            child = {}
+            values[next_token] = child
+        _assign_path(child, path[2:], value)
+        return
+    child = root.setdefault(token, {})
+    if not isinstance(child, dict):
+        child = {}
+        root[token] = child
+    _assign_path(child, path[1:], value)
