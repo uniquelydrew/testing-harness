@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.listbox.items:
+    object_id: d465199b-006e-5d0a-a2e8-7357522d622b
     description: GTK 4.14 selectable list box; captured baseline locator.
     actions: [resolve]
     strategies:

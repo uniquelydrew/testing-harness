@@ -131,12 +131,12 @@ class AuthoringApp:
         left.pack_start(filter_row, False, False, 0)
         filter_row.pack_start(Gtk.Label(label="Filter:"), False, False, 0)
         self.object_filter = Gtk.SearchEntry()
-        self.object_filter.set_placeholder_text("ID, description, type, framework, or class")
+        self.object_filter.set_placeholder_text("Name, description, type, framework, or class")
         self.object_filter.connect("search-changed", lambda *_args: self.refresh_objects())
         filter_row.pack_start(self.object_filter, True, True, 0)
         self.object_count = Gtk.Label(label="0 objects")
         filter_row.pack_end(self.object_count, False, False, 0)
-        self.object_tree, self.object_store = self._tree((("Component", 260), ("Rev", 50), ("Type", 110), ("Actions", 180)))
+        self.object_tree, self.object_store = self._tree((("Object", 260), ("Rev", 50), ("Type", 110), ("Actions", 180)))
         self.object_tree.get_selection().connect("changed", lambda *_args: self.show_object())
         left.pack_start(self._scrolled(self.object_tree), True, True, 0)
         buttons = Gtk.Box(spacing=5)
@@ -298,7 +298,7 @@ class AuthoringApp:
             return
         definition = self.repository.get(component_id)
         payload = {
-            "component_id": definition.component_id,
+            "name": definition.component_id,
             "description": definition.description,
             "revision": definition.revision,
             "actions": sorted(definition.actions),
@@ -322,12 +322,16 @@ class AuthoringApp:
             return self._error("Object Repository", "Open or create an editable repository first.")
         definition = self.repository.get(component_id)
         document = ComponentRepository({component_id: definition}).to_document()["components"][component_id]
+        document.pop("object_id", None)
         raw = self._ask_text("Edit component", "Component definition JSON:", json.dumps(document, indent=2), multiline=True)
         if raw is None:
             return
         try:
             value = json.loads(raw)
-            parsed = ComponentRepository.from_document({"version": 1, "components": {component_id: value}}, source="editor")
+            if not isinstance(value, dict):
+                raise ValueError("component definition must be a JSON object")
+            value["object_id"] = definition.object_id
+            parsed = ComponentRepository.from_document({"version": 3, "components": {component_id: value}}, source="editor")
             editable = ComponentRepository.load([self.repository_path]) if self.repository_path.exists() else ComponentRepository({})
             editable.with_component(parsed.get(component_id)).save(self.repository_path)
             self.repository = self._load_repository(); self.refresh_objects(); self._set_status("Saved " + component_id)
@@ -449,7 +453,7 @@ class AuthoringApp:
             if not path:
                 return
             self.repository_path = Path(path)
-        component_id = self._ask_text("Save capture", "Logical component ID:")
+        component_id = self._ask_text("Save capture", "Object name:")
         if not component_id:
             return
         try:
@@ -613,10 +617,11 @@ class AuthoringApp:
         node_id = self._selected(self.plan_tree)
         if not node_id: return
         call = next(item for item in self.plan.steps if item.node_id == node_id)
-        raw = self._ask_text("Edit step", "JSON object with inputs and outputs:", json.dumps({"inputs": _encode_gui(call.inputs), "outputs": dict(call.outputs)}, indent=2), multiline=True)
+        raw = self._ask_text("Edit step", "JSON object with inputs and outputs:", json.dumps({"inputs": self._display_plan_inputs(call.inputs), "outputs": dict(call.outputs)}, indent=2), multiline=True)
         if raw is None: return
         try:
             payload = json.loads(raw); inputs = _decode_gui(payload.get("inputs", {})); outputs = payload.get("outputs", {})
+            inputs = self._canonicalize_component_inputs(inputs)
             updated = replace(call, inputs=inputs, outputs={str(k): str(v) for k, v in outputs.items()})
             self.plan = replace(self.plan, steps=tuple(updated if item.node_id == node_id else item for item in self.plan.steps)); self.refresh_plan(); self.refresh_state()
         except Exception as exc: self._error("Invalid step data", str(exc))
@@ -625,10 +630,34 @@ class AuthoringApp:
         node_id = self._selected(self.plan_tree)
         if node_id: self.plan = replace(self.plan, steps=tuple(item for item in self.plan.steps if item.node_id != node_id)); self.refresh_plan(); self.refresh_state()
 
+    def _canonicalize_component_inputs(self, inputs):
+        if not isinstance(inputs, dict):
+            return inputs
+        component_id = inputs.get("component_id")
+        if not isinstance(component_id, str) or not self.repository.contains(component_id):
+            return inputs
+        canonical = dict(inputs)
+        canonical["component_id"] = self.repository.object_id_for(component_id)
+        return canonical
+
+    def _display_plan_inputs(self, inputs):
+        display = _encode_gui(inputs)
+        if not isinstance(display, dict):
+            return display
+        component_id = display.get("component_id")
+        if isinstance(component_id, str) and self.repository.contains(component_id):
+            display = dict(display)
+            display["component_id"] = self.repository.get(component_id).component_id
+        return display
+
     def refresh_plan(self) -> None:
-        self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan")
+        canonical_steps = tuple(
+            replace(call, inputs=self._canonicalize_component_inputs(dict(call.inputs)))
+            for call in self.plan.steps
+        )
+        self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan", steps=canonical_steps)
         self.plan_store.clear()
-        for call in self.plan.steps: self.plan_store.append((call.node_id, call.step_id, json.dumps(_encode_gui(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
+        for call in self.plan.steps: self.plan_store.append((call.node_id, call.step_id, json.dumps(self._display_plan_inputs(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
 
     def refresh_variables(self) -> None: self._set_text(self.variables_text, json.dumps(dict(self.plan.variables), indent=2, default=str))
 

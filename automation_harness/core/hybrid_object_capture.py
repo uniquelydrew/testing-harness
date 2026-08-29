@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from typing import Any, Mapping
+from uuid import uuid4
 
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
@@ -135,6 +136,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
         criteria: Mapping[str, Any] | None = None,
         identification: AtspiIdentification | Mapping[str, Any] | None = None,
         revision: int = 1,
+        object_id: str | None = None,
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
         if authored.type != "javafx":
@@ -145,6 +147,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 criteria=criteria,
                 identification=identification,
                 revision=revision,
+                object_id=object_id,
             )
         if criteria is not None and identification is not None:
             raise ValueError("supply criteria or identification, not both")
@@ -197,6 +200,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
             framework="javafx",
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,
+            object_id=object_id or str(uuid4()),
         )
 
     def _capture_javafx_next_click(self, timeout: float) -> CapturedComponent:

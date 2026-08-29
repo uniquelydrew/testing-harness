@@ -117,6 +117,18 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert "activate" in definition.actions
 
 
+def test_javafx_recapture_preserves_immutable_object_id(tmp_path):
+    service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
+    path = tmp_path / "components.yaml"
+
+    first = service.save_capture(path, "mvd.camera_selector", _capture("javafx"))
+    second = service.save_capture(path, first.object_id, _capture("javafx"))
+
+    assert first.object_id == second.object_id
+    assert second.component_id == "mvd.camera_selector"
+    assert second.revision == 2
+
+
 def test_javafx_definition_rejects_ambiguous_identity():
     class Ambiguous(_JavaFxSuccess):
         def assess_identification(self, identification):

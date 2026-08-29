@@ -89,7 +89,11 @@ class ComponentHandle:
 
     @builtins.property
     def identity(self) -> ObjectIdentity:
-        return ObjectIdentity(self.definition.component_id, framework_id=self.definition.framework)
+        return ObjectIdentity(
+            self.definition.object_id,
+            name=self.definition.component_id,
+            framework_id=self.definition.framework,
+        )
 
     @builtins.property
     def object_type(self):

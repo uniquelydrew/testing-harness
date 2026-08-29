@@ -22,9 +22,10 @@ def test_v1_repository_remains_usable_as_semantic_click_object():
     definition = repository.get("save")
     assert definition.object_type is ObjectType.CUSTOM
     assert definition.supports(ActionType.CLICK)
+    assert repository.get(definition.object_id) is definition
 
 
-def test_v2_repository_persists_semantic_metadata_and_subobjects():
+def test_v2_repository_migrates_to_v3_and_persists_immutable_identity():
     repository = ComponentRepository.from_document({"version": 2, "components": {"orders": {
         "object_type": "table", "actions": ["select_row", "select_cell"],
         "properties": {"row_count": 5}, "framework": "javafx", "native_class": "javafx.scene.control.TableView",
@@ -35,8 +36,53 @@ def test_v2_repository_persists_semantic_metadata_and_subobjects():
     assert definition.supports(ActionType.SELECT_CELL)
     assert definition.subobjects["first_row"]["kind"] == "table_row"
     document = repository.to_document()
-    assert document["version"] == 2
+    assert document["version"] == 3
     assert document["components"]["orders"]["object_type"] == "table"
+    assert document["components"]["orders"]["object_id"] == definition.object_id
+    assert ComponentRepository.from_document(document).get(definition.object_id).component_id == "orders"
+
+
+def test_immutable_object_id_survives_logical_rename():
+    repository = ComponentRepository.from_document({"version": 2, "components": {"save": {
+        "object_type": "button", "actions": ["click"],
+        "strategies": [{"type": "atspi", "name": "Save", "role": "push button"}],
+    }}})
+    object_id = repository.get("save").object_id
+
+    renamed = repository.rename("save", "submit_credentials")
+
+    assert not renamed.contains("save")
+    assert renamed.get(object_id).component_id == "submit_credentials"
+    assert renamed.get("submit_credentials").object_id == object_id
+    reloaded = ComponentRepository.from_document(renamed.to_document())
+    assert reloaded.get(object_id).component_id == "submit_credentials"
+
+
+def test_component_revision_cannot_replace_existing_object_identity():
+    original = ComponentDefinition(component_id="save")
+    replacement = ComponentDefinition(component_id="save")
+    assert original.object_id != replacement.object_id
+
+    repository = ComponentRepository({"save": original}).with_component(replacement)
+
+    assert repository.get("save").object_id == original.object_id
+
+
+def test_repository_rejects_duplicate_immutable_object_ids():
+    object_id = "2b692073-a062-4d25-9c90-23e41c2a96da"
+    with pytest.raises(ComponentRepositoryError, match="assigned to both"):
+        ComponentRepository.from_document({"version": 3, "components": {
+            "first": {
+                "object_id": object_id,
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "First"}}}],
+            },
+            "second": {
+                "object_id": object_id,
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Second"}}}],
+            },
+        }})
 
 
 def test_v2_actions_do_not_need_legacy_resolve_marker():

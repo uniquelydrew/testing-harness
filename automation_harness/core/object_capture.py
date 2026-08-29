@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.drivers.atspi_driver import AtspiDriver
@@ -206,7 +207,9 @@ class ObjectCaptureService:
         criteria: Mapping[str, Any] | None = None,
         identification: AtspiIdentification | Mapping[str, Any] | None = None,
         revision: int = 1,
+        object_id: str | None = None,
     ) -> ComponentDefinition:
+        object_id = object_id or str(uuid4())
         authored = captured.candidate_strategy()
         if authored.type == "anchored_visual" and criteria is None and identification is None:
             return ComponentDefinition(
@@ -216,6 +219,7 @@ class ObjectCaptureService:
                 actions=frozenset({"resolve"}),
                 expected_states={"visible": True},
                 revision=revision,
+                object_id=object_id,
             )
         if criteria is not None and identification is not None:
             raise ValueError("supply criteria or identification, not both")
@@ -282,6 +286,7 @@ class ObjectCaptureService:
             framework=captured.framework,
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,
+            object_id=object_id,
         )
 
     def save_capture(
@@ -295,15 +300,17 @@ class ObjectCaptureService:
         identification: AtspiIdentification | Mapping[str, Any] | None = None,
     ) -> ComponentDefinition:
         repository = ComponentRepository.load([path]) if path.exists() else ComponentRepository({})
-        old = repository.components.get(component_id)
+        old = repository.get(component_id) if repository.contains(component_id) else None
+        logical_component_id = old.component_id if old is not None else component_id
         revision = (old.revision + 1) if old is not None else 1
         definition = self.definition_from_capture(
-            component_id,
+            logical_component_id,
             captured,
             description=description,
             criteria=criteria,
             identification=identification,
             revision=revision,
+            object_id=old.object_id if old is not None else None,
         )
         repository.with_component(definition).save(path)
         return definition

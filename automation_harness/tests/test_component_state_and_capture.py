@@ -117,6 +117,8 @@ def test_captured_component_can_be_persisted_and_revisioned(tmp_path: Path):
     definition = repository.get("tracking.follow_button")
     assert first.revision == 1
     assert second.revision == 2
+    assert first.object_id == second.object_id == definition.object_id
+    assert repository.get(first.object_id).component_id == "tracking.follow_button"
     assert definition.revision == 2
     assert definition.expected_states["enabled"] is False
     assert "activate" in definition.actions

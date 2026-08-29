@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.dialogs.open:
+    object_id: 1f2a5887-4c49-5101-8cc3-db3f0d3cf20b
     description: GTK 4.14 dialog-launch button; captured baseline locator.
     actions: [resolve, activate]
     strategies:

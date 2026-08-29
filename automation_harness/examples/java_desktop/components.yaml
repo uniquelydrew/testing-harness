@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   java.swing.follow:
+    object_id: ec824a15-453d-54ec-ae41-680db270cf3a
     description: Swing button that activates tracking in the target application.
     actions: [resolve, activate]
     strategies:
@@ -9,6 +10,7 @@ components:
           mandatory: {name: Follow, role: push button}
           assistive: {window: Example Java Application}
   java.fx.map_canvas:
+    object_id: 8b5ed940-d4dc-5f15-af9a-0b6220be2136
     description: JavaFX visual region hosted directly or inside JFXPanel.
     actions: [resolve]
     strategies:

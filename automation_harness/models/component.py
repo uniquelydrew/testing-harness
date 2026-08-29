@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
 from automation_harness.models.gui import ActionType, ObjectType, classify_accessibility, default_actions
 
@@ -18,6 +19,11 @@ class ComponentStrategy:
 @dataclass(frozen=True)
 class ComponentDefinition:
     """Backend-neutral definition of a logical UI component.
+
+    ``component_id`` is the mutable logical/display name used by authoring tools.
+    ``object_id`` is the immutable persisted identity used by tests and runtime
+    object references. Locator properties, display names, and revisions may all
+    change without changing ``object_id``.
 
     ``actions`` describes supported interaction capabilities. Transient object
     state is deliberately not part of identity; state is observed at runtime.
@@ -37,6 +43,10 @@ class ComponentDefinition:
     framework: str | None = None
     native_class: str | None = None
     subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # Deliberately last to preserve the positional constructor surface used by
+    # existing integrations. New objects receive a UUID exactly once; repository
+    # persistence is responsible for retaining it across subsequent revisions.
+    object_id: str = field(default_factory=lambda: str(uuid4()))
 
     @property
     def semantic_actions(self) -> frozenset[ActionType]:
