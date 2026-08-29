@@ -13,6 +13,7 @@ from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.compiler import compile_test
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -123,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan_status = plan_sub.add_parser("status", help="show the initial managed queue projection for a TestPlan")
     plan_status.add_argument("path", type=Path)
     plan_status.add_argument("--json", action="store_true")
+    plan_compile = plan_sub.add_parser("compile", help="compile a TestPlan into a deterministic execution artifact")
+    plan_compile.add_argument("path", type=Path)
+    plan_compile.add_argument("--output", "-o", type=Path, required=True)
+    plan_compile.add_argument("--components", type=Path, help="additional object repository to embed")
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
     plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
@@ -231,6 +236,20 @@ def main(argv: list[str] | None = None) -> int:
             component_paths.append(selected_components.resolve())
         component_repository = ComponentRepository.load(component_paths)
         issues.extend(validate_plan_components(test_plan, component_repository))
+        if args.plan_command == "compile":
+            if issues:
+                for issue in issues:
+                    print(f"ERROR: {issue}", file=sys.stderr)
+                return 2
+            try:
+                artifact = compile_test(test_plan, registry, component_repository)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(artifact.to_json(), encoding="utf-8")
+            except Exception as exc:
+                print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 2
+            print(f"COMPILED: {args.output} sha256={artifact.digest}")
+            return 0
         if args.plan_command == "validate":
             if args.backend:
                 backend = _backend(args.backend, args)

@@ -37,6 +37,8 @@ class ComponentDefinition:
     framework: str | None = None
     native_class: str | None = None
     subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    assertions: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    scope: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def semantic_actions(self) -> frozenset[ActionType]:

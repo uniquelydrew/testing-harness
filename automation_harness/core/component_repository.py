@@ -180,6 +180,12 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     subobjects = value.get("subobjects", {})
     if not isinstance(subobjects, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in subobjects.items()):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.subobjects must map IDs to selector mappings")
+    assertions = value.get("assertions", {})
+    if not isinstance(assertions, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in assertions.items()):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.assertions must map IDs to assertion mappings")
+    scope = value.get("scope", {})
+    if not isinstance(scope, Mapping):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.scope must be a mapping")
     return ComponentDefinition(
         component_id=component_id,
         description=description,
@@ -194,6 +200,8 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         framework=framework,
         native_class=native_class,
         subobjects={str(key): dict(item) for key, item in subobjects.items()},
+        assertions={str(key): dict(item) for key, item in assertions.items()},
+        scope=dict(scope),
     )
 
 
@@ -318,6 +326,10 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["native_class"] = definition.native_class
     if definition.subobjects:
         payload["subobjects"] = {key: dict(value) for key, value in definition.subobjects.items()}
+    if definition.assertions:
+        payload["assertions"] = {key: dict(value) for key, value in definition.assertions.items()}
+    if definition.scope:
+        payload["scope"] = dict(definition.scope)
     return payload
 
 

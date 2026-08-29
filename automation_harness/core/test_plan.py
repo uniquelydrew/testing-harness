@@ -44,8 +44,17 @@ def load_plan(path: Path) -> TestPlan:
         inputs = item.get("inputs", {})
         outputs = item.get("outputs", {})
         depends_on = item.get("depends_on", [])
+        completion = item.get("completion", {"mode": "automatic"})
+        scope = item.get("scope", {})
         if not isinstance(inputs, Mapping) or not isinstance(outputs, Mapping) or not isinstance(depends_on, list):
             raise TestPlanError(f"step {node_id!r} has invalid inputs/outputs/depends_on")
+        if not isinstance(completion, Mapping) or not isinstance(scope, Mapping):
+            raise TestPlanError(f"step {node_id!r} has invalid completion/scope")
+        mode = completion.get("mode", "automatic")
+        if mode not in {"automatic", "explicit", "dispatch-only", "manual"}:
+            raise TestPlanError(f"step {node_id!r} has invalid completion mode {mode!r}")
+        if mode == "explicit" and "condition" not in completion:
+            raise TestPlanError(f"step {node_id!r} explicit completion requires a condition")
         steps.append(
             StepCall(
                 node_id=node_id,
@@ -54,6 +63,8 @@ def load_plan(path: Path) -> TestPlan:
                 outputs={str(k): str(v) for k, v in outputs.items()},
                 depends_on=tuple(str(value) for value in depends_on),
                 description=str(item.get("description", "")),
+                completion=_decode_refs(dict(completion)),
+                scope=_decode_refs(dict(scope)),
             )
         )
     return TestPlan(name=name, version=1, variables=_decode_refs(dict(variables)), steps=tuple(steps))
@@ -123,7 +134,7 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
     # the consumer BLOCKED until the producer commits the value.
     data_edges: dict[str, set[str]] = {node_id: set() for node_id in known_nodes}
     for call in plan.steps:
-        for path in _collect_refs(call.inputs):
+        for path in _call_refs(call):
             root = path.split(".", 1)[0]
             if _path_available(plan.variables, path):
                 continue
@@ -251,7 +262,7 @@ def derive_execution_state(plan: TestPlan) -> ExecutionState:
     completed: set[str] = set()
     # Initial queue state only. Runtime executor will reevaluate after each commit.
     for call in plan.steps:
-        refs = tuple(sorted(_collect_refs(call.inputs)))
+        refs = tuple(sorted(_call_refs(call)))
         unresolved = tuple(path for path in refs if not _path_available(plan.variables, path))
         dependency_block = tuple(dep for dep in call.depends_on if dep not in completed)
         node = state.steps[call.node_id]
@@ -330,6 +341,10 @@ def _collect_refs(value: Any) -> set[str]:
         for item in value:
             result.update(_collect_refs(item))
     return result
+
+
+def _call_refs(call: StepCall) -> set[str]:
+    return _collect_refs(call.inputs) | _collect_refs(call.scope) | _collect_refs(call.completion)
 
 
 def _path_available(values: Mapping[str, Any], path: str) -> bool:
@@ -414,7 +429,7 @@ class ManagedExecutionQueue:
             node = self.state.steps[call.node_id]
             if node.status in terminal:
                 continue
-            refs = tuple(sorted(_collect_refs(call.inputs)))
+            refs = tuple(sorted(_call_refs(call)))
             unresolved = tuple(path for path in refs if not _path_available(self.state.variables, path))
             unmet_dependencies = tuple(
                 dep for dep in call.depends_on
