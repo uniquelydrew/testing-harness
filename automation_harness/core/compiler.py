@@ -16,6 +16,7 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.step_registry import StepRegistry
 from automation_harness.core.test_plan import TestPlanError, _collect_refs, validate_plan, validate_plan_components
 from automation_harness.models.plan import PlanVariableRef, TestPlan
+from automation_harness.core.compound_steps import CompoundStepRepository, expand_compound_steps
 
 
 COMPILED_TEST_FORMAT = "automation-harness/compiled-test-v1"
@@ -122,10 +123,15 @@ def compile_test(
     components: ComponentRepository,
     *,
     compiler_version: str = "1",
+    compound_steps: CompoundStepRepository | None = None,
 ) -> CompiledTest:
     """Resolve a semantic plan into an immutable, repository-free artifact."""
-    issues = validate_plan(plan, registry)
-    issues.extend(validate_plan_components(plan, components))
+    expanded_plan = plan
+    used_compound_steps: tuple[str, ...] = ()
+    if compound_steps is not None:
+        expanded_plan, used_compound_steps = expand_compound_steps(plan, compound_steps)
+    issues = validate_plan(expanded_plan, registry)
+    issues.extend(validate_plan_components(expanded_plan, components))
     if issues:
         raise TestPlanError("test compilation failed:\n- " + "\n- ".join(issues))
 
@@ -135,7 +141,7 @@ def compile_test(
     referenced_components: set[str] = set()
     step_dependencies: dict[str, Mapping[str, Any]] = {}
 
-    for index, call in enumerate(plan.steps):
+    for index, call in enumerate(expanded_plan.steps):
         definition = registry.get(call.step_id)
         step_dependencies[definition.name] = definition.to_dict()
         for output_name, variable_name in sorted(call.outputs.items()):
@@ -172,6 +178,10 @@ def compile_test(
     dependency_manifest = {
         "steps": {key: step_dependencies[key] for key in sorted(step_dependencies)},
         "components": component_dependencies,
+        "compound_steps": {
+            step_id: compound_steps.get(step_id).to_dict()
+            for step_id in used_compound_steps
+        } if compound_steps is not None else {},
     }
     body: dict[str, Any] = {
         "format": COMPILED_TEST_FORMAT,

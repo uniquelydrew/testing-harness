@@ -44,12 +44,14 @@ class TestPlan:
     version: int = 1
     variables: Mapping[str, Any] = field(default_factory=dict)
     steps: tuple[StepCall, ...] = ()
+    step_repositories: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
             "variables": _encode_refs(dict(self.variables)),
+            "step_repositories": list(self.step_repositories),
             "steps": [step.to_dict() for step in self.steps],
         }
 

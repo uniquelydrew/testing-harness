@@ -82,6 +82,17 @@ def assert_component_state(ctx: TestContext, component_id: str, state_name: str,
     return ctx.component(component_id).assert_state(**{state_name: expected})
 
 
+@step(
+    "component.assertion.evaluate",
+    domain="component",
+    description="Evaluate a reusable assertion declared by an object repository entry.",
+    capabilities={"components"},
+    outputs={"state": "$"},
+)
+def evaluate_component_assertion(ctx: TestContext, component_id: str, assertion_id: str):
+    return ctx.component(component_id).assert_named(assertion_id)
+
+
 @step("component.text.get", domain="component", capabilities={"text-input"}, outputs={"text": "$"})
 def get_component_text(ctx: TestContext, component_id: str) -> str:
     return ctx.component(component_id).get_text()

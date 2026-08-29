@@ -7,6 +7,15 @@ from automation_harness.core.step_registry import step
 from automation_harness.core.test_context import TestContext
 
 
+@step(
+    "framework.completion.barrier",
+    domain="framework",
+    description="No-op instruction used to enforce a compound step's terminal completion contract.",
+)
+def completion_barrier(ctx: TestContext) -> None:
+    return None
+
+
 def _record_assertion(ctx: TestContext, name: str, expected, actual, passed: bool, **fields) -> None:
     ctx.evidence.record(
         "assertion",

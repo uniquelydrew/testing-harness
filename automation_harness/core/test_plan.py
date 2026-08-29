@@ -30,6 +30,9 @@ def load_plan(path: Path) -> TestPlan:
     variables = raw.get("variables", {})
     if not isinstance(variables, Mapping):
         raise TestPlanError("test plan variables must be a mapping")
+    step_repositories = raw.get("step_repositories", [])
+    if not isinstance(step_repositories, list) or not all(isinstance(item, str) and item for item in step_repositories):
+        raise TestPlanError("test plan step_repositories must be a list of paths")
     steps_raw = raw.get("steps", [])
     if not isinstance(steps_raw, list):
         raise TestPlanError("test plan steps must be a list")
@@ -67,7 +70,13 @@ def load_plan(path: Path) -> TestPlan:
                 scope=_decode_refs(dict(scope)),
             )
         )
-    return TestPlan(name=name, version=1, variables=_decode_refs(dict(variables)), steps=tuple(steps))
+    return TestPlan(
+        name=name,
+        version=1,
+        variables=_decode_refs(dict(variables)),
+        steps=tuple(steps),
+        step_repositories=tuple(step_repositories),
+    )
 
 
 def save_plan(plan: TestPlan, path: Path) -> None:
@@ -104,6 +113,11 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
     explicit_edges: dict[str, set[str]] = {node_id: set() for node_id in known_nodes}
     for call in plan.steps:
         definition = definitions.get(call.node_id)
+        mode = call.completion.get("mode", "automatic")
+        if mode not in {"automatic", "explicit", "dispatch-only", "manual"}:
+            issues.append(f"{call.node_id}: invalid completion mode {mode!r}")
+        if mode in {"explicit", "manual"} and not isinstance(call.completion.get("condition"), Mapping):
+            issues.append(f"{call.node_id}: completion mode {mode!r} requires a condition")
         for dependency in call.depends_on:
             if dependency not in known_nodes:
                 issues.append(f"{call.node_id}: unknown dependency {dependency!r}")

@@ -14,6 +14,7 @@ from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.compiler import compile_test, load_compiled_test
+from automation_harness.core.compound_steps import CompoundStepRepository
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -128,6 +129,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan_compile.add_argument("path", type=Path)
     plan_compile.add_argument("--output", "-o", type=Path, required=True)
     plan_compile.add_argument("--components", type=Path, help="additional object repository to embed")
+    plan_compile.add_argument(
+        "--step-repository",
+        type=Path,
+        action="append",
+        default=[],
+        help="compound-step repository to resolve; may be repeated",
+    )
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
     plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
@@ -210,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
                     "instructions": len(artifact.document["instructions"]),
                     "step_dependencies": sorted(artifact.document["dependencies"]["steps"]),
                     "component_dependencies": sorted(artifact.document["dependencies"]["components"]),
+                    "compound_step_dependencies": sorted(artifact.document["dependencies"].get("compound_steps", {})),
                 }, indent=2))
                 return 0
             variable_overrides = _parse_variable_overrides(args.variables)
@@ -275,21 +284,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
         registry = default_step_registry()
-        issues = validate_plan(test_plan, registry)
         package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
         component_paths = [package_components]
         selected_components = getattr(args, "components", None)
         if selected_components is not None:
             component_paths.append(selected_components.resolve())
         component_repository = ComponentRepository.load(component_paths)
-        issues.extend(validate_plan_components(test_plan, component_repository))
         if args.plan_command == "compile":
-            if issues:
-                for issue in issues:
-                    print(f"ERROR: {issue}", file=sys.stderr)
-                return 2
             try:
-                artifact = compile_test(test_plan, registry, component_repository)
+                declared = [
+                    (args.path.parent / item).resolve()
+                    for item in test_plan.step_repositories
+                ]
+                supplied = [item.resolve() for item in args.step_repository]
+                repository_paths = [*declared, *supplied]
+                compound_steps = CompoundStepRepository.load(repository_paths) if repository_paths else None
+                artifact = compile_test(
+                    test_plan,
+                    registry,
+                    component_repository,
+                    compound_steps=compound_steps,
+                )
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(artifact.to_json(), encoding="utf-8")
             except Exception as exc:
@@ -297,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"COMPILED: {args.output} sha256={artifact.digest}")
             return 0
+        issues = validate_plan(test_plan, registry)
+        issues.extend(validate_plan_components(test_plan, component_repository))
         if args.plan_command == "validate":
             if args.backend:
                 backend = _backend(args.backend, args)

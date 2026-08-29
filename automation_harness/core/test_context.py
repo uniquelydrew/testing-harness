@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,6 +10,7 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.services import AutomationServices
 from automation_harness.core.step_registry import StepInvocationResult, StepRegistry, load_step_libraries
 from automation_harness.core.variables import VariableRef, VariableStore
+from automation_harness.core.execution_context import ExecutionContextStack, ExecutionSignals, bind_component_lineage
 from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.utils.evidence import EvidenceRecorder
 
@@ -26,6 +27,8 @@ class TestContext:
     globals: VariableStore | None = None
     reference: ReferenceClient | None = None
     services: AutomationServices | None = None
+    execution: ExecutionContextStack = field(default_factory=ExecutionContextStack)
+    signals: ExecutionSignals = field(default_factory=ExecutionSignals)
 
     def __post_init__(self) -> None:
         if self.globals is None:
@@ -110,7 +113,27 @@ class TestContext:
         raise RuntimeError(f"unsupported or unsafe backend in test context: {backend!r}")
 
     def component(self, component_id: str) -> ComponentHandle:
-        return ComponentHandle(self, self.components.get(component_id))
+        definition = self.components.get(component_id)
+        scoped = bind_component_lineage(
+            definition,
+            self.execution.effective_scope(definition),
+            self.components,
+            self.execution.active_window,
+        )
+        return ComponentHandle(self, scoped)
+
+    def execution_scope(self, scope: Mapping[str, Any] | None):
+        return self.execution.scope(scope)
+
+    def signal_event(self, name: str, **metadata: Any) -> int:
+        generation = self.signals.signal(name)
+        self.evidence.record(
+            "execution_event_signalled",
+            name=name,
+            generation=generation,
+            metadata=metadata,
+        )
+        return generation
 
     def run_step(
         self,

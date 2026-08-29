@@ -10,6 +10,7 @@ from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
 from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
+from automation_harness.core.predicates import evaluate_state
 from automation_harness.utils.wait import wait_for as wait_for_value
 
 
@@ -168,12 +169,33 @@ class ComponentHandle:
             raise AssertionError(f"component {self.definition.component_id!r} state mismatch: {details}")
         return observed
 
+    def assert_named(self, assertion_id: str) -> ComponentState:
+        try:
+            expression = self.definition.assertions[assertion_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"component {self.definition.component_id!r} has no assertion {assertion_id!r}"
+            ) from exc
+        observed = self.state()
+        if not evaluate_state(observed, expression):
+            raise AssertionError(
+                f"component {self.definition.component_id!r} failed assertion {assertion_id!r}; "
+                f"observed={observed.to_dict()!r}"
+            )
+        self.context.evidence.record(
+            "component_assertion_passed",
+            component_id=self.definition.component_id,
+            assertion=assertion_id,
+            state=observed.to_dict(),
+        )
+        return observed
+
     def assert_visual(self, *, profile=None):
         """Assert this component's framebuffer bounds match its approved visual gold."""
         from automation_harness.drivers.vision_driver import VisionDriver
         return VisionDriver(self.context).compare_component_baseline(self, profile=profile)
 
-    def wait_for(self, *, timeout: float = 5.0, interval: float = 0.1, **expected: Any) -> ComponentState:
+    def wait_for(self, *, timeout: float = 5.0, interval: float = 0.1, stability_window: float = 0.0, **expected: Any) -> ComponentState:
         last: ComponentState | None = None
 
         def predicate() -> bool:
@@ -182,7 +204,7 @@ class ComponentHandle:
             return all(last.get(name) == value for name, value in expected.items())
 
         try:
-            wait_for_value(lambda: predicate(), timeout=timeout, interval=interval, description=f"{self.definition.component_id} state {expected}")
+            wait_for_value(lambda: predicate(), timeout=timeout, interval=interval, stability_window=stability_window, description=f"{self.definition.component_id} state {expected}")
         except TimeoutError as exc:
             actual = last.to_dict() if last is not None else None
             raise ComponentStateTimeout(
@@ -191,6 +213,36 @@ class ComponentHandle:
             ) from exc
         assert last is not None
         return last
+
+    def wait_for_expression(
+        self,
+        expression: dict[str, Any],
+        *,
+        timeout: float = 5.0,
+        interval: float = 0.1,
+        stability_window: float = 0.0,
+    ) -> ComponentState:
+        last: ComponentState | None = None
+
+        def supplier() -> ComponentState:
+            nonlocal last
+            last = self.state()
+            return last
+
+        try:
+            return wait_for_value(
+                supplier,
+                lambda state: evaluate_state(state, expression),
+                timeout=timeout,
+                interval=interval,
+                stability_window=stability_window,
+                description=f"{self.definition.component_id} predicate {expression}",
+            )
+        except TimeoutError as exc:
+            raise ComponentStateTimeout(
+                f"component {self.definition.component_id!r} did not satisfy {expression!r} "
+                f"within {timeout}s; last observed state={last.to_dict() if last else None!r}"
+            ) from exc
 
     def activate(self) -> dict[str, Any]:
         if "activate" not in self.definition.actions and not self.supports(ActionType.CLICK):

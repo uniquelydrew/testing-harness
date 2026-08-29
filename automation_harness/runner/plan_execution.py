@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.completion import await_step_completion
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_context import TestContext
 from automation_harness.core.test_plan import ManagedExecutionQueue, validate_plan, validate_plan_components, validate_plan_execution
@@ -57,7 +58,13 @@ def execute_plan(
     initial_variables = dict(plan.variables)
     if variable_overrides:
         initial_variables.update(variable_overrides)
-    runtime_plan = TestPlan(name=plan.name, version=plan.version, variables=initial_variables, steps=plan.steps)
+    runtime_plan = TestPlan(
+        name=plan.name,
+        version=plan.version,
+        variables=initial_variables,
+        steps=plan.steps,
+        step_repositories=plan.step_repositories,
+    )
 
     package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
     package_repository = ComponentRepository.load([package_components])
@@ -134,11 +141,19 @@ def execute_plan(
             )
             _write_execution_state(artifacts.root, queue)
             try:
-                invocation = context.run_step_detailed(
-                    definition.name,
-                    **resolved_inputs,
-                    bind_outputs=call.outputs,
-                )
+                signal_baseline = context.signals.snapshot()
+                with context.execution_scope(call.scope):
+                    invocation = context.run_step_detailed(
+                        definition.name,
+                        **resolved_inputs,
+                        bind_outputs=call.outputs,
+                    )
+                    await_step_completion(
+                        context,
+                        call,
+                        resolved_inputs,
+                        signal_baseline=signal_baseline,
+                    )
                 bound_outputs = {name: invocation.outputs[name] for name in call.outputs}
                 queue.complete(node_id, bound_outputs)
                 # The VariableStore is authoritative; synchronize the queue view.
