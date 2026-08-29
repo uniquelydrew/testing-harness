@@ -118,6 +118,12 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
             issues.append(f"{call.node_id}: invalid completion mode {mode!r}")
         if mode in {"explicit", "manual"} and not isinstance(call.completion.get("condition"), Mapping):
             issues.append(f"{call.node_id}: completion mode {mode!r} requires a condition")
+        context_effect = call.scope.get("context")
+        if context_effect is not None:
+            if not isinstance(context_effect, Mapping):
+                issues.append(f"{call.node_id}: scope.context must be a mapping")
+            elif context_effect.get("operation") not in {"push", "pop"}:
+                issues.append(f"{call.node_id}: scope.context operation must be 'push' or 'pop'")
         for dependency in call.depends_on:
             if dependency not in known_nodes:
                 issues.append(f"{call.node_id}: unknown dependency {dependency!r}")

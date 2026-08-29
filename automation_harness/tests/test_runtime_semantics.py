@@ -4,7 +4,7 @@ from pathlib import Path
 
 from automation_harness.core.completion import _effects_condition, await_step_completion
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.execution_context import bind_component_lineage
+from automation_harness.core.execution_context import ExecutionContextStack, bind_component_lineage
 from automation_harness.core.execution_context import ExecutionSignals
 from automation_harness.core.predicates import compare, evaluate_state
 from automation_harness.models.component import ComponentState
@@ -103,3 +103,12 @@ def test_execution_signals_use_generation_baselines():
     assert signals.occurred_since("export-complete", before)
     after = signals.snapshot()
     assert not signals.occurred_since("export-complete", after)
+
+
+def test_context_effects_restore_parent_window_for_nested_dialogs():
+    context = ExecutionContextStack()
+    context.apply_effect({"operation": "push", "object": "settings.dialog"})
+    context.apply_effect({"operation": "push", "object": "settings.confirm"})
+    assert context.active_window == "settings.confirm"
+    assert context.apply_effect({"operation": "pop", "expected": "settings.confirm"}) == "settings.confirm"
+    assert context.active_window == "settings.dialog"

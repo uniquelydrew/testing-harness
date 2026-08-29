@@ -41,6 +41,27 @@ class ExecutionContextStack:
             )
         return self._windows.pop()
 
+    def apply_effect(self, effect: Mapping[str, Any]) -> str | None:
+        """Apply a post-completion context transition.
+
+        Effects are execution state, never repository mutations.  They are
+        deliberately applied only after the action completion predicate has
+        succeeded, so a dialog is not made the active parent prematurely.
+        """
+        operation = effect.get("operation")
+        if operation == "push":
+            component = effect.get("object", effect.get("component"))
+            if not isinstance(component, str) or not component:
+                raise ExecutionContextError("context push requires a non-empty object")
+            self.push_window(component)
+            return component
+        if operation == "pop":
+            expected = effect.get("expected")
+            if expected is not None and not isinstance(expected, str):
+                raise ExecutionContextError("context pop expected must be a component id")
+            return self.pop_window(expected)
+        raise ExecutionContextError("context operation must be 'push' or 'pop'")
+
     @contextmanager
     def scope(self, value: Mapping[str, Any] | None) -> Iterator[None]:
         self._invocation_scopes.append(dict(value or {}))

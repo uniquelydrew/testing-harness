@@ -154,6 +154,18 @@ def execute_plan(
                         resolved_inputs,
                         signal_baseline=signal_baseline,
                     )
+                    context_effect = call.scope.get("context")
+                    if context_effect is not None:
+                        if not isinstance(context_effect, Mapping):
+                            raise ValueError("step scope.context must be a mapping")
+                        applied = context.execution.apply_effect(context_effect)
+                        recorder.record(
+                            "execution_context_effect_applied",
+                            node_id=call.node_id,
+                            effect=dict(context_effect),
+                            active_window=context.execution.active_window,
+                            affected=applied,
+                        )
                 bound_outputs = {name: invocation.outputs[name] for name in call.outputs}
                 queue.complete(node_id, bound_outputs)
                 # The VariableStore is authoritative; synchronize the queue view.
