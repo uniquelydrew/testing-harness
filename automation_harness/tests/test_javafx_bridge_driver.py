@@ -28,6 +28,14 @@ _NODE = {
     "text": "Select Camera",
     "bounds": [100.2, 50.8, 120.0, 28.0],
     "hierarchy": ["AnchorPane", "GridPane#topControlBox", "Button#cameraSelectorButton"],
+    "stable_ancestors": [
+        {"id": "topControlBox", "class": "javafx.scene.layout.GridPane"},
+    ],
+    "user_data": None,
+    "properties": {},
+    "layout": {"grid_row": 0, "grid_column": 2, "grid_row_span": 1, "grid_column_span": 1},
+    "sibling_index": 2,
+    "sibling_count": 4,
     "actions": ["activate", "click", "get_text"],
     "parent": {
         "ref": "n4",
@@ -157,9 +165,64 @@ def test_capture_builds_durable_javafx_strategy(tmp_path):
         identity = strategy.options["identification"]
         assert identity["mandatory"] == {"id": "cameraSelectorButton"}
         assert identity["assistive"]["window"] == "ERSA Main Video Display"
-        assert identity["assistive"]["hierarchy"] == [
-            "AnchorPane", "GridPane#topControlBox", "Button#cameraSelectorButton",
+        assert identity["assistive"]["layout"]["grid_column"] == 2
+        assert identity["assistive"]["lineage"] == [
+            {"id": "topControlBox", "class": "javafx.scene.layout.GridPane"},
         ]
+        assert "hierarchy" not in identity["assistive"]
+        assert captured.backend_properties["sibling_index"] == 2
+    finally:
+        server.close()
+
+
+def test_application_authored_node_property_outranks_generic_class(tmp_path):
+    panel = dict(_NODE)
+    panel.update({
+        "ref": "n42",
+        "class": "edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController",
+        "simple_class": "VideoPlayerFXMLController",
+        "id": None,
+        "accessible_role": "PARENT",
+        "accessible_text": None,
+        "text": None,
+        "user_data": None,
+        "properties": {"automation.feed-id": "camera-12", "javafx-internal": "ignored"},
+        "layout": {"grid_row": 1, "grid_column": 3, "grid_row_span": 1, "grid_column_span": 1},
+        "stable_ancestors": [{"id": "bigGridPane", "class": "javafx.scene.layout.GridPane"}],
+    })
+    server = _BridgeServer(node=panel)
+    try:
+        _write_discovery(tmp_path, server)
+        captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
+        identity = captured.candidate_strategy().options["identification"]
+        assert identity["mandatory"] == {"properties": {"automation.feed-id": "camera-12"}}
+        assert identity["assistive"]["class"] == panel["class"]
+        assert identity["assistive"]["layout"]["grid_row"] == 1
+        assert identity["assistive"]["lineage"][0]["id"] == "bigGridPane"
+        assert captured.backend_properties["node_properties"]["automation.feed-id"] == "camera-12"
+    finally:
+        server.close()
+
+
+def test_user_data_is_used_before_class_when_no_explicit_id_or_text(tmp_path):
+    panel = dict(_NODE)
+    panel.update({
+        "ref": "n43",
+        "class": "edu.mit.ll.ersa.FeedPanel",
+        "simple_class": "FeedPanel",
+        "id": None,
+        "accessible_role": "PARENT",
+        "accessible_text": None,
+        "text": None,
+        "user_data": "camera-7",
+        "properties": {},
+    })
+    server = _BridgeServer(node=panel)
+    try:
+        _write_discovery(tmp_path, server)
+        captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
+        identity = captured.candidate_strategy().options["identification"]
+        assert identity["mandatory"] == {"user_data": "camera-7", "class": "edu.mit.ll.ersa.FeedPanel"}
     finally:
         server.close()
 
@@ -183,6 +246,15 @@ def test_capture_infers_ordinal_only_for_still_ambiguous_javafx_node(tmp_path):
         "text": None,
         "bounds": [1561.0, 65.0, 30.0, 27.0],
         "hierarchy": ["AnchorPane#AnchorPane", "MenuBar#topMenuBar", "HBox", "MenuBarButton"],
+        "stable_ancestors": [
+            {"id": "AnchorPane", "class": "javafx.scene.layout.AnchorPane"},
+            {"id": "topMenuBar", "class": "javafx.scene.control.MenuBar"},
+        ],
+        "user_data": None,
+        "properties": {},
+        "layout": {},
+        "sibling_index": 5,
+        "sibling_count": 6,
         "actions": ["activate", "click"],
         "parent": {
             "ref": "n15",
@@ -202,12 +274,9 @@ def test_capture_infers_ordinal_only_for_still_ambiguous_javafx_node(tmp_path):
         _write_discovery(tmp_path, server)
         captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
         identity = captured.candidate_strategy().options["identification"]
-        assert identity["mandatory"] == {
-            "class": "com.sun.javafx.scene.control.MenuBarButton",
-        }
-        assert identity["assistive"]["hierarchy"] == [
-            "AnchorPane#AnchorPane", "MenuBar#topMenuBar", "HBox", "MenuBarButton",
-        ]
+        assert identity["mandatory"] == {"accessible_role": "MENU"}
+        assert identity["assistive"]["class"] == "com.sun.javafx.scene.control.MenuBarButton"
+        assert identity["assistive"]["lineage"][1]["id"] == "topMenuBar"
         assert identity["ordinal"] == 1
     finally:
         server.close()

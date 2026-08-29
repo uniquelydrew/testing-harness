@@ -240,10 +240,11 @@ class JavaFxBridgeDriver:
         """Build a durable capture and infer an ordinal only as a last resort.
 
         JavaFX skins commonly create repeated internal Nodes with no id or
-        text.  We first scope those Nodes with durable hierarchy metadata.  If
-        the complete stable identity still matches siblings, the bridge can
-        safely determine which candidate generated the click from its transient
-        Node reference and persist that position as an explicit ordinal.
+        text. The candidate identity first uses semantic application metadata,
+        stable ancestor lineage, and layout constraints. If that complete
+        stable identity still matches siblings, the bridge determines which
+        candidate generated the click from its transient Node reference and
+        persists that scoped position as an explicit ordinal.
         """
         captured = _captured(endpoint, node)
         strategy = captured.candidate_strategy()
@@ -382,6 +383,12 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "accessible_text": accessible_text,
         "text": text,
         "hierarchy": list(node.get("hierarchy") or []),
+        "stable_ancestors": list(node.get("stable_ancestors") or []),
+        "user_data": node.get("user_data"),
+        "node_properties": dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {},
+        "layout": dict(node.get("layout") or {}) if isinstance(node.get("layout"), Mapping) else {},
+        "sibling_index": node.get("sibling_index"),
+        "sibling_count": node.get("sibling_count"),
     }
     return CapturedComponent(
         name=name,
@@ -405,6 +412,13 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
 
 
 def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
+    """Compose identity from semantic evidence before structural fallbacks.
+
+    The ordering is intentional: explicit IDs and application-authored metadata
+    outrank JavaFX implementation classes; stable lineage/layout outrank literal
+    hierarchy; ordinal selection is added later only when this identity still
+    resolves multiple runtime Nodes.
+    """
     mandatory = {}
     assistive = {}
     node_id = _optional_str(node.get("id"))
@@ -413,22 +427,45 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     text = _optional_str(node.get("text"))
     native_class = _optional_str(node.get("class"))
     window = _optional_str(node.get("window"))
-    hierarchy = [str(value) for value in node.get("hierarchy", []) if value is not None] if isinstance(node.get("hierarchy"), (list, tuple)) else []
+    hierarchy = _string_list(node.get("hierarchy"))
+    lineage = _mapping_list(node.get("stable_ancestors"))
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
+    layout = dict(node.get("layout") or {}) if isinstance(node.get("layout"), Mapping) else {}
+    user_data = node.get("user_data") if _is_scalar(node.get("user_data")) else None
+    properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
+    domain_properties = _domain_identity_properties(properties)
+    style_classes = _string_list(node.get("style_classes"))
+    internal_class = _is_internal_javafx_class(native_class)
 
     if node_id:
         mandatory["id"] = node_id
+    elif domain_properties:
+        mandatory["properties"] = domain_properties
     elif accessible_text:
         mandatory["accessible_text"] = accessible_text
         if role:
             mandatory["accessible_role"] = role
     elif text:
         mandatory["text"] = text
-        if native_class:
+        if native_class and not internal_class:
             mandatory["class"] = native_class
+        elif role:
+            mandatory["accessible_role"] = role
+    elif user_data not in (None, ""):
+        mandatory["user_data"] = user_data
+        if native_class and not internal_class:
+            mandatory["class"] = native_class
+    elif native_class and not internal_class:
+        mandatory["class"] = native_class
+    elif role:
+        mandatory["accessible_role"] = role
     elif native_class:
         mandatory["class"] = native_class
 
+    if domain_properties and "properties" not in mandatory:
+        assistive["properties"] = domain_properties
+    if user_data not in (None, "") and "user_data" not in mandatory:
+        assistive["user_data"] = user_data
     if native_class and "class" not in mandatory:
         assistive["class"] = native_class
     if role and "accessible_role" not in mandatory:
@@ -436,20 +473,17 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     if window:
         assistive["window"] = window
 
-    parent_identity = {}
-    parent_id = _optional_str(parent.get("id"))
-    parent_text = _optional_str(parent.get("accessible_text") or parent.get("text"))
-    parent_class = _optional_str(parent.get("class"))
-    if parent_id:
-        parent_identity["id"] = parent_id
-    elif parent_text:
-        parent_identity["accessible_text"] = parent_text
-    elif parent_class:
-        parent_identity["class"] = parent_class
+    parent_identity = _parent_identity(parent)
     if parent_identity:
         assistive["parent"] = parent_identity
-    if hierarchy:
+    if layout:
+        assistive["layout"] = layout
+    if lineage:
+        assistive["lineage"] = lineage
+    elif hierarchy:
         assistive["hierarchy"] = hierarchy
+    if style_classes and not lineage and not layout:
+        assistive["style_classes"] = style_classes
 
     if not mandatory:
         raise ValueError("captured JavaFX node exposes no durable identification properties")
@@ -457,6 +491,53 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     if assistive:
         result["assistive"] = assistive
     return result
+
+
+def _parent_identity(parent: Mapping[str, Any]) -> dict[str, Any]:
+    result = {}
+    parent_id = _optional_str(parent.get("id"))
+    parent_text = _optional_str(parent.get("accessible_text") or parent.get("text"))
+    parent_class = _optional_str(parent.get("class"))
+    if parent_id:
+        result["id"] = parent_id
+    elif parent_text:
+        result["accessible_text"] = parent_text
+    elif parent_class and not _is_internal_javafx_class(parent_class):
+        result["class"] = parent_class
+    return result
+
+
+def _domain_identity_properties(properties: Mapping[str, Any]) -> dict[str, Any]:
+    """Return application-authored property keys intended to survive layout changes."""
+    result = {}
+    for raw_key, value in properties.items():
+        key = str(raw_key)
+        folded = key.casefold()
+        if not _is_scalar(value):
+            continue
+        if folded.startswith(("automation.", "test.", "qa.")):
+            result[key] = value
+    return result
+
+
+def _is_internal_javafx_class(value: str | None) -> bool:
+    return bool(value and (value.startswith("com.sun.javafx.") or value.startswith("com.sun.glass.")))
+
+
+def _is_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
+def _mapping_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping) and item]
 
 
 def _merge_stages(raw_traces: list[Any]) -> tuple[JavaFxResolutionStage, ...]:

@@ -260,22 +260,35 @@ def _normalize_javafx_identity(value: Mapping[str, Any]) -> dict[str, Any]:
 def _javafx_criteria_stability(criteria: Mapping[str, Any]) -> dict[str, Any]:
     result = {}
     for key, value in criteria.items():
-        if key == "parent" and isinstance(value, Mapping):
-            result[key] = {child: _javafx_stability(child) for child in value}
+        if key in {"parent", "properties", "layout", "ancestor"} and isinstance(value, Mapping):
+            result[key] = {child: _javafx_stability(key, child) for child in value}
+        elif key == "lineage" and isinstance(value, (list, tuple)):
+            result[key] = "high"
         else:
             result[key] = _javafx_stability(key)
     return result
 
 
-def _javafx_stability(key: str) -> str:
+def _javafx_stability(key: str, child: str | None = None) -> str:
+    if key == "properties":
+        folded = (child or "").casefold()
+        if folded.startswith(("automation.", "test.", "qa.")):
+            return "very-high"
+        return "medium"
+    if key == "layout":
+        return "high" if (child or "").startswith("grid_") else "medium"
     return {
         "id": "very-high",
+        "user_data": "high",
         "window": "high",
         "accessible_text": "high",
         "accessible_role": "high",
         "text": "high",
         "parent": "high",
+        "ancestor": "high",
+        "lineage": "high",
         "class": "medium-high",
         "style_classes": "medium",
-        "hierarchy": "medium",
+        "hierarchy": "medium-low",
+        "sibling_index": "low",
     }.get(key, "unknown")

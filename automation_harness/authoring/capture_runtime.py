@@ -10,6 +10,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib
 
+from automation_harness.authoring.identity_editor import edit_identity, edit_locator
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 
 
@@ -56,7 +57,7 @@ def _install_capture_next_click(app_module):
 
 
 def _install_javafx_authoring(app_module):
-    """Keep the existing GTK editor while making JavaFX identity first-class."""
+    """Keep the existing GTK editor while making structured identity first-class."""
 
     def present_capture(self, captured):
         self._last_capture = captured
@@ -88,23 +89,17 @@ def _install_javafx_authoring(app_module):
             else:
                 if strategy.type == "javafx":
                     candidate = strategy.options.get("identification")
-                    prompt = "JavaFX identity JSON:"
                 else:
                     candidate = captured.candidate_identification().to_dict()
-                    prompt = "AT-SPI identity JSON:"
                 if not isinstance(candidate, dict):
                     raise ValueError("captured object has no editable identity mapping")
-                identity_raw = self._ask_text(
-                    "Object identification",
-                    prompt,
-                    json.dumps(candidate, separators=(",", ":")),
-                    multiline=True,
+                identification = edit_identity(
+                    self.window,
+                    candidate,
+                    framework=strategy.type,
                 )
-                if identity_raw is None:
+                if identification is None:
                     return
-                identification = json.loads(identity_raw)
-                if not isinstance(identification, dict):
-                    raise ValueError("identification must be a JSON object")
                 definition = self.capture.save_capture(
                     self.repository_path,
                     component_id,
@@ -123,6 +118,25 @@ def _install_javafx_authoring(app_module):
                 self._info("Visual candidate", json.dumps(result, indent=2, default=str))
             except Exception as exc:
                 self._error("Visual capture", "%s: %s" % (type(exc).__name__, exc))
+
+    def capture_by_locator(self):
+        if not self.capture.available:
+            return self._error(
+                "Capture unavailable",
+                "Neither AT-SPI nor an instrumented JavaFX bridge is available on this host.",
+            )
+        values = edit_locator(self.window, ("name", "role", "accessible_id"))
+        if values is None:
+            return
+        try:
+            captured = self.capture.capture_by_locator(
+                name=values.get("name") or None,
+                role=values.get("role") or None,
+                accessible_id=values.get("accessible_id") or None,
+            )
+            self._present_capture(captured)
+        except Exception as exc:
+            self._error("Capture failed", "%s: %s" % (type(exc).__name__, exc))
 
     def resolve_selected_for_highlight(self, definition):
         deadline = time.monotonic() + 5.0
@@ -157,6 +171,7 @@ def _install_javafx_authoring(app_module):
         )
 
     app_module.AuthoringApp._present_capture = present_capture
+    app_module.AuthoringApp.capture_by_locator = capture_by_locator
     app_module.AuthoringApp._resolve_selected_for_highlight = resolve_selected_for_highlight
 
 
