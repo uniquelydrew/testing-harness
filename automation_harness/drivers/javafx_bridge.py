@@ -5,7 +5,7 @@ import os
 import queue
 import socket
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -149,7 +149,7 @@ class JavaFxBridgeDriver:
             if status == "ok":
                 node = value.get("node")
                 if isinstance(node, Mapping):
-                    return _captured(endpoint, node)
+                    return self._captured_for_capture(endpoint, node)
                 errors.append("pid %s returned no node" % endpoint.pid)
             else:
                 errors.append("pid %s: %s: %s" % (endpoint.pid, type(value).__name__, value))
@@ -165,7 +165,7 @@ class JavaFxBridgeDriver:
                 response = endpoint.request("hit_test", timeout=2.0, x=x, y=y)
                 node = response.get("node")
                 if isinstance(node, Mapping):
-                    return _captured(endpoint, node)
+                    return self._captured_for_capture(endpoint, node)
             except Exception as exc:
                 errors.append("pid %s: %s" % (endpoint.pid, exc))
         raise LookupError(
@@ -231,6 +231,47 @@ class JavaFxBridgeDriver:
     def assess_identification(self, identification: Mapping[str, Any]) -> tuple[JavaFxResolutionStage, ...]:
         _matches, trace = self._find_matches(identification)
         return trace
+
+    def _captured_for_capture(
+        self,
+        endpoint: JavaFxBridgeEndpoint,
+        node: Mapping[str, Any],
+    ) -> CapturedComponent:
+        """Build a durable capture and infer an ordinal only as a last resort.
+
+        JavaFX skins commonly create repeated internal Nodes with no id or
+        text.  We first scope those Nodes with durable hierarchy metadata.  If
+        the complete stable identity still matches siblings, the bridge can
+        safely determine which candidate generated the click from its transient
+        Node reference and persist that position as an explicit ordinal.
+        """
+        captured = _captured(endpoint, node)
+        strategy = captured.candidate_strategy()
+        identity = strategy.options.get("identification")
+        if not isinstance(identity, Mapping):
+            return captured
+        identity = dict(identity)
+        try:
+            response = endpoint.request("find", timeout=2.0, identification=identity)
+            matches = [item for item in response.get("matches", []) if isinstance(item, Mapping)]
+        except Exception:
+            return captured
+        if len(matches) <= 1:
+            return captured
+        target_ref = node.get("ref")
+        if target_ref is None:
+            return captured
+        ordinal = next(
+            (index for index, candidate in enumerate(matches) if candidate.get("ref") == target_ref),
+            None,
+        )
+        if ordinal is None:
+            return captured
+        identity["ordinal"] = ordinal
+        return replace(
+            captured,
+            authored_strategy=ComponentStrategy("javafx", {"identification": identity}),
+        )
 
     def _find_unique(
         self,
@@ -372,6 +413,7 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     text = _optional_str(node.get("text"))
     native_class = _optional_str(node.get("class"))
     window = _optional_str(node.get("window"))
+    hierarchy = [str(value) for value in node.get("hierarchy", []) if value is not None] if isinstance(node.get("hierarchy"), (list, tuple)) else []
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
 
     if node_id:
@@ -406,6 +448,8 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
         parent_identity["class"] = parent_class
     if parent_identity:
         assistive["parent"] = parent_identity
+    if hierarchy:
+        assistive["hierarchy"] = hierarchy
 
     if not mandatory:
         raise ValueError("captured JavaFX node exposes no durable identification properties")

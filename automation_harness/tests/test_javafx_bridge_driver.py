@@ -42,9 +42,10 @@ _NODE = {
 
 
 class _BridgeServer:
-    def __init__(self, node=None):
+    def __init__(self, node=None, find_matches=None):
         self.token = "test-token"
         self.node = dict(node or _NODE)
+        self.find_matches = [dict(item) for item in find_matches] if find_matches is not None else None
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(10)
@@ -90,12 +91,15 @@ class _BridgeServer:
         if op == "hit_test":
             return {**base, "node": self.node}
         if op == "find":
+            matches = list(self.find_matches) if self.find_matches is not None else [self.node]
+            identification = request.get("identification") or {}
+            mandatory = identification.get("mandatory", identification)
             return {
                 **base,
-                "matches": [self.node],
-                "match_count": 1,
+                "matches": matches,
+                "match_count": len(matches),
                 "stages": [
-                    {"source": "mandatory", "criteria": {"id": self.node["id"]}, "matches": 1}
+                    {"source": "mandatory", "criteria": dict(mandatory), "matches": len(matches)}
                 ],
             }
         if op == "activate":
@@ -150,8 +154,61 @@ def test_capture_builds_durable_javafx_strategy(tmp_path):
         assert captured.bounds == (100, 51, 120, 28)
         strategy = captured.candidate_strategy()
         assert strategy.type == "javafx"
-        assert strategy.options["identification"]["mandatory"] == {"id": "cameraSelectorButton"}
-        assert strategy.options["identification"]["assistive"]["window"] == "ERSA Main Video Display"
+        identity = strategy.options["identification"]
+        assert identity["mandatory"] == {"id": "cameraSelectorButton"}
+        assert identity["assistive"]["window"] == "ERSA Main Video Display"
+        assert identity["assistive"]["hierarchy"] == [
+            "AnchorPane", "GridPane#topControlBox", "Button#cameraSelectorButton",
+        ]
+    finally:
+        server.close()
+
+
+def test_capture_infers_ordinal_only_for_still_ambiguous_javafx_node(tmp_path):
+    target = {
+        "ref": "n22",
+        "class": "com.sun.javafx.scene.control.MenuBarButton",
+        "simple_class": "MenuBarButton",
+        "id": None,
+        "accessible_role": "MENU",
+        "accessible_text": None,
+        "accessible_help": None,
+        "visible": True,
+        "disabled": False,
+        "focused": False,
+        "managed": True,
+        "focus_traversable": False,
+        "window": "ERSA Main Video Display",
+        "style_classes": ["menu-button", "menu"],
+        "text": None,
+        "bounds": [1561.0, 65.0, 30.0, 27.0],
+        "hierarchy": ["AnchorPane#AnchorPane", "MenuBar#topMenuBar", "HBox", "MenuBarButton"],
+        "actions": ["activate", "click"],
+        "parent": {
+            "ref": "n15",
+            "class": "javafx.scene.layout.HBox",
+            "simple_class": "HBox",
+            "id": None,
+            "accessible_role": "PARENT",
+            "accessible_text": None,
+            "text": None,
+        },
+    }
+    peer = dict(target)
+    peer["ref"] = "n19"
+    peer["bounds"] = [1529.0, 65.0, 30.0, 27.0]
+    server = _BridgeServer(node=target, find_matches=[peer, target])
+    try:
+        _write_discovery(tmp_path, server)
+        captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
+        identity = captured.candidate_strategy().options["identification"]
+        assert identity["mandatory"] == {
+            "class": "com.sun.javafx.scene.control.MenuBarButton",
+        }
+        assert identity["assistive"]["hierarchy"] == [
+            "AnchorPane#AnchorPane", "MenuBar#topMenuBar", "HBox", "MenuBarButton",
+        ]
+        assert identity["ordinal"] == 1
     finally:
         server.close()
 
