@@ -33,6 +33,7 @@ setup(
             "automation-author=automation_harness.compat.python36:run_author",
             "automation-capture=automation_harness.compat.python36:run_capture",
             "automation-repository=automation_harness.compat.python36:run_repository",
+            "automation-javafx=automation_harness.compat.python36:run_javafx",
         ]
     },
 )

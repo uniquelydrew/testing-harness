@@ -172,10 +172,39 @@ class _Python36Finder(importlib.abc.MetaPathFinder):
         return spec
 
 
+def _install_yaml_compat():
+    """Allow repository saves with the PyYAML shipped on RHEL/Python 3.6.
+
+    PyYAML 3.x accepts arbitrary keywords in ``safe_dump`` and forwards them to
+    ``dump_all``, which does not understand the ``sort_keys`` keyword added by
+    newer PyYAML releases. Probe support once and, only on affected versions,
+    strip that keyword while preserving all other safe-dump options.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return
+
+    safe_dump = yaml.safe_dump
+    try:
+        safe_dump({}, sort_keys=False)
+        return
+    except TypeError as exc:
+        if "sort_keys" not in str(exc):
+            raise
+
+    def safe_dump_compat(data, stream=None, **kwargs):
+        kwargs.pop("sort_keys", None)
+        return safe_dump(data, stream=stream, **kwargs)
+
+    yaml.safe_dump = safe_dump_compat
+
+
 def install():
     global _INSTALLED
     if _INSTALLED or sys.version_info >= (3, 7):
         return
+    _install_yaml_compat()
     sys.meta_path.insert(0, _Python36Finder())
     _INSTALLED = True
 
@@ -207,3 +236,7 @@ def run_capture():
 
 def run_repository():
     return _run("automation_harness.authoring.app", "repository_main")
+
+
+def run_javafx():
+    return _run("automation_harness.javafx_cli", "main")

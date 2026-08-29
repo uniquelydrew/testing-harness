@@ -16,6 +16,7 @@ _JAVA_ATK_WRAPPER_ENV = "AUTOMATION_HARNESS_JAVA_ATK_WRAPPER"
 _JAVA_ATK_WRAPPER_CANDIDATES = (
     Path("/usr/share/java/java-atk-wrapper.jar"),
     Path("/usr/share/java/java-atk-wrapper/java-atk-wrapper.jar"),
+    Path("/usr/lib64/java-atk-wrapper/java-atk-wrapper.jar"),
 )
 
 
