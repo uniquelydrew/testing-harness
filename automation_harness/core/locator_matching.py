@@ -40,10 +40,92 @@ def _validate_match_value(error_type, prefix: str, value: Any, *, allow_empty: b
     raise error_type(f"{prefix} must be a string or {{regex: pattern}}")
 
 
+def _contains_regex(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if set(value) == {"regex"}:
+            return True
+        return any(_contains_regex(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_regex(item) for item in value)
+    return False
+
+
+def _exact_subset(value: Any) -> Any:
+    """Return the safely bridge-evaluable subset of a matcher structure."""
+    if isinstance(value, Mapping):
+        if set(value) == {"regex"}:
+            return None
+        result = {}
+        for key, item in value.items():
+            exact = _exact_subset(item)
+            if exact is not None:
+                result[key] = exact
+        return result or None
+    if isinstance(value, (list, tuple)):
+        if _contains_regex(value):
+            return None
+        return list(value)
+    return value
+
+
+def _structure_matches(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, Mapping) and set(expected) == {"regex"}:
+        return _matches_value(actual, expected)
+    if isinstance(expected, Mapping):
+        if not isinstance(actual, Mapping):
+            return False
+        return all(
+            key in actual and _structure_matches(actual.get(key), value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, (list, tuple)):
+        if not isinstance(actual, (list, tuple)) or len(actual) != len(expected):
+            return False
+        return all(_structure_matches(left, right) for left, right in zip(actual, expected))
+    return actual == expected
+
+
+def _javafx_node_matches(node: Mapping[str, Any], criteria: Mapping[str, Any]) -> bool:
+    for key, expected in criteria.items():
+        if key == "parent":
+            if not isinstance(expected, Mapping) or not _structure_matches(node.get("parent"), expected):
+                return False
+            continue
+        if key == "ancestor":
+            if not isinstance(expected, Mapping):
+                return False
+            ancestors = node.get("stable_ancestors")
+            if not isinstance(ancestors, (list, tuple)) or not any(
+                isinstance(item, Mapping) and _structure_matches(item, expected)
+                for item in ancestors
+            ):
+                return False
+            continue
+        if key == "lineage":
+            if not isinstance(expected, (list, tuple)):
+                return False
+            ancestors = node.get("stable_ancestors")
+            if not isinstance(ancestors, (list, tuple)):
+                return False
+            cursor = 0
+            for candidate in ancestors:
+                if cursor >= len(expected):
+                    break
+                wanted = expected[cursor]
+                if isinstance(candidate, Mapping) and isinstance(wanted, Mapping) and _structure_matches(candidate, wanted):
+                    cursor += 1
+            if cursor != len(expected):
+                return False
+            continue
+        if not _structure_matches(node.get(key), expected):
+            return False
+    return True
+
+
 def install() -> None:
-    """Install regex-aware locator behavior into existing repository/drivers."""
+    """Install regex-aware locator behavior into repository and all GUI drivers."""
     from automation_harness.core import component_repository
-    from automation_harness.drivers import atspi_driver, java_accessibility
+    from automation_harness.drivers import atspi_driver, java_accessibility, javafx_bridge
 
     def validate_locator_conditions(prefix: str, conditions: Mapping[str, Any]) -> None:
         for key, value in conditions.items():
@@ -125,7 +207,106 @@ def install() -> None:
                 return False
         return True
 
+    original_javafx_find_matches = javafx_bridge.JavaFxBridgeDriver._find_matches
+    original_javafx_activate = javafx_bridge.JavaFxBridgeDriver.activate
+    original_javafx_get_text = javafx_bridge.JavaFxBridgeDriver.get_text
+    original_javafx_set_text = javafx_bridge.JavaFxBridgeDriver.set_text
+
+    def javafx_find_matches(self, identification=None):
+        identity = dict(identification or {})
+        if not _contains_regex(identity):
+            return original_javafx_find_matches(self, identification)
+
+        if "mandatory" in identity:
+            mandatory = identity.get("mandatory") or {}
+            assistive = identity.get("assistive") or {}
+        else:
+            mandatory = {
+                key: value
+                for key, value in identity.items()
+                if key not in {"assistive", "ordinal"}
+            }
+            assistive = identity.get("assistive") or {}
+        if not isinstance(mandatory, Mapping) or not isinstance(assistive, Mapping):
+            return original_javafx_find_matches(self, identification)
+
+        broad_mandatory = _exact_subset(mandatory)
+        broad_identity = {"mandatory": broad_mandatory or {}}
+        candidates, _bridge_trace = original_javafx_find_matches(self, broad_identity)
+
+        matches = [
+            (endpoint, node)
+            for endpoint, node in candidates
+            if _javafx_node_matches(node, mandatory)
+        ]
+        stages = [
+            javafx_bridge.JavaFxResolutionStage("mandatory", dict(mandatory), len(matches))
+        ]
+        for key, value in assistive.items():
+            if len(matches) <= 1:
+                break
+            criterion = {key: value}
+            matches = [
+                (endpoint, node)
+                for endpoint, node in matches
+                if _javafx_node_matches(node, criterion)
+            ]
+            stages.append(
+                javafx_bridge.JavaFxResolutionStage(
+                    "assistive:" + str(key), criterion, len(matches)
+                )
+            )
+        return matches, tuple(stages)
+
+    def _javafx_ref_identity(node):
+        ref = node.get("ref") if isinstance(node, Mapping) else None
+        if not ref:
+            raise LookupError("JavaFX bridge result has no stable runtime reference")
+        return {"mandatory": {"ref": ref}}
+
+    def javafx_activate(self, *, identification=None, **kwargs):
+        if not _contains_regex(identification or {}):
+            return original_javafx_activate(self, identification=identification, **kwargs)
+        endpoint, node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "activate", timeout=5.0, identification=_javafx_ref_identity(node)
+        )
+        return {
+            "action": "activate",
+            "bridge_pid": endpoint.pid,
+            "node": response.get("node"),
+        }
+
+    def javafx_get_text(self, *, identification=None, **kwargs):
+        if not _contains_regex(identification or {}):
+            return original_javafx_get_text(self, identification=identification, **kwargs)
+        endpoint, node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "get_text", timeout=5.0, identification=_javafx_ref_identity(node)
+        )
+        return str(response.get("text") or "")
+
+    def javafx_set_text(self, value, *, identification=None, **kwargs):
+        if not _contains_regex(identification or {}):
+            return original_javafx_set_text(self, value, identification=identification, **kwargs)
+        endpoint, node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "set_text",
+            timeout=5.0,
+            identification=_javafx_ref_identity(node),
+            value=value,
+        )
+        return {
+            "action": "set_text",
+            "bridge_pid": endpoint.pid,
+            "node": response.get("node"),
+        }
+
     component_repository._validate_locator_conditions = validate_locator_conditions
     atspi_driver._matches_condition = atspi_matches_condition
     atspi_driver._matches_value = _matches_value
     java_accessibility.JavaAccessBridgeDriver._matches = staticmethod(jab_matches)
+    javafx_bridge.JavaFxBridgeDriver._find_matches = javafx_find_matches
+    javafx_bridge.JavaFxBridgeDriver.activate = javafx_activate
+    javafx_bridge.JavaFxBridgeDriver.get_text = javafx_get_text
+    javafx_bridge.JavaFxBridgeDriver.set_text = javafx_set_text

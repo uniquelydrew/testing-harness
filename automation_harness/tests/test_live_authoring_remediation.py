@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from automation_harness.authoring.project import AuthoringProject
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
-from automation_harness.core.locator_matching import _matches_value
+from automation_harness.core.locator_matching import _javafx_node_matches, _matches_value
 
 
 def _component_document(locator_value):
@@ -56,7 +57,35 @@ def test_case_insensitive_role_matching_supports_regex():
     assert _matches_value("Push Button", {"regex": r"push button"}, case_insensitive=True)
 
 
+def test_javafx_nested_properties_support_regex():
+    node = {
+        "id": "result-20260831-42",
+        "properties": {"automation.dynamic-id": "row-8842"},
+        "parent": {"class": "javafx.scene.layout.VBox"},
+    }
+    assert _javafx_node_matches(
+        node,
+        {
+            "id": {"regex": r"result-[0-9]{8}-[0-9]+"},
+            "properties": {"automation.dynamic-id": {"regex": r"row-[0-9]+"}},
+            "parent": {"class": "javafx.scene.layout.VBox"},
+        },
+    )
+
+
 def test_live_desktop_backend_has_no_target_application():
     backend = LiveDesktopBackend()
     assert backend.name == "attached-desktop"
     assert backend.health_check().details["target_application"] is None
+
+
+def test_authoring_project_does_not_persist_legacy_target(tmp_path):
+    project = AuthoringProject(
+        "demo",
+        tmp_path,
+        tmp_path / "components.yaml",
+        tmp_path / "runs",
+        {"kind": "attached-desktop", "expected_application": "Legacy App"},
+    )
+    document = project.to_document()
+    assert "target" not in document

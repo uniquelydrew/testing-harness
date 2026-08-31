@@ -127,6 +127,18 @@ def _install_workbench_controls() -> None:
                 result["ordinal"] = int(spin.get_value_as_int())
         return result
 
+    def finish_workbench_click(self, result=None, error=None):
+        if error is not None:
+            self._set_status("Click failed")
+            self.app._error("Click failed", "%s: %s" % (type(error).__name__, error))
+            return False
+        self._set_status("Clicked selected object")
+        self.app._set_text(
+            self.app.object_detail,
+            json.dumps({"click": result}, indent=2, default=str),
+        )
+        return False
+
     def click_selected(self):
         node = self._selected_node()
         if node is None:
@@ -157,19 +169,9 @@ def _install_workbench_controls() -> None:
                 else:
                     result = JavaFxBridgeDriver().activate(identification=identification)
             except Exception as exc:
-                GLib.idle_add(
-                    self.app._error,
-                    "Click failed",
-                    "%s: %s" % (type(exc).__name__, exc),
-                )
-                GLib.idle_add(self._set_status, "Click failed")
+                GLib.idle_add(self._finish_workbench_click, None, exc)
                 return
-            GLib.idle_add(self._set_status, "Clicked selected object")
-            GLib.idle_add(
-                self.app._set_text,
-                self.app.object_detail,
-                json.dumps({"click": result}, indent=2, default=str),
-            )
+            GLib.idle_add(self._finish_workbench_click, result, None)
 
         threading.Thread(
             target=worker,
@@ -181,6 +183,7 @@ def _install_workbench_controls() -> None:
     workbench.ObjectIdentityWorkbench._build = build
     workbench.ObjectIdentityWorkbench._add_property_row = add_property_row
     workbench.ObjectIdentityWorkbench.current_identity = current_identity
+    workbench.ObjectIdentityWorkbench._finish_workbench_click = finish_workbench_click
     workbench.ObjectIdentityWorkbench.click_selected = click_selected
 
 
@@ -191,6 +194,8 @@ def _install_live_authoring(app_module) -> None:
 
     original_build = app_module.AuthoringApp._build
     original_build_objects = app_module.AuthoringApp._build_objects
+    original_new_project_dialog = app_module.AuthoringApp.new_project_dialog
+    original_open_project_dialog = app_module.AuthoringApp.open_project_dialog
 
     def build(self):
         original_build(self)
@@ -225,6 +230,24 @@ def _install_live_authoring(app_module) -> None:
         row = Gtk.Box(spacing=5)
         left.pack_start(row, False, False, 0)
         self._button(row, "Click Selected", self.click_selected_object)
+
+    def new_project_dialog(self):
+        previous = self.project
+        original_new_project_dialog(self)
+        if self.project is not None and self.project is not previous:
+            self._attached_application = None
+            self._set_status(
+                "Created project — current environment is assumed running; capture an object to begin"
+            )
+
+    def open_project_dialog(self):
+        previous_path = self.project_path
+        original_open_project_dialog(self)
+        if self.project is not None and self.project_path != previous_path:
+            self._attached_application = None
+            self._set_status(
+                "Opened project: %s — current environment attached" % self.project.name
+            )
 
     def bind_captured_application(self, captured):
         # Application identity remains part of the captured object's locator.
@@ -344,6 +367,8 @@ def _install_live_authoring(app_module) -> None:
 
     app_module.AuthoringApp._build = build
     app_module.AuthoringApp._build_objects = build_objects
+    app_module.AuthoringApp.new_project_dialog = new_project_dialog
+    app_module.AuthoringApp.open_project_dialog = open_project_dialog
     app_module.AuthoringApp.bind_captured_application = bind_captured_application
     app_module.AuthoringApp.click_selected_object = click_selected_object
     app_module.AuthoringApp._click_selected_worker = click_selected_worker

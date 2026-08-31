@@ -1,10 +1,30 @@
-"""Python-version-safe entry point for the live authoring console."""
+"""Python-version-safe entry points for live authoring/capture surfaces."""
 
 
-def run_author():
+def _prepare():
     from automation_harness.compat.python36 import install
 
     install()
-    from automation_harness.authoring.live_runtime import run_author as _run_author
+    from automation_harness.authoring import app, live_runtime
+    from automation_harness.authoring.live_click_policy import install as install_click_policy
 
-    return _run_author()
+    live_runtime.capture_runtime._install(app)
+    live_runtime._install_workbench_controls()
+    live_runtime._install_live_authoring(app)
+    install_click_policy(app)
+    return app
+
+
+def run_author():
+    app = _prepare()
+    return app.main()
+
+
+def run_capture():
+    app = _prepare()
+    return app.capture_main()
+
+
+def run_repository():
+    app = _prepare()
+    return app.repository_main()
