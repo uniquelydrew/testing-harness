@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import replace
@@ -27,13 +28,16 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
+from automation_harness.recording import RecordedInteraction, RecordingSession, interactions_to_steps
+from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
+from automation_harness.drivers.javafx_bridge import HttpJavaFxBridgeTransport
 from automation_harness.runner.plan_execution import execute_plan
 
 
 class AuthoringApp:
     """GTK3 authoring/Object Capture client for the RHEL deployment environment."""
 
-    def __init__(self, repository_path: Path | None = None, *, mode: str = "author", project_path: Path | None = None) -> None:
+    def __init__(self, repository_path: Path | None = None, *, mode: str = "author", project_path: Path | None = None, recording_session_factory=None) -> None:
         self.mode = mode
         self.project_path = project_path
         self.project = AuthoringProject.load(project_path) if project_path is not None else None
@@ -59,6 +63,12 @@ class AuthoringApp:
         self._highlight_windows = []
         self._highlight_timeout = None
         self.last_run_dir = None
+        self._target_backend = None
+        self._target_environment = None
+        self._attached_application = None
+        self.recording_session_factory = recording_session_factory
+        self.recording_session: RecordingSession | None = None
+        self.recorded_interactions: list[RecordedInteraction] = []
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
@@ -222,10 +232,22 @@ class AuthoringApp:
         self._button(top, "Move Up", lambda: self.move_plan_step(-1))
         self._button(top, "Move Down", lambda: self.move_plan_step(1))
         self._button(top, "Remove Selected", self.remove_plan_step)
+        self.stop_recording_button = self._button(top, "Stop Recording", self.stop_recording)
+        self.stop_recording_button.set_sensitive(False)
+        self.start_recording_button = self._button(top, "Start Recording", self.start_recording)
         self.plan_tree, self.plan_store = self._tree((("Node", 100), ("Registered Step", 260), ("Inputs", 300), ("Outputs", 220), ("Depends", 140)))
         self.plan_tree.connect("row-activated", lambda *_args: self.edit_plan_step())
         self.plan_tree.connect("key-press-event", self._on_plan_tree_key_press)
         self.plan_tab.pack_start(self._scrolled(self.plan_tree), True, True, 0)
+        recording = Gtk.Box(spacing=6)
+        self.plan_tab.pack_start(recording, False, False, 0)
+        self.recording_tree, self.recording_store = self._tree((("#", 40), ("Action", 110), ("Semantic Target", 230), ("Parameters", 180), ("Repository Match", 170), ("Confidence", 90)))
+        recording.pack_start(self._scrolled(self.recording_tree), True, True, 0)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        recording.pack_start(buttons, False, False, 0)
+        self._button(buttons, "Keep", self.keep_recorded_interaction)
+        self._button(buttons, "Delete", self.delete_recorded_interaction)
+        self._button(buttons, "Add Selected to Test", self.add_recorded_interaction_to_test)
 
     def _on_key_press(self, _widget, event):
         control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
@@ -868,6 +890,72 @@ class AuthoringApp:
     def remove_plan_step(self) -> None:
         node_id = self._selected(self.plan_tree)
         if node_id: self.plan = replace(self.plan, steps=tuple(item for item in self.plan.steps if item.node_id != node_id)); self.refresh_plan(); self.refresh_state()
+
+    def start_recording(self) -> None:
+        if self.recording_session is not None and self.recording_session.active:
+            return
+        if self.recording_session_factory is not None:
+            self.recording_session = self.recording_session_factory(self.repository)
+        else:
+            urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
+            tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
+            adapters = tuple(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
+            self.recording_session = RecordingSession(adapters, repository=self.repository)
+        try:
+            self.recording_session.start()
+        except Exception as exc:
+            self.recording_session = None
+            self._error("Recording", "%s: %s" % (type(exc).__name__, exc))
+            return
+        self.start_recording_button.set_sensitive(False)
+        self.stop_recording_button.set_sensitive(True)
+        self._set_status("Recording… interact with the target application, then stop recording")
+
+    def stop_recording(self) -> None:
+        if self.recording_session is None:
+            return
+        try:
+            self.recorded_interactions = list(self.recording_session.stop())
+        except Exception as exc:
+            self._error("Recording", "%s: %s" % (type(exc).__name__, exc))
+            return
+        finally:
+            self.start_recording_button.set_sensitive(True)
+            self.stop_recording_button.set_sensitive(False)
+        self.refresh_recorded_interactions()
+        new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
+        self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
+
+    def refresh_recorded_interactions(self) -> None:
+        self.recording_store.clear()
+        for index, interaction in enumerate(self.recorded_interactions):
+            target = interaction.target
+            target_name = (target.name or target.role) if target else "Unresolved target"
+            match = interaction.repository_match
+            self.recording_store.append((str(index), interaction.action.value, target_name, json.dumps(dict(interaction.parameters), separators=(",", ":")), match.component_id or match.status.replace("_", " "), "%.0f%%" % (interaction.confidence * 100)))
+
+    def keep_recorded_interaction(self) -> None:
+        if self._selected(self.recording_tree) is not None:
+            self._set_status("Recorded interaction kept for review")
+
+    def delete_recorded_interaction(self) -> None:
+        index = self._selected(self.recording_tree)
+        if index is None:
+            return
+        del self.recorded_interactions[int(index)]
+        self.refresh_recorded_interactions()
+
+    def add_recorded_interaction_to_test(self) -> None:
+        index = self._selected(self.recording_tree)
+        if index is None:
+            return self._info("Recording", "Select a recorded interaction first.")
+        try:
+            call = interactions_to_steps((self.recorded_interactions[int(index)],), start_index=len(self.plan.steps) + 1)[0]
+        except Exception as exc:
+            return self._info("Recording", "This interaction cannot be added yet: %s" % exc)
+        self.plan = replace(self.plan, steps=(*self.plan.steps, call))
+        self.refresh_plan(); self.refresh_state()
+        self._set_status("Added reviewed recorded interaction to test")
 
     def refresh_plan(self) -> None:
         self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan")
