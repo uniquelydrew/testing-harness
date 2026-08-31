@@ -9,6 +9,39 @@ java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) }
 }
 
-jar {
-    manifest { attributes('Premain-Class': 'automation.harness.agent.AutomationAgent') }
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.httpserver']
 }
+
+jar {
+    manifest {
+        attributes(
+            'Premain-Class': 'automation.harness.agent.AutomationAgent',
+            'Add-Modules': 'jdk.httpserver',
+        )
+    }
+}
+
+tasks.register('agentTransportSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Exercises the agent loopback transport.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'automation.harness.agent.AgentServerSmoke'
+    jvmArgs '--add-modules', 'jdk.httpserver'
+}
+
+tasks.register('agentResolverSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Exercises source-side JavaFX semantic target promotion.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'automation.harness.agent.JavaFxSemanticTargetResolverSmoke'
+    jvmArgs '--add-modules', 'jdk.httpserver'
+}
+
+tasks.register('agentSmoke') {
+    group = 'verification'
+    description = 'Exercises the agent loopback transport and semantic target resolver.'
+    dependsOn tasks.named('agentTransportSmoke'), tasks.named('agentResolverSmoke')
+}
+
+tasks.named('check') { dependsOn tasks.named('agentSmoke') }
