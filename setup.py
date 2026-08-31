@@ -30,7 +30,7 @@ setup(
         "console_scripts": [
             "automation-run=automation_harness.compat.python36:run_cli",
             "automation-reference=automation_harness.compat.python36:run_reference",
-            "automation-author=automation_harness.compat.python36:run_author",
+            "automation-author=automation_harness.compat.live_author:run_author",
             "automation-capture=automation_harness.compat.python36:run_capture",
             "automation-repository=automation_harness.compat.python36:run_repository",
             "automation-javafx=automation_harness.compat.python36:run_javafx",
