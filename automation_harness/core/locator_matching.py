@@ -41,12 +41,7 @@ def _validate_match_value(error_type, prefix: str, value: Any, *, allow_empty: b
 
 
 def install() -> None:
-    """Install regex-aware locator behavior into existing repository/drivers.
-
-    The branch has multiple accessibility adapters that already centralize
-    matching in module helpers. Patching those helpers keeps serialization and
-    driver APIs backward-compatible while adding one first-class matcher form.
-    """
+    """Install regex-aware locator behavior into existing repository/drivers."""
     from automation_harness.core import component_repository
     from automation_harness.drivers import atspi_driver, java_accessibility
 
@@ -125,7 +120,8 @@ def install() -> None:
             if key in {"application", "window"} and not _matches_value(title, expected):
                 return False
             if key == "accessible_id":
-                # Java Access Bridge does not expose an AT-SPI-style ID.
+                return False
+            if key in {"parent", "hierarchy"}:
                 return False
         return True
 
