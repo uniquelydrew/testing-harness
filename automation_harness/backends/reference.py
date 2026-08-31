@@ -38,7 +38,9 @@ class ReferenceBackend(ExecutionBackend):
     def capabilities(self) -> set[str]:
         capabilities = {"reference", "local-only", "synthetic-events", "tracking", "mosaic", "threat-state", "triangulation"}
         if self.gui:
-            capabilities.update({"gui", "components", "screen-capture", "synthetic-video"})
+            capabilities.update({"gui", "components", "synthetic-video"})
+            if _pillow_available():
+                capabilities.add("screen-capture")
         return capabilities
 
     def preflight_issues(self) -> list[str]:
@@ -57,10 +59,6 @@ class ReferenceBackend(ExecutionBackend):
             issues.append("native GUI reference mode requires DISPLAY to be set")
         if self.display_mode == "auto" and not os.environ.get("DISPLAY") and shutil.which("Xvfb") is None:
             issues.append("auto GUI reference mode requires either DISPLAY or Xvfb")
-        try:
-            from PIL import ImageGrab  # noqa: F401
-        except ImportError:
-            issues.append("GUI reference mode requires Pillow for framebuffer evidence")
         return issues
 
     def start(self, *, run_dir: Path) -> dict[str, str]:
@@ -168,3 +166,11 @@ def _choose_display_number() -> int:
         if not Path(f"/tmp/.X11-unix/X{number}").exists():
             return number
     raise RuntimeError("no free X display number found in range 90..149")
+
+
+def _pillow_available() -> bool:
+    try:
+        from PIL import ImageGrab  # noqa: F401
+    except ImportError:
+        return False
+    return True

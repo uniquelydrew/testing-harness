@@ -12,6 +12,7 @@ from automation_harness.backends.protected import ProtectedBackend
 from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.java_desktop import JavaDesktopBackend
+from automation_harness.backends.attached_desktop import AttachedDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
@@ -45,6 +46,9 @@ def _backend(name: str, args: argparse.Namespace, target: dict | None = None):
         if target.get("kind") != "java-desktop":
             raise ValueError("java-desktop backend requires manifest.target.kind: java-desktop")
         return JavaDesktopBackend(target, display_mode=getattr(args, "reference_display", "virtual"))
+    if name == "attached-desktop":
+        application = getattr(args, "application", None) or (target or {}).get("expected_application")
+        return AttachedDesktopBackend({"expected_application": application})
     raise ValueError(name)
 
 
@@ -68,15 +72,20 @@ def _add_gtk_demo_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_attached_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--application", help="accessible application name for attached-desktop execution")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="automation-run", description="Automation harness development runner")
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="statically validate a test bundle without starting any target")
     validate.add_argument("bundle", type=Path)
-    validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
+    validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop", "attached-desktop"), default="reference")
     _add_reference_options(validate)
     _add_gtk_demo_options(validate)
+    _add_attached_options(validate)
 
     inspect = sub.add_parser("inspect", help="print normalized bundle metadata")
     inspect.add_argument("bundle", type=Path)
@@ -116,21 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
     plan_sub = plan.add_subparsers(dest="plan_command", required=True)
     plan_validate = plan_sub.add_parser("validate", help="validate a declarative TestPlan against the registered step catalog")
     plan_validate.add_argument("path", type=Path)
-    plan_validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), help="also validate backend capabilities/risk policy")
+    plan_validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop", "attached-desktop"), help="also validate backend capabilities/risk policy")
     plan_validate.add_argument("--components", type=Path, help="additional object repository to overlay for validation")
     _add_reference_options(plan_validate)
     _add_gtk_demo_options(plan_validate)
+    _add_attached_options(plan_validate)
     plan_status = plan_sub.add_parser("status", help="show the initial managed queue projection for a TestPlan")
     plan_status.add_argument("path", type=Path)
     plan_status.add_argument("--json", action="store_true")
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
-    plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
+    plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop", "attached-desktop"), default="reference")
     plan_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
+    _add_attached_options(plan_run)
 
     selftest = sub.add_parser("selftest", help="run the built-in synthetic reference regression suites")
     selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -149,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="validate and execute a bundle")
     run.add_argument("bundle", type=Path)
-    run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
+    run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop", "attached-desktop"), default="reference")
     run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     run.add_argument("-v", "--verbose", action="store_true")
     run.add_argument(
@@ -162,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_reference_options(run)
     _add_gtk_demo_options(run)
+    _add_attached_options(run)
 
     gtk_demo = sub.add_parser("gtk-demo", help="run the version-pinned GTK 4.14 Demo baseline")
     gtk_demo_sub = gtk_demo.add_subparsers(dest="gtk_demo_command", required=True)
@@ -175,6 +187,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Python 3.6's argparse compatibility path cannot enforce required
+    # subparsers.  Do not fall through and assume bundle-specific arguments.
+    if getattr(args, "command", None) is None:
+        build_parser().print_help(sys.stderr)
+        return 2
 
     if args.command == "visual":
         try:

@@ -152,8 +152,15 @@ DEFAULT_ACTIONS: dict[ObjectType, frozenset[ActionType]] = {
 }
 
 
+PASSIVE_POINTER_TYPES = frozenset({ObjectType.LABEL, ObjectType.PROGRESS_INDICATOR})
+NO_DEFAULT_CLICK_TYPES = PASSIVE_POINTER_TYPES | frozenset({ObjectType.CUSTOM})
+
+
 def default_actions(object_type: ObjectType) -> frozenset[ActionType]:
-    return DEFAULT_ACTIONS.get(object_type, frozenset())
+    actions = DEFAULT_ACTIONS.get(object_type, frozenset())
+    if object_type not in NO_DEFAULT_CLICK_TYPES:
+        actions = actions | frozenset({ActionType.CLICK})
+    return actions
 
 
 def classify_accessibility(role: str | None, native_class: str | None = None) -> ObjectType:

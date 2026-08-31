@@ -510,6 +510,8 @@ class ObjectIdentityWorkbench:
 
     def _save_node(self, node, component_id, identity):
         captured = self._captured_for_node(node)
+        if hasattr(self.app, "bind_captured_application") and not self.app.bind_captured_application(captured):
+            raise ValueError("captured object belongs to an application that is not the current test target")
         existing = self.app.repository.components.get(component_id)
         revision = 1 if existing is None else existing.revision + 1
         definition = self.app.capture.definition_from_capture(

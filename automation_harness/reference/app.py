@@ -5,6 +5,7 @@ import json
 import signal
 import socketserver
 import threading
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +82,11 @@ def serve(socket_path: Path, *, gui: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the isolated automation reference target")
-    parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument(
+        "--socket", type=Path,
+        default=Path(tempfile.gettempdir()) / "automation-harness-reference.sock",
+        help="Unix control socket (default: %(default)s)",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--gui", action="store_true", help="run the synthetic desktop GUI")
     mode.add_argument("--headless", action="store_true", help="run service-only reference state")

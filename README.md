@@ -167,20 +167,75 @@ The packaged `automation_harness/examples/java_desktop` directory is a template,
 A typical authoring workflow is:
 
 ```text
-1. Launch the authoring GUI with an editable object repository.
-2. Capture the controls you expect to use.
-3. Give each captured object a stable logical ID.
-4. Inspect the Step Library and choose reusable actions.
-5. Add those actions to a TestPlan.
-6. Bind step outputs to global variables where needed.
-7. Use those variables as inputs to later steps.
-8. Validate the plan and object references.
-9. Inspect the initial managed queue state.
-10. Run against the isolated reference backend.
-11. Review execution_state.json and events.jsonl.
+1. Create or open an authoring project.
+2. Configure the managed target application.
+3. Capture a control and save its stable logical identity.
+4. Select that object to see only actions it supports.
+5. Configure an action through typed fields and add it to Test Flow.
+6. Add synchronization and assertions from the same object-scoped Actions view.
+7. Validate and run the test against the configured project target.
+8. Review live node state and the generated run artifacts.
+9. Optionally save a proven composition as a reusable step.
 ```
 
-Start the GUI with an editable repository:
+Start the GUI and create a project from **New Project**:
+
+```bash
+automation-author
+```
+
+Or open an existing authoring project directly:
+
+```bash
+automation-author --project ./project.yaml
+```
+
+An authoring project connects capture and execution to one target:
+
+```yaml
+version: 1
+name: Login workflow
+repository: components.yaml
+runs_dir: runs
+environment_script: prepare-environment.sh
+target:
+  kind: java-desktop
+  command: [java, -jar, /opt/application/application.jar]
+  working_directory: /opt/application
+  expected_application: Example Application
+  startup_timeout: 20
+  display: native
+```
+
+Inside the GUI, use **Launch Target**, capture an object, select it in
+**Object Repository**, choose one of its supported **Actions**, and click
+**Add Action to Test**. The object binding is preserved automatically. Add
+**Wait for State** and **Assert State** the same way, then use **Run Test**.
+If the target remains launched, the run attaches to that managed instance
+instead of starting a separate application.
+
+For the normal authoring workflow, the application may already be running.
+New projects therefore start with `target.kind: attached-desktop`. Capturing the
+first object records its AT-SPI application identity as `expected_application`;
+Run Test then controls that live application without launching or terminating
+it. Capturing an object from a different application requires an explicit target
+switch so a test cannot silently act on the wrong process.
+
+The same attached plan can be executed from the CLI:
+
+```bash
+automation-run plan run ./test.yaml \
+  --components ./components.yaml \
+  --backend attached-desktop \
+  --application "Example Application"
+```
+
+The synthetic reference application remains available only when a project
+explicitly configures `target.kind: reference`; it is no longer the new-project
+default or an implicit authoring fallback.
+
+The older repository-only entry point remains available for migration and
+low-level repository editing:
 
 ```bash
 automation-author --repository ./components.yaml
@@ -192,7 +247,7 @@ Or launch it without one and choose a repository when saving the first captured 
 automation-author
 ```
 
-Inspect the installed step catalog:
+Inspect the internal execution catalog for diagnostics:
 
 ```bash
 automation-run steps list
@@ -301,7 +356,8 @@ Outputs:
   state          entire returned ComponentState
 ```
 
-This metadata is also what the authoring GUI uses to populate the Step Library and Test Composer.
+This metadata is an internal execution contract. The authoring GUI instead derives
+contextual Actions from the selected captured object and adds them to Test Flow.
 
 ## Do not duplicate an existing step
 
@@ -1285,9 +1341,11 @@ Use the Object Repository view to:
 - save/recapture an object
 - inspect revision and locator details
 
-## Step Library
+## Actions
 
-The Step Library view lists registered steps with their domains and signatures.
+The Actions view is scoped to the selected captured object. It lists only
+interactions supported by that object's semantic type and repository metadata,
+plus applicable observation, synchronization, and assertion actions.
 
 Selecting a step shows its metadata, including:
 
@@ -1301,13 +1359,16 @@ aliases
 implementation digest
 ```
 
-Use **Add selected step** to append the reusable step to the current TestPlan.
+Use **Add Action to Test** to configure the action and append it to Test Flow.
+The selected object is bound automatically. Atomic framework executors are not
+presented as user-authored reusable content.
 
-## Test Composer
+## Test Flow
 
 Each TestPlan row corresponds to one registered step call.
 
-When editing a step, the GUI accepts input JSON. Variable references use:
+New actions use schema-generated input fields. The advanced plan editor still
+accepts JSON for migration and low-level editing. Variable references use:
 
 ```json
 {"$var":"active_track"}
@@ -1368,13 +1429,13 @@ and unresolved variable references where relevant.
 
 After a reference run, the GUI can load the resulting `execution_state.json` and display the final node states.
 
-## Run Reference
+## Run Test
 
-The GUI's **Run Reference** action:
+The GUI's **Run Test** action:
 
 1. validates the current plan
 2. validates component references against the currently opened repository
-3. starts the isolated reference backend
+3. starts the target configured by the authoring project
 4. runs the same declarative execution engine used by the CLI
 5. writes normal run artifacts
 6. reloads final execution state into the GUI
@@ -1825,7 +1886,7 @@ Key source areas:
 ```text
 automation_harness/
   authoring/
-    app.py                    local Object Spy / Test Composer GUI
+    app.py                    local Object Capture / Actions / Test Flow GUI
 
   backends/
     base.py                   execution-backend contract

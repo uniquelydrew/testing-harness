@@ -4,7 +4,7 @@ import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.core.gui_execution import ExecutionStrategyResolver
-from automation_harness.models.component import ComponentDefinition
+from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, ObjectSelector, ObjectType, classify_accessibility, default_actions
 
 
@@ -13,6 +13,9 @@ def test_taxonomy_and_default_profiles_are_semantic_not_framework_specific():
     assert classify_accessibility("table", "javafx.scene.control.TableView") is ObjectType.TABLE
     assert ActionType.CLICK in default_actions(ObjectType.BUTTON)
     assert ActionType.SET_TEXT in default_actions(ObjectType.TEXT_FIELD)
+    assert ActionType.CLICK in default_actions(ObjectType.PANEL)
+    assert ActionType.CLICK in default_actions(ObjectType.CANVAS)
+    assert ActionType.CLICK not in default_actions(ObjectType.LABEL)
 
 
 def test_v1_repository_remains_usable_as_semantic_click_object():
@@ -44,6 +47,28 @@ def test_v2_actions_do_not_need_legacy_resolve_marker():
         "object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "name": "X"}],
     }}})
     assert repository.get("x").supports(ActionType.CLICK)
+
+
+def test_click_is_available_to_most_accessibility_backed_components():
+    repository = ComponentRepository.from_document({"version": 2, "components": {
+        "panel": {"object_type": "panel", "actions": ["focus"], "strategies": [{"type": "atspi", "name": "Workspace"}]},
+        "slider": {"object_type": "slider", "actions": ["set_value"], "strategies": [{"type": "java_accessibility", "name": "Zoom"}]},
+    }})
+    assert repository.get("panel").supports(ActionType.CLICK)
+    assert repository.get("slider").supports(ActionType.CLICK)
+
+
+def test_click_is_not_inferred_for_read_only_or_passive_components():
+    inspection = ComponentDefinition(
+        "status", object_type=ObjectType.CUSTOM, actions=frozenset({"resolve"}),
+        strategies=(ComponentStrategy("reference_inspection", {"key": "status"}),),
+    )
+    label = ComponentDefinition(
+        "label", object_type=ObjectType.LABEL, actions=frozenset({"resolve"}),
+        strategies=(ComponentStrategy("atspi", {"name": "Status"}),),
+    )
+    assert not inspection.supports(ActionType.CLICK)
+    assert not label.supports(ActionType.CLICK)
 
 
 def test_invalid_semantic_type_is_rejected():
