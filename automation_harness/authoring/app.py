@@ -9,12 +9,16 @@ from typing import Any
 
 import cairo  # noqa: F401
 import gi
+import yaml
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from automation_harness.backends.reference import ReferenceBackend
+from automation_harness.authoring.action_catalog import action_by_id, actions_for
+from automation_harness.authoring.project import AttachedExecutionBackend, AuthoringProject, applications_for_plan, create_authoring_project
+from automation_harness.backends.attached_desktop import AttachedDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.reusable_steps import ReusableStepDefinition, list_reusable_steps
 from automation_harness.core.object_capture import ObjectCaptureService
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, save_plan, validate_plan, validate_plan_components
@@ -26,20 +30,24 @@ from automation_harness.runner.plan_execution import execute_plan
 class AuthoringApp:
     """GTK3 authoring/Object Capture client for the RHEL deployment target."""
 
-    def __init__(self, repository_path: Path | None = None, *, mode: str = "author") -> None:
+    def __init__(self, repository_path: Path | None = None, *, mode: str = "author", project_path: Path | None = None) -> None:
         self.mode = mode
+        self.project_path = project_path
+        self.project = AuthoringProject.load(project_path) if project_path is not None else None
+        if self.project is not None:
+            repository_path = self.project.repository
         self.window = Gtk.Window(title={
             "capture": "Automation Harness Object Capture",
             "repository": "Automation Harness Object Repository",
         }.get(mode, "Automation Harness Author"))
         self.window.set_default_size(1180, 760)
-        self.window.connect("destroy", lambda *_args: Gtk.main_quit())
+        self.window.connect("destroy", self._on_destroy)
         self.registry = default_step_registry()
         self.capture = ObjectCaptureService()
         self.repository_path = repository_path
         self.repository = self._load_repository()
         self.plan = TestPlan(name="new-test-plan")
-        self.selected_step = None
+        self.selected_action = None
         self._run_active = False
         self._click_capture_active = False
         self._click_picker = None
@@ -48,10 +56,20 @@ class AuthoringApp:
         self._highlight_windows = []
         self._highlight_timeout = None
         self.last_run_dir = None
+        self._target_backend = None
+        self._target_environment = None
+        self._attached_application = None
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
         self.window.show_all()
+
+    def _on_destroy(self, *_args) -> None:
+        backend = getattr(self, "_target_backend", None)
+        if backend is not None:
+            try: backend.stop()
+            except Exception: pass
+        Gtk.main_quit()
 
     def _load_repository(self) -> ComponentRepository:
         package_repo = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
@@ -67,12 +85,28 @@ class AuthoringApp:
 
         toolbar = Gtk.Box(spacing=6)
         outer.pack_start(toolbar, False, False, 0)
+        target_toolbar = Gtk.Box(spacing=6)
+        if self.mode == "author":
+            outer.pack_start(target_toolbar, False, False, 0)
         self._button(toolbar, "Open Repository", self.open_repository)
         if self.mode == "author":
+            self._button(target_toolbar, "New Project", self.new_project_dialog)
+            self._button(target_toolbar, "Open Project", self.open_project_dialog)
+            self._button(target_toolbar, "Configure Target", self.configure_target_dialog)
+            self.launch_target_button = self._button(target_toolbar, "Launch Target", self.launch_target)
+            self.stop_target_button = self._button(target_toolbar, "Stop Target", self.stop_target)
+            self.stop_target_button.set_sensitive(False)
             self._button(toolbar, "Open Plan", self.open_plan_dialog)
             self._button(toolbar, "Save Plan", self.save_plan_dialog)
             self._button(toolbar, "Validate Plan", self.validate_plan_dialog)
-            self.run_reference_button = self._button(toolbar, "Run Reference", self.run_reference_plan)
+            self.run_reference_button = self._button(toolbar, "Run Test", self.run_reference_plan)
+            self._button(toolbar, "Save as Reusable Step", self.save_reusable_step)
+            target = self.project.target.get("kind", "reference") if self.project else "unconfigured"
+            self.target_label = Gtk.Label(label="Target: " + str(target))
+            target_toolbar.pack_start(self.target_label, False, False, 0)
+            count = len(list_reusable_steps(self.project.root / "reusable_steps")) if self.project else 0
+            if count:
+                target_toolbar.pack_start(Gtk.Label(label="Reusable steps: %d" % count), False, False, 0)
         self.status = Gtk.Label(label="Ready")
         self.status.set_halign(Gtk.Align.END)
         toolbar.pack_end(self.status, True, True, 0)
@@ -89,10 +123,10 @@ class AuthoringApp:
         self.plan_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.vars_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.state_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        notebook.append_page(self.steps_tab, Gtk.Label(label="Step Library"))
-        notebook.append_page(self.plan_tab, Gtk.Label(label="Test Composer"))
+        notebook.append_page(self.steps_tab, Gtk.Label(label="Actions"))
+        notebook.append_page(self.plan_tab, Gtk.Label(label="Test Flow"))
         notebook.append_page(self.vars_tab, Gtk.Label(label="Variables"))
-        notebook.append_page(self.state_tab, Gtk.Label(label="Execution State"))
+        notebook.append_page(self.state_tab, Gtk.Label(label="Run State"))
         self._build_steps()
         self._build_plan()
         self._build_variables()
@@ -137,7 +171,7 @@ class AuthoringApp:
         self.object_count = Gtk.Label(label="0 objects")
         filter_row.pack_end(self.object_count, False, False, 0)
         self.object_tree, self.object_store = self._tree((("Component", 260), ("Rev", 50), ("Type", 110), ("Actions", 180)))
-        self.object_tree.get_selection().connect("changed", lambda *_args: self.show_object())
+        self.object_tree.get_selection().connect("changed", lambda *_args: self._object_selection_changed())
         left.pack_start(self._scrolled(self.object_tree), True, True, 0)
         buttons = Gtk.Box(spacing=5)
         left.pack_start(buttons, False, False, 0)
@@ -171,16 +205,16 @@ class AuthoringApp:
         left.pack_start(filter_row, False, False, 0)
         filter_row.pack_start(Gtk.Label(label="Filter:"), False, False, 0)
         self.step_filter = Gtk.SearchEntry()
-        self.step_filter.set_placeholder_text("Step ID, domain, or signature")
+        self.step_filter.set_placeholder_text("Action name, category, or description")
         self.step_filter.connect("search-changed", lambda *_args: self.refresh_steps())
         filter_row.pack_start(self.step_filter, True, True, 0)
-        self.step_count = Gtk.Label(label="0 steps")
+        self.step_count = Gtk.Label(label="Select an object")
         filter_row.pack_end(self.step_count, False, False, 0)
-        self.step_tree, self.step_store = self._tree((("Step", 300), ("Domain", 120), ("Signature", 420)))
+        self.step_tree, self.step_store = self._tree((("Action", 200), ("ID", 150), ("Category", 130), ("Description", 400)))
         self.step_tree.get_selection().connect("changed", lambda *_args: self.show_step())
         self.step_tree.connect("row-activated", lambda *_args: self.add_selected_step())
         left.pack_start(self._scrolled(self.step_tree), True, True, 0)
-        self._button(left, "Add Selected Step to Plan", self.add_selected_step)
+        self._button(left, "Add Action to Test", self.add_selected_step)
         self.step_detail = Gtk.TextView()
         self.step_detail.set_editable(False)
         self.step_detail.set_monospace(True)
@@ -313,6 +347,11 @@ class AuthoringApp:
             "strategies": [{"type": item.type, **item.options} for item in definition.strategies],
         }
         self._set_text(self.object_detail, json.dumps(payload, indent=2, default=str))
+
+    def _object_selection_changed(self) -> None:
+        self.show_object()
+        if self.mode == "author":
+            self.refresh_steps()
 
     def edit_selected_object(self) -> None:
         component_id = self._selected(self.object_tree)
@@ -564,31 +603,94 @@ class AuthoringApp:
         except Exception as exc: self._error("Visual rejection", "%s: %s" % (type(exc).__name__, exc))
 
     def refresh_steps(self) -> None:
-        selected = self._selected(self.step_tree)
+        selected = self._selected(self.step_tree, 1)
         self.step_store.clear()
+        component_id = self._selected(self.object_tree)
+        if not component_id:
+            self.step_count.set_text("Select an object")
+            self._set_text(self.step_detail, "Select a captured object to see its supported actions.")
+            return
         query = self.step_filter.get_text().strip().casefold()
-        definitions = self.registry.definitions()
+        definitions = actions_for(self.repository.get(component_id))
         visible = 0
         for definition in definitions:
-            searchable = "%s %s %s" % (definition.name, definition.domain, definition.invocation_signature)
+            searchable = "%s %s %s" % (definition.name, definition.category, definition.description)
             if query and query not in searchable.casefold():
                 continue
-            self.step_store.append((definition.name, definition.domain, str(definition.invocation_signature)))
+            self.step_store.append((definition.name, definition.action_id, definition.category, definition.description))
             visible += 1
-        self.step_count.set_text("%d of %d" % (visible, len(definitions)) if query else "%d steps" % len(definitions))
-        self._select_value(self.step_tree, selected)
+        self.step_count.set_text("%d of %d" % (visible, len(definitions)) if query else "%d actions" % len(definitions))
+        self._select_value(self.step_tree, selected, 1)
 
     def show_step(self) -> None:
-        name = self._selected(self.step_tree)
-        if not name: return
-        self.selected_step = name; self._set_text(self.step_detail, json.dumps(self.registry.get(name).to_dict(), indent=2, default=str))
+        action_id = self._selected(self.step_tree, 1)
+        component_id = self._selected(self.object_tree)
+        if not action_id or not component_id:
+            return
+        definition = action_by_id(self.repository.get(component_id), action_id)
+        self.selected_action = action_id
+        payload = {
+            "action": definition.action_id,
+            "name": definition.name,
+            "category": definition.category,
+            "description": definition.description,
+            "object": component_id,
+            "inputs": [vars(item) for item in definition.inputs],
+        }
+        self._set_text(self.step_detail, json.dumps(payload, indent=2, default=str))
 
     def add_selected_step(self) -> None:
-        name = self._selected(self.step_tree)
-        if not name: return
-        definition = self.registry.get(name); node_id = _next_node_id(self.plan.steps)
-        inputs = {item.name: item.default for item in definition.inputs if not item.required}
-        self.plan = replace(self.plan, steps=self.plan.steps + (StepCall(node_id=node_id, step_id=definition.name, inputs=inputs),)); self.refresh_plan(); self.refresh_state()
+        action_id = self._selected(self.step_tree, 1)
+        component_id = self._selected(self.object_tree)
+        if not component_id:
+            return self._info("Actions", "Select a captured object first.")
+        if not action_id:
+            return self._info("Actions", "Select an action first.")
+        definition = action_by_id(self.repository.get(component_id), action_id)
+        values = self._configure_action(definition)
+        if values is None:
+            return
+        call = definition.to_step_call(_next_node_id(self.plan.steps), component_id, values)
+        self.plan = replace(self.plan, steps=self.plan.steps + (call,))
+        self.refresh_plan(); self.refresh_state()
+        self.notebook.set_current_page(2)
+        self._select_value(self.plan_tree, call.node_id)
+        self._set_status("Added %s on %s to test" % (definition.name, component_id))
+
+    def _configure_action(self, definition):
+        if not definition.inputs:
+            return {}
+        dialog = Gtk.Dialog(title="Configure %s" % definition.name, transient_for=self.window, modal=True)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add to Test", Gtk.ResponseType.OK)
+        box = dialog.get_content_area(); box.set_spacing(8); box.set_border_width(10)
+        entries = {}
+        for item in definition.inputs:
+            row = Gtk.Box(spacing=8)
+            label = Gtk.Label(label=item.name + (" *" if item.required else "")); label.set_xalign(0); label.set_size_request(150, -1)
+            entry = Gtk.Entry()
+            if item.default is not None: entry.set_text(json.dumps(item.default))
+            entry.set_placeholder_text(item.description or item.value_type)
+            row.pack_start(label, False, False, 0); row.pack_start(entry, True, True, 0); box.pack_start(row, False, False, 0)
+            entries[item.name] = (item, entry)
+        error = Gtk.Label(); error.set_xalign(0); box.pack_start(error, False, False, 0)
+        dialog.show_all()
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy(); return None
+            values = {}
+            missing = []
+            for name, (item, entry) in entries.items():
+                raw = entry.get_text().strip()
+                if not raw:
+                    if item.required: missing.append(name)
+                    elif item.default is not None: values[name] = item.default
+                    continue
+                try: values[name] = json.loads(raw)
+                except ValueError: values[name] = raw
+            if not missing:
+                dialog.destroy(); return values
+            error.set_text("Required: " + ", ".join(missing))
 
     def duplicate_plan_step(self) -> None:
         node_id = self._selected(self.plan_tree)
@@ -660,23 +762,235 @@ class AuthoringApp:
         path = self._choose_file(save=True, yaml=True)
         if path: save_plan(self.plan, Path(path)); self._set_status("Saved plan: " + path)
 
+    def new_project_dialog(self) -> None:
+        path = self._choose_file(save=True, yaml=True)
+        if not path:
+            return
+        name = self._ask_text("New Test Project", "Project name:", Path(path).stem)
+        if not name:
+            return
+        try:
+            self.project_path = Path(path)
+            self.project = create_authoring_project(self.project_path, name)
+            self.repository_path = self.project.repository
+            self.repository = self._load_repository()
+        except Exception as exc:
+            return self._error("New project", "%s: %s" % (type(exc).__name__, exc))
+        self.target_label.set_text("Target: " + str(self.project.target.get("kind", "reference")))
+        self.refresh_all(); self._set_status("Created project — capture an object from the target application")
+
+    def open_project_dialog(self) -> None:
+        path = self._choose_file(yaml=True)
+        if not path:
+            return
+        try:
+            project = AuthoringProject.load(Path(path))
+            self.project_path = Path(path); self.project = project
+            self._attached_application = project.target.get("expected_application") if project.target.get("kind") == "attached-desktop" else None
+            self.repository_path = project.repository; self.repository = self._load_repository()
+        except Exception as exc:
+            return self._error("Open project", "%s: %s" % (type(exc).__name__, exc))
+        target_caption = str(project.target.get("kind", "attached-desktop"))
+        if project.target.get("expected_application"):
+            target_caption += " — " + str(project.target["expected_application"])
+        self.target_label.set_text("Target: " + target_caption)
+        self.refresh_all(); self._set_status("Opened project: " + project.name)
+
+    def bind_captured_application(self, captured) -> bool:
+        application = getattr(captured, "application", None)
+        if not application:
+            self._error("Attach application", "The captured object does not expose an application identity.")
+            return False
+        current = self._attached_application
+        if self.project is not None:
+            configured = self.project.target.get("expected_application")
+            kind = self.project.target.get("kind")
+            if configured and str(configured).casefold() == str(application).casefold():
+                self._attached_application = str(configured)
+                return True
+            if kind not in {None, "attached-desktop"} and configured:
+                self._error(
+                    "Application mismatch",
+                    "This managed project targets %s, but the captured object belongs to %s."
+                    % (configured, application),
+                )
+                return False
+            if configured and str(configured).casefold() != str(application).casefold():
+                if not self._confirm(
+                    "Switch attached application?",
+                    "This project targets %s, but the captured object belongs to %s. Switch the project target?"
+                    % (configured, application),
+                ):
+                    return False
+            target = {"kind": "attached-desktop", "expected_application": str(application)}
+            self.project = replace(self.project, target=target)
+            if self.project_path is not None:
+                self.project_path.write_text(yaml.safe_dump(self.project.to_document(), sort_keys=False), encoding="utf-8")
+        elif current and current.casefold() != str(application).casefold():
+            if not self._confirm(
+                "Switch attached application?",
+                "The current test targets %s. Switch it to %s?" % (current, application),
+            ):
+                return False
+        self._attached_application = str(application)
+        self.target_label.set_text("Target: attached-desktop — " + self._attached_application)
+        self._set_status("Attached target inferred from capture: " + self._attached_application)
+        return True
+
+    def configure_target_dialog(self) -> None:
+        if self.project is None or self.project_path is None:
+            return self._info("Configure Target", "Create or open a project first.")
+        raw = self._ask_text(
+            "Configure Target", "Target configuration:",
+            json.dumps(dict(self.project.target), indent=2), multiline=True,
+        )
+        if raw is None:
+            return
+        try:
+            target = json.loads(raw)
+            if not isinstance(target, dict):
+                raise ValueError("target must be an object")
+            candidate = replace(self.project, target=target)
+            # Constructing the adapter validates target kind and required fields.
+            candidate.backend()
+            self.project_path.write_text(yaml.safe_dump(candidate.to_document(), sort_keys=False), encoding="utf-8")
+            self.project = candidate
+            self._attached_application = (
+                str(target["expected_application"])
+                if target.get("kind") == "attached-desktop" and target.get("expected_application")
+                else None
+            )
+        except Exception as exc:
+            return self._error("Configure Target", "%s: %s" % (type(exc).__name__, exc))
+        target_caption = str(target.get("kind", "reference"))
+        if target.get("expected_application"):
+            target_caption += " — " + str(target["expected_application"])
+        self.target_label.set_text("Target: " + target_caption)
+        self._set_status("Updated target configuration")
+
+    def launch_target(self) -> None:
+        if self.project is None:
+            return self._info("Launch Target", "Create or open a project first.")
+        if self._target_backend is not None:
+            return self._info("Launch Target", "The project target is already running.")
+        self.launch_target_button.set_sensitive(False); self._set_status("Launching target…")
+        project = self.project
+        def worker():
+            backend = None
+            try:
+                project.prepare_environment(); backend = project.backend()
+                lifecycle_dir = project.runs_dir / "authoring-target"
+                (lifecycle_dir / "logs").mkdir(parents=True, exist_ok=True)
+                environment = backend.start(run_dir=lifecycle_dir)
+                health = backend.health_check()
+                if not health.healthy: raise RuntimeError("target failed health check: %s" % health.details)
+            except Exception as exc:
+                if backend is not None:
+                    try: backend.stop()
+                    except Exception: pass
+                GLib.idle_add(self._finish_target_launch, None, None, exc); return
+            GLib.idle_add(self._finish_target_launch, backend, environment, None)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_target_launch(self, backend=None, environment=None, error=None):
+        self.launch_target_button.set_sensitive(True)
+        if error is not None:
+            self._set_status("Target launch failed"); self._error("Launch Target", "%s: %s" % (type(error).__name__, error)); return False
+        self._target_backend = backend; self._target_environment = environment
+        self.launch_target_button.set_sensitive(False); self.stop_target_button.set_sensitive(True)
+        self._set_status("Target ready — capture objects or run the test"); return False
+
+    def stop_target(self) -> None:
+        backend = self._target_backend
+        self._target_backend = None; self._target_environment = None
+        if backend is not None:
+            try: backend.stop()
+            except Exception as exc: self._error("Stop Target", "%s: %s" % (type(exc).__name__, exc))
+        self.launch_target_button.set_sensitive(True); self.stop_target_button.set_sensitive(False); self._set_status("Target stopped")
+
+    def save_reusable_step(self) -> None:
+        self.refresh_plan()
+        if not self.plan.steps:
+            return self._info("Reusable step", "Add one or more actions to the test first.")
+        if self.project is None:
+            return self._info("Reusable step", "Open an authoring project with --project before saving reusable steps.")
+        step_id = self._ask_text("Save as Reusable Step", "Reusable step ID (for example authentication.login):")
+        if not step_id:
+            return
+        name = self._ask_text("Save as Reusable Step", "Display name:", self.plan.name)
+        if not name:
+            return
+        try:
+            definition = ReusableStepDefinition(step_id, name, "", self.plan, {}, {})
+            path = definition.save(self.project.root / "reusable_steps")
+        except Exception as exc:
+            return self._error("Reusable step", "%s: %s" % (type(exc).__name__, exc))
+        self._set_status("Saved reusable step: " + str(path))
+        self._info("Reusable step", "Saved %s. Reusable Steps now contains this user-authored composition." % name)
+
     def run_reference_plan(self) -> None:
         if self._run_active: return
-        self.refresh_plan(); issues = validate_plan(self.plan, self.registry); issues.extend(validate_plan_components(self.plan, self.repository))
+        # Read the visible flow first so target inference and execution use the
+        # same set of component references.
+        self.refresh_plan()
+        if self._attached_application is None and (
+            self.project is None
+            or (self.project.target.get("kind") == "attached-desktop" and not self.project.target.get("expected_application"))
+        ):
+            applications = self._plan_applications()
+            if len(applications) == 1:
+                application = next(iter(applications))
+                self._attached_application = application
+                if self.project is not None:
+                    self.project = replace(self.project, target={"kind": "attached-desktop", "expected_application": application})
+                    if self.project_path is not None:
+                        self.project_path.write_text(yaml.safe_dump(self.project.to_document(), sort_keys=False), encoding="utf-8")
+                self.target_label.set_text("Target: attached-desktop — " + application)
+            elif len(applications) > 1:
+                return self._error(
+                    "Multiple applications referenced",
+                    "This test references objects from multiple applications: %s. Configure a multi-application target explicitly."
+                    % ", ".join(sorted(applications)),
+                )
+        if self.project is None and self._target_backend is None and self._attached_application is None:
+            return self._error(
+                "Target not configured",
+                "Create or open a project, configure its target, and use Launch Target before running this test.",
+            )
+        issues = validate_plan(self.plan, self.registry); issues.extend(validate_plan_components(self.plan, self.repository))
         if issues: return self._error("Plan validation", "\n".join(issues))
-        self._run_active = True; self.run_reference_button.set_sensitive(False); self._set_status("Running against reference backend…")
-        plan = self.plan; runs_dir = (Path.cwd() / "runs").resolve()
+        self._run_active = True; self.run_reference_button.set_sensitive(False)
+        target_name = self.project.target.get("kind", "attached-desktop") if self.project else "attached-desktop"
+        self._set_status("Running test against %s…" % target_name)
+        plan = self.plan
+        runs_dir = self.project.runs_dir if self.project else (Path.cwd() / "runs").resolve()
         def worker():
-            result = execute_plan(plan, ReferenceBackend(gui=True, display_mode="auto"), runs_dir=runs_dir, component_repository=self.repository)
+            try:
+                if self._target_backend is not None:
+                    backend = AttachedExecutionBackend(self._target_backend, self._target_environment or {})
+                elif self.project:
+                    self.project.prepare_environment(); backend = self.project.backend()
+                else:
+                    backend = AttachedDesktopBackend({"expected_application": self._attached_application})
+                result = execute_plan(plan, backend, runs_dir=runs_dir, component_repository=self.repository)
+            except Exception as exc:
+                GLib.idle_add(self._present_run_error, exc); return
             GLib.idle_add(self._present_reference_result, result)
         threading.Thread(target=worker, daemon=True).start()
 
+    def _plan_applications(self):
+        return applications_for_plan(self.plan, self.repository)
+
+    def _present_run_error(self, error):
+        self._run_active = False; self.run_reference_button.set_sensitive(True); self._set_status("Test run failed to start")
+        self._error("Test run", "%s: %s" % (type(error).__name__, error)); return False
+
     def _present_reference_result(self, result):
         self._run_active = False; self.run_reference_button.set_sensitive(True); self.last_run_dir = result.artifact_dir
-        status = "PASS" if result.exit_code == 0 else "FAIL"; self._set_status("%s: reference run %s" % (status, result.run_id))
+        status = "PASS" if result.exit_code == 0 else "FAIL"; self._set_status("%s: test run %s" % (status, result.run_id))
         detail = "Passed: %s\nFailed: %s\nExit code: %s" % (result.passed, result.failed, result.exit_code)
         if result.validation_errors: detail += "\n\n" + "\n".join(result.validation_errors)
-        self._info("Reference run", detail) if result.exit_code == 0 else self._error("Reference run", detail)
+        self._info("Test run", detail) if result.exit_code == 0 else self._error("Test run", detail)
         return False
 
     def open_repository(self) -> None:
@@ -755,9 +1069,10 @@ def _launch(argv, *, mode, prog, description):
     import argparse
     parser = argparse.ArgumentParser(prog=prog, description=description)
     parser.add_argument("--repository", type=Path)
+    parser.add_argument("--project", type=Path, help="authoring project manifest")
     parser.add_argument("--smoke-test", action="store_true", help="construct and render the GTK GUI once, then exit")
     args = parser.parse_args(argv)
-    app = AuthoringApp(args.repository, mode=mode)
+    app = AuthoringApp(args.repository, mode=mode, project_path=args.project)
     if args.smoke_test:
         while Gtk.events_pending(): Gtk.main_iteration_do(False)
         app.window.destroy(); return 0

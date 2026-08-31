@@ -72,11 +72,11 @@ def _install_repository_workspace(app_module):
     original_build_objects = app_module.AuthoringApp._build_objects
     original_open_repository = app_module.AuthoringApp.open_repository
 
-    def init(self, repository_path=None, mode="author"):
+    def init(self, repository_path=None, mode="author", project_path=None):
         # Object Capture always starts from a clean workspace. An existing
         # repository can subsequently be opened or merged explicitly.
         initial_path = None if mode == "capture" else repository_path
-        original_init(self, initial_path, mode=mode)
+        original_init(self, initial_path, mode=mode, project_path=project_path)
         self._repository_dirty = False
         self._pending_capture = None
         self._capture_workbench = None

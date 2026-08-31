@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from automation_harness.models.gui import ActionType, ObjectType, classify_accessibility, default_actions
+from automation_harness.models.gui import ActionType, ObjectType, PASSIVE_POINTER_TYPES, classify_accessibility, default_actions
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,15 @@ class ComponentDefinition:
                 values.add(ActionType(action))
             except ValueError:
                 continue
+        # Pointer interaction is broadly applicable even when the native
+        # accessibility role does not advertise a named default action. Keep
+        # explicitly read-only strategies and genuinely passive roles out.
+        interactive_strategy = any(
+            strategy.type not in {"reference_inspection", "anchored_visual"}
+            for strategy in self.strategies
+        )
+        if interactive_strategy and self.object_type not in PASSIVE_POINTER_TYPES:
+            values.add(ActionType.CLICK)
         return frozenset(values) or default_actions(self.object_type)
 
     def supports(self, action: ActionType) -> bool:

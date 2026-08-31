@@ -251,7 +251,8 @@ class ComponentHandle:
                     driver = JavaAccessibilityDriver(self.context)
                 else:
                     driver = JavaFxBridgeDriver(self.context)
-                result = getattr(driver, method)(*args, identification=strategy.options.get("identification"))
+                identification = self._scoped_identification(strategy.options.get("identification")) if strategy.type != "javafx" else strategy.options.get("identification")
+                result = getattr(driver, method)(*args, identification=identification)
                 self.context.evidence.record(
                     "component_accessibility_operation",
                     component_id=self.definition.component_id,
@@ -271,7 +272,7 @@ class ComponentHandle:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).resolve(
                 self.definition.component_id,
-                identification=options.get("identification"),
+                identification=self._scoped_identification(options.get("identification")),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
@@ -279,7 +280,7 @@ class ComponentHandle:
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).resolve(
                 self.definition.component_id,
-                identification=options.get("identification"),
+                identification=self._scoped_identification(options.get("identification")),
             )
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).resolve(
@@ -308,13 +309,13 @@ class ComponentHandle:
     def _state_strategy(self, strategy_type: str, options: dict[str, Any]) -> ComponentState:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).state(
-                identification=options.get("identification"),
+                identification=self._scoped_identification(options.get("identification")),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
         if strategy_type == "java_accessibility":
-            return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
+            return JavaAccessibilityDriver(self.context).state(identification=self._scoped_identification(options.get("identification")))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "anchored_visual":
@@ -354,13 +355,13 @@ class ComponentHandle:
     def _activate_strategy(self, strategy_type: str, options: dict[str, Any]) -> dict[str, Any]:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).activate(
-                identification=options.get("identification"),
+                identification=self._scoped_identification(options.get("identification")),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
         if strategy_type == "java_accessibility":
-            return JavaAccessibilityDriver(self.context).activate(identification=options.get("identification"))
+            return JavaAccessibilityDriver(self.context).activate(identification=self._scoped_identification(options.get("identification")))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "reference_inspection":
@@ -368,6 +369,38 @@ class ComponentHandle:
                 "reference_inspection is read-only and cannot activate UI components"
             )
         raise ValueError(f"unsupported component strategy: {strategy_type}")
+
+    def _scoped_identification(self, raw):
+        application = getattr(self.context, "target_application", None)
+        if not application or not isinstance(raw, dict):
+            return raw
+        if "mandatory" in raw:
+            scoped = dict(raw)
+            mandatory = dict(scoped.get("mandatory") or {})
+            assistive = dict(scoped.get("assistive") or {})
+            authored = mandatory.get("application", assistive.get("application"))
+            if authored is not None and str(authored).casefold() != application.casefold():
+                raise ComponentResolutionError(
+                    "object %r belongs to application %r, not attached target %r"
+                    % (self.definition.component_id, authored, application)
+                )
+            mandatory["application"] = application
+            assistive.pop("application", None)
+            scoped["mandatory"] = mandatory
+            if assistive:
+                scoped["assistive"] = assistive
+            else:
+                scoped.pop("assistive", None)
+            return scoped
+        scoped = dict(raw)
+        authored = scoped.get("application")
+        if authored is not None and str(authored).casefold() != application.casefold():
+            raise ComponentResolutionError(
+                "object %r belongs to application %r, not attached target %r"
+                % (self.definition.component_id, authored, application)
+            )
+        scoped["application"] = application
+        return scoped
 
 
 def _optional_str(value: Any) -> str | None:
