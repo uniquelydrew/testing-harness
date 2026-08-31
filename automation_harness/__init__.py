@@ -27,3 +27,11 @@ if sys.version_info < (3, 7):
     from automation_harness.compat.python36 import install
 
     install()
+
+# Locator matching is a package-level semantic contract. Install the extended
+# matcher before repositories or accessibility drivers are used so exact and
+# regular-expression conditions behave consistently across authoring and runs.
+from automation_harness.core.locator_matching import install as _install_locator_matching
+
+_install_locator_matching()
+del _install_locator_matching
