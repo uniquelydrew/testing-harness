@@ -1,4 +1,4 @@
-"""Execution backend for an already-running desktop environment."""
+"""Execution backend for the current desktop environment."""
 from __future__ import annotations
 
 import os
@@ -12,14 +12,14 @@ from automation_harness.models.run import BackendHealth
 
 
 class LiveDesktopBackend(ExecutionBackend):
-    """Execute against the current desktop without owning application lifecycle.
+    """Execute against the current desktop without an application target.
 
-    Application/window lineage belongs to each object locator. The backend is
-    therefore intentionally targetless and never injects one application name
-    into every component resolution.
+    Application/window lineage belongs to each object locator. The backend only
+    represents the execution facility and never injects application ownership
+    into object resolution.
     """
 
-    name = "attached-desktop"
+    name = "live-desktop"
 
     @property
     def capabilities(self) -> set[str]:
@@ -66,14 +66,12 @@ class LiveDesktopBackend(ExecutionBackend):
             not issues,
             self.name,
             {
-                "attached": True,
-                "target_application": None,
+                "desktop_session": "current",
                 "display": os.environ.get("DISPLAY"),
                 "preflight_issues": issues,
             },
         )
 
     def stop(self) -> None:
-        # The environment and every application in it belong to the user or
-        # external startup script, never to the authoring console.
+        # The desktop session and applications are external to this backend.
         return None

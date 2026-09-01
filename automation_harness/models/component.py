@@ -40,7 +40,7 @@ class ComponentDefinition:
 
     @property
     def semantic_actions(self) -> frozenset[ActionType]:
-        """Canonical v2 actions, with lossless v1 ``activate`` compatibility."""
+        """Return canonical actions including geometry-backed pointer Click."""
         values: set[ActionType] = set()
         for action in self.actions:
             if action == "activate":
@@ -50,14 +50,12 @@ class ComponentDefinition:
                 values.add(ActionType(action))
             except ValueError:
                 continue
-        # Pointer interaction is broadly applicable even when the native
-        # accessibility role does not advertise a named default action. Keep
-        # explicitly read-only strategies and genuinely passive roles out.
-        interactive_strategy = any(
-            strategy.type not in {"reference_inspection", "anchored_visual"}
-            for strategy in self.strategies
-        )
-        if interactive_strategy and self.object_type not in PASSIVE_POINTER_TYPES:
+        # Any resolvable, non-passive object may be clicked by resolved screen
+        # geometry. A read-only synthetic inspection strategy is the exception.
+        if (
+            any(strategy.type != "reference_inspection" for strategy in self.strategies)
+            and self.object_type not in PASSIVE_POINTER_TYPES
+        ):
             values.add(ActionType.CLICK)
         return frozenset(values) or default_actions(self.object_type)
 

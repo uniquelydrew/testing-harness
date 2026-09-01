@@ -1,6 +1,6 @@
 name: gtk4-demo-popover
 version: 1
-target: {kind: gtk-demo, example: dialog}
+backend: {kind: gtk-demo, example: dialog}
 requires: [local-only, gui, components, atspi]
 components: resources/components.yaml
 tests: [tests/test_popover.py]

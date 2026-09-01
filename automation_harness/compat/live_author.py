@@ -10,7 +10,6 @@ def _prepare():
 
     live_runtime.capture_runtime._install(app)
     live_runtime._install_workbench_controls()
-    live_runtime._install_live_authoring(app)
     install_click_policy(app)
     return app
 

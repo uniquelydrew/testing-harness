@@ -28,13 +28,10 @@ if sys.version_info < (3, 7):
 
     install()
 
-# Locator matching and pointer behavior are package-level semantic contracts.
-# Install them before repositories, drivers, or component handles are used so
-# authoring and execution share the same behavior.
+# Locator matching remains a package-level compatibility contract until every
+# driver consumes the shared matcher directly. Pointer behavior is intrinsic to
+# ComponentDefinition/ComponentHandle and requires no import-time mutation.
 from automation_harness.core.locator_matching import install as _install_locator_matching
-from automation_harness.core.pointer_actions import install as _install_pointer_actions
 
 _install_locator_matching()
-_install_pointer_actions()
 del _install_locator_matching
-del _install_pointer_actions

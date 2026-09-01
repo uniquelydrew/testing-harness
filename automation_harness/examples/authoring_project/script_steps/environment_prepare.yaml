@@ -1,0 +1,16 @@
+version: 1
+id: environment.prepare
+description: Demonstrate environment preparation as the first test step.
+risk: application_control
+inputs:
+  configuration:
+    type: str
+    required: true
+outputs:
+  workspace:
+    type: str
+implementation:
+  kind: script
+  path: environment_prepare.py
+  interpreter: python
+  timeout: 10

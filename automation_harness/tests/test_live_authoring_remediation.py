@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from automation_harness.authoring.project import AuthoringProject
@@ -73,19 +75,60 @@ def test_javafx_nested_properties_support_regex():
     )
 
 
-def test_live_desktop_backend_has_no_target_application():
+def test_live_desktop_backend_represents_only_the_execution_facility():
     backend = LiveDesktopBackend()
-    assert backend.name == "attached-desktop"
-    assert backend.health_check().details["target_application"] is None
+    assert backend.name == "live-desktop"
+    details = backend.health_check().details
+    assert details["desktop_session"] == "current"
+    assert all("application" not in key for key in details)
 
 
-def test_authoring_project_does_not_persist_legacy_target(tmp_path):
+def test_authoring_project_document_contains_no_execution_scope(tmp_path):
     project = AuthoringProject(
-        "demo",
-        tmp_path,
-        tmp_path / "components.yaml",
-        tmp_path / "runs",
-        {"kind": "attached-desktop", "expected_application": "Legacy App"},
+        name="demo",
+        root=tmp_path,
+        repository=tmp_path / "components.yaml",
+        runs_dir=tmp_path / "runs",
     )
     document = project.to_document()
-    assert "target" not in document
+    assert set(document) == {"version", "name", "repository", "runs_dir"}
+
+
+def test_authoring_core_contains_no_application_target_lifecycle():
+    source = (Path(__file__).resolve().parents[1] / "authoring" / "app.py").read_text(encoding="utf-8")
+    for obsolete in (
+        "AttachedDesktopBackend",
+        "AttachedExecutionBackend",
+        "configure_target_dialog",
+        "launch_target",
+        "stop_target",
+        "_target_backend",
+        "_target_environment",
+        "_attached_application",
+        "expected_application",
+        "environment_script",
+    ):
+        assert obsolete not in source
+
+
+def test_runner_contains_no_attached_application_selector():
+    runner = Path(__file__).resolve().parents[1] / "runner"
+    cli_source = (runner / "cli.py").read_text(encoding="utf-8")
+    execution_source = (runner / "plan_execution.py").read_text(encoding="utf-8")
+    assert "attached-desktop" not in cli_source
+    assert "--application" not in cli_source
+    assert "target_application" not in execution_source
+    assert "expected_application" not in execution_source
+
+
+def test_component_resolution_cannot_inject_global_application_scope():
+    source = (Path(__file__).resolve().parents[1] / "core" / "component_handle.py").read_text(encoding="utf-8")
+    assert "_scoped_identification" not in source
+    assert "target_application" not in source
+    assert "attached target" not in source
+
+
+def test_java_accessibility_driver_has_no_application_presence_gate():
+    source = (Path(__file__).resolve().parents[1] / "drivers" / "java_accessibility.py").read_text(encoding="utf-8")
+    assert "expected_application" not in source
+    assert "application_present" not in source

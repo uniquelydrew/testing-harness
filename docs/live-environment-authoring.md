@@ -2,20 +2,47 @@
 
 ## Runtime model
 
-The authoring console is attached to the desktop environment that is already running. It does not configure, launch, stop, or otherwise own a target application. Closing the authoring console must not terminate applications in the environment.
+The authoring console operates on the current desktop execution facility. It does not configure, launch, stop, or otherwise own an application. Closing the authoring console must not terminate applications in the environment.
 
-Standalone execution may launch the environment first with an environment startup script:
+Application-specific setup is represented explicitly in the test flow. If setup requires a script, register a contract-backed script step and make that step the appropriate predecessor of the actions that depend on it:
+
+```yaml
+steps:
+  - id: setup
+    step: environment.prepare
+    inputs:
+      configuration: integration
+    outputs:
+      workspace: workspace
+
+  - id: perform-action
+    step: gui.object.action
+    depends_on:
+      - setup
+    inputs:
+      component_id: customer.save_button
+      action:
+        type: click
+```
+
+Standalone execution can register the external implementation explicitly:
 
 ```bash
 automation-run plan run test.yaml \
-  --backend attached-desktop \
+  --backend live-desktop \
   --components components.yaml \
-  --environment-script ./start-environment.sh
+  --script-step ./script_steps/environment_prepare.yaml
 ```
 
-Inside `automation-author`, **Run Test** skips the startup script and runs directly against the current desktop session. Application names may still be used as object-level locator properties where they improve identity, but they are not test-level execution targets.
+`live-desktop` represents only the current desktop session and available interaction facilities. It does not select an application.
 
-New authoring project documents therefore persist repository/run paths and optional `environment_script` metadata, but do not persist a `target` block. Existing project files containing a legacy target block remain loadable.
+Inside `automation-author`, **Run Test** executes the same plan against the current desktop session. If the first plan step prepares or launches applications, that preparation occurs as part of the test and is visible in execution state and evidence.
+
+Application names may be used as object-level locator properties where they improve identity. They are not test-level execution scope. A single test may therefore interact with objects owned by multiple applications without declaring any global application selector.
+
+Authoring project documents persist repository/run paths and optional `script_steps` manifests only. Environment preparation belongs in the plan.
+
+See `docs/script-backed-steps.md` for the script protocol and manifest contract.
 
 ## Exact and regular-expression matching
 

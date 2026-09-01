@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="automation-harness",
     version="0.5.2",
-    description="Protected-target-safe automation harness with an isolated synthetic reference backend",
+    description="Local-first automation harness with explicit execution backends and semantic object identity",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     python_requires=">=3.6,<3.7",
