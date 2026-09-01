@@ -26,9 +26,17 @@ class TestContext:
     globals: VariableStore | None = None
     reference: ReferenceClient | None = None
     services: AutomationServices | None = None
+    # Compatibility-only constructor field. Target application scoping is no
+    # longer part of execution; object locators own application/window lineage.
     target_application: str | None = None
 
     def __post_init__(self) -> None:
+        if self.target_application is not None:
+            self.evidence.record(
+                "legacy_target_ignored",
+                target_application=self.target_application,
+            )
+            self.target_application = None
         if self.globals is None:
             self.globals = VariableStore(self.evidence)
         if self.services is None:
@@ -98,7 +106,7 @@ class TestContext:
                 globals=global_variables,
                 reference=ReferenceClient(socket_path),
             )
-        if backend in {"gtk-demo", "java-desktop", "attached-desktop"}:
+        if backend in {"gtk-demo", "java-desktop", "attached-desktop", "live-desktop"}:
             return cls(
                 backend=backend,
                 run_dir=run_dir,
@@ -107,7 +115,6 @@ class TestContext:
                 capabilities=capabilities,
                 steps=steps,
                 globals=global_variables,
-                target_application=os.environ.get("AUTOMATION_HARNESS_ATTACHED_APPLICATION"),
             )
         raise RuntimeError(f"unsupported or unsafe backend in test context: {backend!r}")
 

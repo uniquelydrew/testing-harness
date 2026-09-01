@@ -1,9 +1,13 @@
 from pathlib import Path
 
 from automation_harness.backends.attached_desktop import AttachedDesktopBackend
-from automation_harness.core.component_handle import ComponentHandle, ComponentResolutionError
+from automation_harness.core.component_handle import ComponentHandle
+from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.step_registry import default_step_registry
+from automation_harness.core.test_context import TestContext
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ObjectType
+from automation_harness.utils.evidence import EvidenceRecorder
 
 
 def test_attached_backend_never_owns_application_lifecycle(monkeypatch, tmp_path: Path):
@@ -20,32 +24,45 @@ def test_attached_backend_never_owns_application_lifecycle(monkeypatch, tmp_path
     assert backend.health_check().healthy
 
 
-def test_attached_target_is_forced_into_mandatory_object_identity():
-    class Context:
-        target_application = "ERSA"
+def test_legacy_target_value_is_ignored_by_test_context(tmp_path: Path):
+    context = TestContext(
+        backend="live-desktop",
+        run_dir=tmp_path,
+        evidence=EvidenceRecorder(tmp_path / "events.jsonl"),
+        components=ComponentRepository({}),
+        capabilities=frozenset(),
+        steps=default_step_registry(),
+        target_application="ERSA",
+    )
+    assert context.target_application is None
 
+
+def test_object_application_lineage_is_not_promoted_to_mandatory_target_scope():
+    class Context:
+        target_application = None
+
+    identification = {
+        "mandatory": {"name": "Show All"},
+        "assistive": {"application": "ERSA", "window": "Main"},
+    }
     definition = ComponentDefinition(
         "show-all", object_type=ObjectType.BUTTON, actions=frozenset({"click"}),
-        strategies=(ComponentStrategy("atspi", {"identification": {
-            "mandatory": {"name": "Show All"},
-            "assistive": {"application": "ERSA", "window": "Main"},
-        }}),),
+        strategies=(ComponentStrategy("atspi", {"identification": identification}),),
     )
-    scoped = ComponentHandle(Context(), definition)._scoped_identification(definition.strategies[0].options["identification"])
-    assert scoped["mandatory"]["application"] == "ERSA"
-    assert "application" not in scoped["assistive"]
+    scoped = ComponentHandle(Context(), definition)._scoped_identification(identification)
+    assert scoped == identification
+    assert "application" not in scoped["mandatory"]
+    assert scoped["assistive"]["application"] == "ERSA"
 
 
-def test_cross_application_object_is_rejected_before_resolution():
+def test_objects_from_multiple_applications_are_valid_without_test_target():
     class Context:
-        target_application = "ERSA"
+        target_application = None
 
     definition = ComponentDefinition("foreign", object_type=ObjectType.BUTTON)
     handle = ComponentHandle(Context(), definition)
-    try:
-        handle._scoped_identification({"mandatory": {"name": "Save"}, "assistive": {"application": "Other App"}})
-    except ComponentResolutionError as exc:
-        assert "Other App" in str(exc)
-        assert "ERSA" in str(exc)
-    else:
-        raise AssertionError("cross-application identity was accepted")
+    identification = {
+        "mandatory": {"name": "Save"},
+        "assistive": {"application": "Other App"},
+    }
+    assert handle._scoped_identification(identification) == identification

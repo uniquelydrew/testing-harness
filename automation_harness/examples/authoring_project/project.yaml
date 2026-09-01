@@ -1,7 +1,6 @@
 version: 1
-name: Attached application authoring workflow
+name: Live desktop authoring workflow
 repository: components.yaml
 runs_dir: runs
-target:
-  kind: attached-desktop
-  expected_application: Replace with captured application name
+script_steps:
+  - script_steps/environment_prepare.yaml

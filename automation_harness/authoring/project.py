@@ -1,20 +1,17 @@
-"""Authoring project configuration and environment setup."""
+"""Authoring project configuration for targetless live-desktop tests."""
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
-from automation_harness.backends.attached_desktop import AttachedDesktopBackend
 from automation_harness.backends.base import ExecutionBackend
-from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.backends.live_desktop import LiveDesktopBackend
-from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.script_steps import load_script_steps
 from automation_harness.models.plan import TestPlan
 from automation_harness.models.run import BackendHealth
 
@@ -60,10 +57,12 @@ class AuthoringProject:
     root: Path
     repository: Path
     runs_dir: Path
-    # Retained only so older project manifests remain readable. New projects do
-    # not persist or require a target application/backend selection.
-    target: Mapping[str, Any] = field(default_factory=dict)
-    environment_script: Path | None = None
+    script_steps: tuple[Path, ...] = ()
+    # Read-only compatibility payload for old manifests and old authoring code.
+    # It is not persisted and never scopes execution or object resolution.
+    target: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    # Read-only compatibility path. It is never executed outside the plan.
+    environment_script: Path | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: Path) -> "AuthoringProject":
@@ -75,67 +74,62 @@ class AuthoringProject:
         name = raw.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ProjectError("project requires a non-empty name")
-        target = raw.get("target", {})
-        if not isinstance(target, Mapping):
-            raise ProjectError("legacy project.target must be a mapping")
         repository = root / str(raw.get("repository", "components.yaml"))
         runs_dir = root / str(raw.get("runs_dir", "runs"))
-        script_value = raw.get("environment_script")
-        script = root / str(script_value) if script_value else None
-        return cls(
-            name.strip(),
-            root,
-            repository.resolve(),
-            runs_dir.resolve(),
-            dict(target),
-            script.resolve() if script else None,
+
+        script_step_values = raw.get("script_steps", [])
+        if not isinstance(script_step_values, list) or not all(isinstance(item, str) for item in script_step_values):
+            raise ProjectError("project script_steps must be a list of manifest paths")
+        script_steps = tuple((root / value).resolve() for value in script_step_values)
+
+        legacy_target = raw.get("target", {})
+        if not isinstance(legacy_target, Mapping):
+            raise ProjectError("legacy project.target must be a mapping")
+        legacy_script_value = raw.get("environment_script")
+        legacy_script = (root / str(legacy_script_value)).resolve() if legacy_script_value else None
+
+        project = cls(
+            name=name.strip(),
+            root=root,
+            repository=repository.resolve(),
+            runs_dir=runs_dir.resolve(),
+            script_steps=script_steps,
+            target=dict(legacy_target),
+            environment_script=legacy_script,
         )
+        project.load_step_implementations()
+        return project
 
     def backend(self):
-        """Return an execution backend, honoring only explicit legacy targets.
+        """Return the targetless desktop execution facility.
 
-        New projects default to the current live desktop. Environment startup is
-        handled by ``prepare_environment`` before non-authoring execution.
+        A project no longer chooses an application or application-specific
+        backend. Object ownership is resolved from each object's locator.
         """
-        kind = self.target.get("kind")
-        if not kind:
-            return LiveDesktopBackend()
-        display = str(self.target.get("display", "native"))
-        if kind == "reference":
-            return ReferenceBackend(gui=bool(self.target.get("gui", True)), display_mode=display)
-        if kind == "java-desktop":
-            return JavaDesktopBackend(self.target, display_mode=display)
-        if kind == "attached-desktop":
-            expected = self.target.get("expected_application")
-            return AttachedDesktopBackend(self.target) if expected else LiveDesktopBackend()
-        raise ProjectError("unsupported legacy authoring target kind %r" % kind)
+        return LiveDesktopBackend()
+
+    def load_step_implementations(self) -> None:
+        load_script_steps(self.script_steps)
 
     def prepare_environment(self) -> None:
-        """Run the project's startup script for external/non-authoring runs."""
-        if self.environment_script is None:
-            return
-        if not self.environment_script.is_file():
-            raise ProjectError("environment script does not exist: %s" % self.environment_script)
-        result = subprocess.run(
-            [str(self.environment_script)],
-            cwd=str(self.root),
-            env=os.environ.copy(),
-            check=False,
-        )
-        if result.returncode:
-            raise ProjectError("environment script failed with exit code %d" % result.returncode)
+        """Reject the obsolete out-of-plan environment startup mechanism."""
+        if self.environment_script is not None:
+            raise ProjectError(
+                "project.environment_script is obsolete and is not executed; "
+                "register it as a contract-backed script step and place that step in the test flow"
+            )
 
     def to_document(self) -> dict[str, Any]:
-        value = {
+        value: dict[str, Any] = {
             "version": 1,
             "name": self.name,
             "repository": os.path.relpath(str(self.repository), str(self.root)),
             "runs_dir": os.path.relpath(str(self.runs_dir), str(self.root)),
         }
-        if self.environment_script is not None:
-            value["environment_script"] = os.path.relpath(
-                str(self.environment_script), str(self.root)
-            )
+        if self.script_steps:
+            value["script_steps"] = [
+                os.path.relpath(str(path), str(self.root)) for path in self.script_steps
+            ]
         return value
 
 
@@ -143,11 +137,10 @@ def create_authoring_project(path: Path, name: str) -> AuthoringProject:
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     project = AuthoringProject(
-        name,
-        path.parent,
-        path.parent / "components.yaml",
-        path.parent / "runs",
-        {},
+        name=name,
+        root=path.parent,
+        repository=path.parent / "components.yaml",
+        runs_dir=path.parent / "runs",
     )
     project.repository.parent.mkdir(parents=True, exist_ok=True)
     if not project.repository.exists():
@@ -161,7 +154,7 @@ create_reference_project = create_authoring_project
 
 
 def applications_for_plan(plan: TestPlan, repository: ComponentRepository) -> frozenset[str]:
-    """Legacy diagnostic helper; application lineage now remains object-local."""
+    """Legacy diagnostic helper; application lineage remains object-local."""
     applications: set[str] = set()
     for call in plan.steps:
         component_id = call.inputs.get("component_id")

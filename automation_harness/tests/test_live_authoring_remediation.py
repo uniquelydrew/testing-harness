@@ -73,19 +73,21 @@ def test_javafx_nested_properties_support_regex():
     )
 
 
-def test_live_desktop_backend_has_no_target_application():
+def test_live_desktop_backend_is_explicitly_targetless():
     backend = LiveDesktopBackend()
-    assert backend.name == "attached-desktop"
-    assert backend.health_check().details["target_application"] is None
+    assert backend.name == "live-desktop"
+    details = backend.health_check().details
+    assert "target_application" not in details
+    assert details["desktop_session"] == "current"
 
 
 def test_authoring_project_does_not_persist_legacy_target(tmp_path):
     project = AuthoringProject(
-        "demo",
-        tmp_path,
-        tmp_path / "components.yaml",
-        tmp_path / "runs",
-        {"kind": "attached-desktop", "expected_application": "Legacy App"},
+        name="demo",
+        root=tmp_path,
+        repository=tmp_path / "components.yaml",
+        runs_dir=tmp_path / "runs",
+        target={"kind": "attached-desktop", "expected_application": "Legacy App"},
     )
     document = project.to_document()
     assert "target" not in document

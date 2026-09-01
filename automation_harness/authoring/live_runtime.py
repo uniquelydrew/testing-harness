@@ -4,14 +4,17 @@ import json
 import re
 import threading
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from automation_harness.authoring import capture_runtime
 from automation_harness.backends.live_desktop import LiveDesktopBackend
+from automation_harness.core.script_steps import registered_script_step
 from automation_harness.core.test_plan import validate_plan, validate_plan_components
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+from automation_harness.models.plan import StepCall
 from automation_harness.runner.plan_execution import execute_plan
 
 
@@ -188,7 +191,7 @@ def _install_workbench_controls() -> None:
 
 
 def _install_live_authoring(app_module) -> None:
-    """Make the authoring console operate on the already-running environment."""
+    """Make the authoring console operate on the current desktop environment."""
     Gtk = app_module.Gtk
     GLib = app_module.GLib
 
@@ -208,16 +211,16 @@ def _install_live_authoring(app_module) -> None:
             toolbar = children[0]
             target_toolbar = children[1]
             # Project/repository navigation remains useful. Target lifecycle
-            # controls do not: the authoring console attaches to an environment
-            # that is already up.
+            # controls do not: object lineage identifies application ownership.
             self._button(toolbar, "New Project", self.new_project_dialog)
             self._button(toolbar, "Open Project", self.open_project_dialog)
+            self._button(toolbar, "Add Script Step", self.add_script_step_dialog)
             outer.remove(target_toolbar)
             target_toolbar.destroy()
 
-        # Legacy project methods still write status text to this label. Keep a
-        # harmless unparented instance for compatibility without exposing the
-        # target concept in the authoring surface.
+        # Legacy base-authoring methods still write status text to this label.
+        # Keep a harmless unparented instance until the compatibility shell is
+        # deleted from the base authoring module.
         self.target_label = Gtk.Label(label="")
 
     def build_objects(self):
@@ -237,7 +240,7 @@ def _install_live_authoring(app_module) -> None:
         if self.project is not None and self.project is not previous:
             self._attached_application = None
             self._set_status(
-                "Created project — current environment is assumed running; capture an object to begin"
+                "Created project — capture an object or add a registered script step"
             )
 
     def open_project_dialog(self):
@@ -246,7 +249,7 @@ def _install_live_authoring(app_module) -> None:
         if self.project is not None and self.project_path != previous_path:
             self._attached_application = None
             self._set_status(
-                "Opened project: %s — current environment attached" % self.project.name
+                "Opened project: %s — object ownership remains locator-local" % self.project.name
             )
 
     def bind_captured_application(self, captured):
@@ -254,6 +257,166 @@ def _install_live_authoring(app_module) -> None:
         # It is never promoted into a global test target.
         self._attached_application = None
         return True
+
+    def add_script_step_dialog(self):
+        if self.project is None:
+            return self._info(
+                "Script step",
+                "Create or open a project before adding project-registered script steps.",
+            )
+        if not self.project.script_steps:
+            return self._info(
+                "Script step",
+                "This project has no script_steps manifests registered.",
+            )
+
+        available = []
+        for manifest in self.project.script_steps:
+            try:
+                from automation_harness.core.script_steps import ScriptStepDefinition
+                available.append(ScriptStepDefinition.load(manifest).step_id)
+            except Exception as exc:
+                return self._error(
+                    "Script step",
+                    "%s: %s" % (type(exc).__name__, exc),
+                )
+        available = sorted(set(available))
+        selected = self._ask_text(
+            "Add Script Step",
+            "Registered script step ID:\n" + "\n".join(available),
+            available[0] if len(available) == 1 else "",
+        )
+        if not selected:
+            return
+        selected = selected.strip()
+        if selected not in available:
+            return self._error(
+                "Script step",
+                "Unknown project script step %r. Available: %s"
+                % (selected, ", ".join(available)),
+            )
+
+        try:
+            metadata = registered_script_step(selected)
+            definition = self.registry.get(selected)
+        except Exception as exc:
+            return self._error("Script step", "%s: %s" % (type(exc).__name__, exc))
+
+        dialog = Gtk.Dialog(
+            title="Configure %s" % selected,
+            transient_for=self.window,
+            modal=True,
+        )
+        dialog.add_buttons(
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "Add to Test", Gtk.ResponseType.OK,
+        )
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(10)
+        box.pack_start(
+            Gtk.Label(label=metadata.description or selected),
+            False,
+            False,
+            0,
+        )
+
+        input_entries = {}
+        for item in definition.inputs:
+            row = Gtk.Box(spacing=8)
+            label = Gtk.Label(
+                label="%s%s (%s)" % (
+                    item.name,
+                    " *" if item.required else "",
+                    item.annotation,
+                )
+            )
+            label.set_xalign(0)
+            label.set_size_request(220, -1)
+            entry = Gtk.Entry()
+            if not item.required:
+                entry.set_text(json.dumps(item.default))
+            entry.set_placeholder_text(
+                "JSON value" + (" — required" if item.required else "")
+            )
+            row.pack_start(label, False, False, 0)
+            row.pack_start(entry, True, True, 0)
+            box.pack_start(row, False, False, 0)
+            input_entries[item.name] = (item, entry)
+
+        output_entries = {}
+        if definition.outputs:
+            separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            box.pack_start(separator, False, False, 4)
+            caption = Gtk.Label(label="Output bindings")
+            caption.set_xalign(0)
+            box.pack_start(caption, False, False, 0)
+        for output in definition.outputs:
+            row = Gtk.Box(spacing=8)
+            label = Gtk.Label(label=output.name)
+            label.set_xalign(0)
+            label.set_size_request(220, -1)
+            entry = Gtk.Entry()
+            entry.set_text(output.name)
+            entry.set_placeholder_text("test variable name; blank to ignore")
+            row.pack_start(label, False, False, 0)
+            row.pack_start(entry, True, True, 0)
+            box.pack_start(row, False, False, 0)
+            output_entries[output.name] = entry
+
+        error = Gtk.Label()
+        error.set_xalign(0)
+        box.pack_start(error, False, False, 0)
+        dialog.show_all()
+
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return
+            try:
+                inputs = {}
+                missing = []
+                for name, (item, entry) in input_entries.items():
+                    raw = entry.get_text().strip()
+                    if not raw:
+                        if item.required:
+                            missing.append(name)
+                        continue
+                    try:
+                        inputs[name] = json.loads(raw)
+                    except json.JSONDecodeError:
+                        inputs[name] = raw
+                if missing:
+                    error.set_text("Required inputs: " + ", ".join(missing))
+                    continue
+                outputs = {
+                    name: entry.get_text().strip()
+                    for name, entry in output_entries.items()
+                    if entry.get_text().strip()
+                }
+                call = StepCall(
+                    node_id=app_module._next_node_id(self.plan.steps),
+                    step_id=selected,
+                    inputs=inputs,
+                    outputs=outputs,
+                )
+                candidate = replace(self.plan, steps=self.plan.steps + (call,))
+                issues = validate_plan(candidate, self.registry)
+                if issues:
+                    error.set_text("; ".join(issues))
+                    continue
+            except Exception as exc:
+                error.set_text("%s: %s" % (type(exc).__name__, exc))
+                continue
+            dialog.destroy()
+            self.plan = candidate
+            self.refresh_plan()
+            self.refresh_state()
+            self.notebook.set_current_page(2)
+            self._select_value(self.plan_tree, call.node_id)
+            self._set_status("Added script step %s to test" % selected)
+            return
 
     def click_selected_object(self):
         component_id = self._selected(self.object_tree)
@@ -327,9 +490,8 @@ def _install_live_authoring(app_module) -> None:
     def run_reference_plan(self):
         if self._run_active:
             return
-        # In authoring mode the environment is explicitly assumed to exist.
-        # The startup/environment script belongs to external setup or CLI
-        # execution, not to this console invocation.
+        # Environment/application preparation is represented by ordinary plan
+        # steps. Authoring execution only provides the current desktop facility.
         self.refresh_plan()
         issues = validate_plan(self.plan, self.registry)
         issues.extend(validate_plan_components(self.plan, self.repository))
@@ -370,6 +532,7 @@ def _install_live_authoring(app_module) -> None:
     app_module.AuthoringApp.new_project_dialog = new_project_dialog
     app_module.AuthoringApp.open_project_dialog = open_project_dialog
     app_module.AuthoringApp.bind_captured_application = bind_captured_application
+    app_module.AuthoringApp.add_script_step_dialog = add_script_step_dialog
     app_module.AuthoringApp.click_selected_object = click_selected_object
     app_module.AuthoringApp._click_selected_worker = click_selected_worker
     app_module.AuthoringApp._finish_selected_click = finish_selected_click
@@ -379,8 +542,8 @@ def _install_live_authoring(app_module) -> None:
 def run_author(argv=None):
     from automation_harness.authoring import app
 
-    # Preserve all current capture/workbench behavior, then layer the live
-    # environment semantics over the authoring-only surface.
+    # Preserve capture/workbench behavior, then layer targetless live desktop
+    # semantics and project-registered script steps over the authoring surface.
     capture_runtime._install(app)
     _install_workbench_controls()
     _install_live_authoring(app)

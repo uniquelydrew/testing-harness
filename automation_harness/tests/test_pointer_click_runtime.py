@@ -77,13 +77,21 @@ def test_click_bounds_rejects_missing_geometry_before_injection():
         click_bounds(None)
 
 
-def test_cli_extracts_environment_startup_script(tmp_path):
-    script = tmp_path / "start-environment.sh"
-    argv = ["plan", "run", "test.yaml", "--environment-script", str(script)]
-    assert live_cli._extract_environment_script(argv) == script.resolve()
+def test_cli_extracts_script_step_manifests(tmp_path):
+    first = tmp_path / "prepare.yaml"
+    second = tmp_path / "seed.yaml"
+    argv = [
+        "plan",
+        "run",
+        "test.yaml",
+        "--script-step",
+        str(first),
+        "--script-step=%s" % second,
+    ]
+    assert live_cli._extract_script_steps(argv) == [first.resolve(), second.resolve()]
 
 
-def test_cli_recognizes_only_execution_commands_for_environment_startup():
-    assert live_cli._is_execution_command(["plan", "run", "test.yaml"])
-    assert live_cli._is_execution_command(["run", "bundle"])
-    assert not live_cli._is_execution_command(["plan", "validate", "test.yaml"])
+def test_cli_no_longer_has_an_out_of_plan_environment_startup_path():
+    assert not hasattr(live_cli, "_extract_environment_script")
+    assert not hasattr(live_cli, "_start_environment")
+    assert not hasattr(live_cli, "_is_execution_command")
