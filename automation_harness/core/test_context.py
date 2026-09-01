@@ -97,7 +97,7 @@ class TestContext:
                 globals=global_variables,
                 reference=ReferenceClient(socket_path),
             )
-        if backend in {"gtk-demo", "java-desktop", "live-desktop"}:
+        if backend in {"gtk-demo", "live-desktop"}:
             return cls(
                 backend=backend,
                 run_dir=run_dir,

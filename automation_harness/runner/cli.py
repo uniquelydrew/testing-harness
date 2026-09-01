@@ -11,7 +11,6 @@ from pathlib import Path
 from automation_harness.backends.protected import ProtectedBackend
 from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
-from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
@@ -23,7 +22,7 @@ from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.runner.validator import validate_bundle
 
 
-_BACKEND_CHOICES = ("reference", "protected", "gtk-demo", "java-desktop", "live-desktop")
+_BACKEND_CHOICES = ("reference", "protected", "gtk-demo", "live-desktop")
 
 
 def _backend(name: str, args: argparse.Namespace, backend_config: dict | None = None):
@@ -46,11 +45,6 @@ def _backend(name: str, args: argparse.Namespace, backend_config: dict | None = 
             executable=getattr(args, "gtk_demo_executable", None),
             display_mode=getattr(args, "gtk_demo_display", "virtual"),
         )
-    if name == "java-desktop":
-        config = backend_config or {}
-        if config.get("kind") != "java-desktop":
-            raise ValueError("java-desktop backend requires manifest.backend.kind: java-desktop")
-        return JavaDesktopBackend(config, display_mode=getattr(args, "reference_display", "virtual"))
     raise ValueError(name)
 
 
