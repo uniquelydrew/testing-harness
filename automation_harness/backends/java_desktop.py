@@ -21,19 +21,23 @@ _JAVA_ATK_WRAPPER_CANDIDATES = (
 
 
 class JavaDesktopBackend(ExecutionBackend):
-    """Managed black-box Swing/JavaFX target for Windows and Linux/X11."""
+    """Legacy bundle-mode launcher for a Java desktop process.
+
+    This backend only provides the process/display execution facility. It does
+    not identify an application or scope component resolution. New declarative
+    tests should prefer a contract-backed setup script step plus LiveDesktopBackend.
+    """
 
     name = "java-desktop"
 
-    def __init__(self, target: Mapping[str, Any], *, display_mode: str = "virtual") -> None:
+    def __init__(self, config: Mapping[str, Any], *, display_mode: str = "virtual") -> None:
         if display_mode not in {"virtual", "native", "auto"}:
             raise ValueError(f"unsupported Java desktop display mode: {display_mode}")
-        self.target = dict(target)
-        self.command = list(self.target["command"])
-        self.working_directory = self.target.get("working_directory")
-        self.expected_application = self.target.get("expected_application")
-        self.extra_environment = dict(self.target.get("environment", {}))
-        self.startup_timeout = float(self.target.get("startup_timeout", 12.0))
+        self.config = dict(config)
+        self.command = list(self.config["command"])
+        self.working_directory = self.config.get("working_directory")
+        self.extra_environment = dict(self.config.get("environment", {}))
+        self.startup_timeout = float(self.config.get("startup_timeout", 12.0))
         self.display_mode = display_mode
         self._process: subprocess.Popen[str] | None = None
         self._xvfb: subprocess.Popen[str] | None = None
@@ -53,10 +57,10 @@ class JavaDesktopBackend(ExecutionBackend):
         if system not in {"Windows", "Linux"}:
             return [f"Java desktop backend is supported on Windows or Linux, not {system}"]
         if self.working_directory and not Path(self.working_directory).is_dir():
-            return [f"Java desktop target working_directory does not exist: {self.working_directory}"]
+            return [f"Java desktop backend working_directory does not exist: {self.working_directory}"]
         executable = self.command[0]
         if not Path(executable).is_file() and shutil.which(executable) is None:
-            return [f"Java desktop target command was not found: {executable!r}"]
+            return [f"Java desktop backend command was not found: {executable!r}"]
         if system == "Windows":
             try:
                 from automation_harness.drivers.java_accessibility import JavaAccessBridgeDriver
@@ -103,24 +107,31 @@ class JavaDesktopBackend(ExecutionBackend):
             stderr=stderr,
             text=True,
         )
+
+        # The backend only establishes the process/display facility. Component
+        # readiness is synchronized by object-aware plan steps, not a global
+        # application identity probe.
         deadline = time.monotonic() + self.startup_timeout
+        stable_since = time.monotonic()
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
                 raise RuntimeError(f"Java desktop process exited during startup with code {self._process.returncode}")
-            if self._target_ready():
-                result = {"AUTOMATION_HARNESS_BACKEND": self.name, "AUTOMATION_HARNESS_JAVA_COMMAND": self.command[0]}
+            if time.monotonic() - stable_since >= 0.25:
+                result = {
+                    "AUTOMATION_HARNESS_BACKEND": self.name,
+                    "AUTOMATION_HARNESS_JAVA_COMMAND": self.command[0],
+                }
                 if self._display:
                     result["DISPLAY"] = self._display
                 return result
-            time.sleep(0.1)
-        raise RuntimeError(f"Java desktop target did not become accessible within {self.startup_timeout:g}s")
+            time.sleep(0.05)
+        raise RuntimeError(f"Java desktop process did not remain alive during the {self.startup_timeout:g}s startup window")
 
     def health_check(self) -> BackendHealth:
         alive = self._process is not None and self._process.poll() is None
-        return BackendHealth(alive and self._target_ready(), self.name, {
+        return BackendHealth(alive, self.name, {
             "process_alive": alive,
             "command": self.command,
-            "expected_application": self.expected_application,
             "display": self._display,
             "platform": platform.system(),
         })
@@ -140,11 +151,6 @@ class JavaDesktopBackend(ExecutionBackend):
         self._handles.clear()
         self._display = None
 
-    def _target_ready(self) -> bool:
-        from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
-
-        return JavaAccessibilityDriver.application_present(self.expected_application)
-
     def _prepare_display(self, run_dir: Path) -> str:
         current = os.environ.get("DISPLAY")
         if self.display_mode == "native":
@@ -160,7 +166,12 @@ class JavaDesktopBackend(ExecutionBackend):
             stdout = (run_dir / "logs" / "xvfb.stdout.log").open("w", encoding="utf-8")
             stderr = (run_dir / "logs" / "xvfb.stderr.log").open("w", encoding="utf-8")
             self._handles.extend((stdout, stderr))
-            self._xvfb = subprocess.Popen(["Xvfb", display, "-screen", "0", "1280x900x24", "-nolisten", "tcp", "-ac"], stdout=stdout, stderr=stderr, text=True)
+            self._xvfb = subprocess.Popen(
+                ["Xvfb", display, "-screen", "0", "1280x900x24", "-nolisten", "tcp", "-ac"],
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+            )
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline:
                 if self._xvfb.poll() is not None:

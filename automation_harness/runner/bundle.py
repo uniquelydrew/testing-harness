@@ -24,7 +24,7 @@ class TestBundle:
     components: Path | None = None
     step_libraries: tuple[Path, ...] = ()
     variables: dict[str, Any] | None = None
-    target: dict[str, Any] | None = None
+    backend: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, root: str | Path) -> "TestBundle":
@@ -96,34 +96,35 @@ class TestBundle:
             if not components.is_file():
                 raise BundleError(f"Declared component resource does not exist: {components_value}")
 
-        target = raw.get("target")
-        if target is not None:
-            if not isinstance(target, dict) or not isinstance(target.get("kind"), str):
-                raise BundleError("manifest.target must be a mapping with a string kind")
-            if target["kind"] == "gtk-demo":
-                example = target.get("example")
+        backend = raw.get("backend")
+        if backend is not None:
+            if not isinstance(backend, dict) or not isinstance(backend.get("kind"), str):
+                raise BundleError("manifest.backend must be a mapping with a string kind")
+            if backend["kind"] == "gtk-demo":
+                example = backend.get("example")
                 if not isinstance(example, str) or not example.strip():
-                    raise BundleError("GTK Demo target requires a non-empty target.example")
-            elif target["kind"] == "java-desktop":
-                command = target.get("command")
+                    raise BundleError("GTK Demo backend requires a non-empty backend.example")
+            elif backend["kind"] == "java-desktop":
+                command = backend.get("command")
                 if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
-                    raise BundleError("Java desktop target requires target.command as a non-empty command list")
-                for key in ("working_directory", "expected_application"):
-                    if key in target and (not isinstance(target[key], str) or not target[key].strip()):
-                        raise BundleError(f"Java desktop target.{key} must be a non-empty string when supplied")
-                if "environment" in target and (
-                    not isinstance(target["environment"], dict)
-                    or not all(isinstance(key, str) and isinstance(value, str) for key, value in target["environment"].items())
+                    raise BundleError("Java desktop backend requires backend.command as a non-empty command list")
+                if "working_directory" in backend and (
+                    not isinstance(backend["working_directory"], str) or not backend["working_directory"].strip()
                 ):
-                    raise BundleError("Java desktop target.environment must be a string-to-string mapping")
-                if "startup_timeout" in target and (
-                    not isinstance(target["startup_timeout"], (int, float))
-                    or isinstance(target["startup_timeout"], bool)
-                    or target["startup_timeout"] <= 0
+                    raise BundleError("Java desktop backend.working_directory must be a non-empty string when supplied")
+                if "environment" in backend and (
+                    not isinstance(backend["environment"], dict)
+                    or not all(isinstance(key, str) and isinstance(value, str) for key, value in backend["environment"].items())
                 ):
-                    raise BundleError("Java desktop target.startup_timeout must be a positive number")
-            elif target["kind"] not in {"reference"}:
-                raise BundleError(f"unsupported manifest.target kind: {target['kind']!r}")
+                    raise BundleError("Java desktop backend.environment must be a string-to-string mapping")
+                if "startup_timeout" in backend and (
+                    not isinstance(backend["startup_timeout"], (int, float))
+                    or isinstance(backend["startup_timeout"], bool)
+                    or backend["startup_timeout"] <= 0
+                ):
+                    raise BundleError("Java desktop backend.startup_timeout must be a positive number")
+            elif backend["kind"] not in {"reference", "live-desktop"}:
+                raise BundleError(f"unsupported manifest.backend kind: {backend['kind']!r}")
 
         return cls(
             root=root,
@@ -135,7 +136,7 @@ class TestBundle:
             components=components,
             step_libraries=tuple(step_libraries),
             variables=variables,
-            target=dict(target) if target is not None else None,
+            backend=dict(backend) if backend is not None else None,
         )
 
 

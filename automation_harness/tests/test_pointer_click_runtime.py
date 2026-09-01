@@ -20,7 +20,7 @@ class _Evidence:
 
 
 def _context():
-    return SimpleNamespace(evidence=_Evidence(), target_application=None)
+    return SimpleNamespace(evidence=_Evidence())
 
 
 def test_bounds_resolvable_visual_object_exposes_click():

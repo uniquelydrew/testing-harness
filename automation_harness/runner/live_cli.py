@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-"""CLI policy for live desktop execution and external step implementations."""
+"""CLI extension for contract-backed external step implementations."""
 
 import sys
 from pathlib import Path
 
-from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.script_steps import load_script_steps
 
 
@@ -20,22 +19,10 @@ def _find_subparser(parser, name):
     return None
 
 
-def _remove_option(parser, option):
-    if parser is None:
-        return
-    for action in list(parser._actions):
-        if option not in getattr(action, "option_strings", ()):
-            continue
-        parser._remove_action(action)
-        for value in action.option_strings:
-            parser._option_string_actions.pop(value, None)
-
-
 def _install_cli_policy(cli_module):
-    if getattr(cli_module, "_live_environment_policy_installed", False):
+    if getattr(cli_module, "_script_step_cli_installed", False):
         return
     original_build = cli_module.build_parser
-    original_backend = cli_module._backend
 
     def build_parser():
         parser = original_build()
@@ -45,17 +32,11 @@ def _install_cli_policy(cli_module):
         validate = _find_subparser(parser, "validate")
         bundle_run = _find_subparser(parser, "run")
 
-        # Tests are not scoped to one application. Object identity/ownership is
-        # resolved from the object repository at the point of interaction.
-        for target in (validate, plan_validate, plan_run, bundle_run):
-            _remove_option(target, "--application")
-
         # The catalog used for validation must be the same catalog used for
-        # execution. External implementations are therefore accepted by both
-        # validation and run commands rather than being a run-only concern.
-        for target in (validate, plan_validate, plan_run, bundle_run):
-            if target is not None:
-                target.add_argument(
+        # execution, so external implementations are accepted by both paths.
+        for command in (validate, plan_validate, plan_run, bundle_run):
+            if command is not None:
+                command.add_argument(
                     "--script-step",
                     action="append",
                     default=[],
@@ -67,14 +48,8 @@ def _install_cli_policy(cli_module):
                 )
         return parser
 
-    def backend(name, args, target=None):
-        if name == "attached-desktop":
-            return LiveDesktopBackend()
-        return original_backend(name, args, target)
-
     cli_module.build_parser = build_parser
-    cli_module._backend = backend
-    cli_module._live_environment_policy_installed = True
+    cli_module._script_step_cli_installed = True
 
 
 def _extract_script_steps(argv):

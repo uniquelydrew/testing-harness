@@ -26,17 +26,8 @@ class TestContext:
     globals: VariableStore | None = None
     reference: ReferenceClient | None = None
     services: AutomationServices | None = None
-    # Compatibility-only constructor field. Target application scoping is no
-    # longer part of execution; object locators own application/window lineage.
-    target_application: str | None = None
 
     def __post_init__(self) -> None:
-        if self.target_application is not None:
-            self.evidence.record(
-                "legacy_target_ignored",
-                target_application=self.target_application,
-            )
-            self.target_application = None
         if self.globals is None:
             self.globals = VariableStore(self.evidence)
         if self.services is None:
@@ -106,7 +97,7 @@ class TestContext:
                 globals=global_variables,
                 reference=ReferenceClient(socket_path),
             )
-        if backend in {"gtk-demo", "java-desktop", "attached-desktop", "live-desktop"}:
+        if backend in {"gtk-demo", "java-desktop", "live-desktop"}:
             return cls(
                 backend=backend,
                 run_dir=run_dir,

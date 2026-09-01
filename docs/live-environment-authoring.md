@@ -2,7 +2,7 @@
 
 ## Runtime model
 
-The authoring console operates on the current desktop execution facility. It does not configure, launch, stop, or otherwise own a target application. Closing the authoring console must not terminate applications in the environment.
+The authoring console operates on the current desktop execution facility. It does not configure, launch, stop, or otherwise own an application. Closing the authoring console must not terminate applications in the environment.
 
 Application-specific setup is represented explicitly in the test flow. If setup requires a script, register a contract-backed script step and make that step the appropriate predecessor of the actions that depend on it:
 
@@ -25,22 +25,22 @@ steps:
         type: click
 ```
 
-Standalone live-desktop execution can register the external implementation explicitly:
+Standalone execution can register the external implementation explicitly:
 
 ```bash
 automation-run plan run test.yaml \
-  --backend attached-desktop \
+  --backend live-desktop \
   --components components.yaml \
   --script-step ./script_steps/environment_prepare.yaml
 ```
 
-`attached-desktop` remains accepted as a compatibility CLI backend selector, but it resolves to the targetless `live-desktop` execution backend.
+`live-desktop` represents only the current desktop session and available interaction facilities. It does not select an application.
 
 Inside `automation-author`, **Run Test** executes the same plan against the current desktop session. If the first plan step prepares or launches applications, that preparation occurs as part of the test and is visible in execution state and evidence.
 
-Application names may be used as object-level locator properties where they improve identity. They are not test-level execution targets. A single test may therefore interact with objects owned by multiple applications without declaring a multi-application target.
+Application names may be used as object-level locator properties where they improve identity. They are not test-level execution scope. A single test may therefore interact with objects owned by multiple applications without declaring any global application selector.
 
-New authoring project documents persist repository/run paths and optional `script_steps` manifests. They do not persist a `target` block or `environment_script`. Existing project files containing those legacy fields remain readable during migration, but the target is ignored and an environment script is never executed out of plan.
+Authoring project documents persist repository/run paths and optional `script_steps` manifests only. Environment preparation belongs in the plan.
 
 See `docs/script-backed-steps.md` for the script protocol and manifest contract.
 

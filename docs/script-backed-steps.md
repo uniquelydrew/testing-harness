@@ -109,13 +109,11 @@ Paths are relative to the project manifest. Loading the project registers those 
 
 For standalone live-desktop execution, manifests can also be registered with repeatable `--script-step` arguments.
 
-## Targetless execution
+## Execution scope
 
-Projects and tests do not identify a target application. The live desktop backend only describes the execution facility. Application, window, parent, and component ownership belong to object identity/lineage supplied by the object repository or another external object metadata provider.
+Projects and tests do not identify an application execution scope. The live desktop backend only describes the execution facility. Application, window, parent, and component ownership belong to object identity/lineage supplied by the object repository or another external object metadata provider.
 
-This means one test may naturally operate across multiple applications. The resolver uses each referenced object's own lineage instead of injecting a test-level application into every locator.
-
-Legacy `target` fields may still be read for compatibility but are not persisted or used to scope execution. Legacy `environment_script` fields are never executed; they must be migrated to a contract-backed script step placed explicitly in the test flow.
+This means one test may naturally operate across multiple applications. The resolver uses each referenced object's own lineage and never injects a test-level application into every locator.
 
 ## Qualification and evidence
 
