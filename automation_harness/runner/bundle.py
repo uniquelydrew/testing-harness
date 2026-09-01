@@ -40,6 +40,11 @@ class TestBundle:
             raise BundleError(f"Invalid YAML in {manifest_path}: {exc}") from exc
         if not isinstance(raw, dict):
             raise BundleError("manifest.yaml must contain a mapping")
+        if "target" in raw:
+            raise BundleError(
+                "manifest.target is obsolete; use manifest.backend only for execution-facility configuration "
+                "and represent application/environment setup as plan steps"
+            )
         name = raw.get("name")
         version = raw.get("version", 1)
         requires = raw.get("requires", [])

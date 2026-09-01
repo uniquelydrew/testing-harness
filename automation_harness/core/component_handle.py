@@ -4,6 +4,7 @@ import builtins
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from automation_harness.core.pointer_actions import click_bounds
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
@@ -103,12 +104,7 @@ class ComponentHandle:
         return GuiState(state.present, state.visible, state.enabled, state.focused, state.properties)
 
     def execute(self, action: GuiAction | ActionType | str | dict, *, strategy: str | None = None) -> ExecutionResult:
-        """Execute one validated semantic action through the configured strategies.
-
-        Accessibility-backed strategies are concrete executors. Unsupported
-        requested strategies are retained in the diagnostic trail instead of
-        silently changing test intent.
-        """
+        """Execute one validated semantic action through the configured strategies."""
         semantic = GuiAction.from_value(action)
         if not self.supports(semantic.type):
             available = ", ".join(sorted(item.value for item in self.definition.semantic_actions)) or "none"
@@ -116,10 +112,26 @@ class ComponentHandle:
                 f"object {self.definition.component_id!r} type {self.definition.object_type.value} does not support "
                 f"{semantic.type.value}; supported actions: {available}"
             )
-        if strategy not in {None, "accessibility", "atspi", "java_accessibility", "javafx"}:
+        if strategy not in {None, "pointer", "accessibility", "atspi", "java_accessibility", "javafx"}:
             raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
+
+        execution_strategy = strategy or "accessibility"
         try:
-            if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.ACTIVATE}:
+            if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK}:
+                if strategy not in {None, "pointer"}:
+                    raise ComponentResolutionError(
+                        f"{semantic.type.value} is a pointer action and cannot use strategy {strategy!r}"
+                    )
+                resolved = self.resolve()
+                bounds = resolved.metadata.get("bounds")
+                if bounds is None:
+                    raise ComponentResolutionError(
+                        f"resolved object {self.definition.component_id!r} has no screen bounds for pointer interaction"
+                    )
+                payload = click_bounds(bounds, semantic.type)
+                payload["resolved_strategy"] = resolved.strategy
+                execution_strategy = "pointer"
+            elif semantic.type == ActionType.ACTIVATE:
                 payload = self.activate()
             elif semantic.type == ActionType.SET_TEXT:
                 if not isinstance(semantic.value, str):
@@ -147,10 +159,27 @@ class ComponentHandle:
                     f"semantic action {semantic.type.value!r} is declared but has no executor for the current strategy chain"
                 )
         except Exception as exc:
-            self.context.evidence.record("gui_action_attempt_failed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=strategy or "accessibility", error=f"{type(exc).__name__}: {exc}")
+            self.context.evidence.record(
+                "gui_action_attempt_failed",
+                component_id=self.definition.component_id,
+                action=semantic.to_dict(),
+                strategy=execution_strategy,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             raise
-        result = ExecutionResult(semantic.type, strategy or "accessibility", payload, ({"strategy": strategy or "accessibility", "success": True},))
-        self.context.evidence.record("gui_action_executed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=result.strategy, result=dict(payload))
+        result = ExecutionResult(
+            semantic.type,
+            execution_strategy,
+            payload,
+            ({"strategy": execution_strategy, "success": True},),
+        )
+        self.context.evidence.record(
+            "gui_action_executed",
+            component_id=self.definition.component_id,
+            action=semantic.to_dict(),
+            strategy=result.strategy,
+            result=dict(payload),
+        )
         return result
 
     def assert_state(self, **expected: Any) -> ComponentState:
@@ -193,7 +222,7 @@ class ComponentHandle:
         return last
 
     def activate(self) -> dict[str, Any]:
-        if "activate" not in self.definition.actions and not self.supports(ActionType.CLICK):
+        if "activate" not in self.definition.actions and not self.supports(ActionType.ACTIVATE):
             raise UnsupportedComponentAction(
                 f"component {self.definition.component_id!r} does not support activation"
             )
@@ -251,7 +280,7 @@ class ComponentHandle:
                     driver = JavaAccessibilityDriver(self.context)
                 else:
                     driver = JavaFxBridgeDriver(self.context)
-                identification = self._scoped_identification(strategy.options.get("identification")) if strategy.type != "javafx" else strategy.options.get("identification")
+                identification = strategy.options.get("identification")
                 result = getattr(driver, method)(*args, identification=identification)
                 self.context.evidence.record(
                     "component_accessibility_operation",
@@ -272,7 +301,7 @@ class ComponentHandle:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).resolve(
                 self.definition.component_id,
-                identification=self._scoped_identification(options.get("identification")),
+                identification=options.get("identification"),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
@@ -280,7 +309,7 @@ class ComponentHandle:
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).resolve(
                 self.definition.component_id,
-                identification=self._scoped_identification(options.get("identification")),
+                identification=options.get("identification"),
             )
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).resolve(
@@ -309,13 +338,13 @@ class ComponentHandle:
     def _state_strategy(self, strategy_type: str, options: dict[str, Any]) -> ComponentState:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).state(
-                identification=self._scoped_identification(options.get("identification")),
+                identification=options.get("identification"),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
         if strategy_type == "java_accessibility":
-            return JavaAccessibilityDriver(self.context).state(identification=self._scoped_identification(options.get("identification")))
+            return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "anchored_visual":
@@ -355,13 +384,13 @@ class ComponentHandle:
     def _activate_strategy(self, strategy_type: str, options: dict[str, Any]) -> dict[str, Any]:
         if strategy_type == "atspi":
             return AtspiDriver(self.context).activate(
-                identification=self._scoped_identification(options.get("identification")),
+                identification=options.get("identification"),
                 name=_optional_str(options.get("name")),
                 role=_optional_str(options.get("role")),
                 accessible_id=_optional_str(options.get("accessible_id")),
             )
         if strategy_type == "java_accessibility":
-            return JavaAccessibilityDriver(self.context).activate(identification=self._scoped_identification(options.get("identification")))
+            return JavaAccessibilityDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "reference_inspection":
@@ -369,38 +398,6 @@ class ComponentHandle:
                 "reference_inspection is read-only and cannot activate UI components"
             )
         raise ValueError(f"unsupported component strategy: {strategy_type}")
-
-    def _scoped_identification(self, raw):
-        application = getattr(self.context, "target_application", None)
-        if not application or not isinstance(raw, dict):
-            return raw
-        if "mandatory" in raw:
-            scoped = dict(raw)
-            mandatory = dict(scoped.get("mandatory") or {})
-            assistive = dict(scoped.get("assistive") or {})
-            authored = mandatory.get("application", assistive.get("application"))
-            if authored is not None and str(authored).casefold() != application.casefold():
-                raise ComponentResolutionError(
-                    "object %r belongs to application %r, not attached target %r"
-                    % (self.definition.component_id, authored, application)
-                )
-            mandatory["application"] = application
-            assistive.pop("application", None)
-            scoped["mandatory"] = mandatory
-            if assistive:
-                scoped["assistive"] = assistive
-            else:
-                scoped.pop("assistive", None)
-            return scoped
-        scoped = dict(raw)
-        authored = scoped.get("application")
-        if authored is not None and str(authored).casefold() != application.casefold():
-            raise ComponentResolutionError(
-                "object %r belongs to application %r, not attached target %r"
-                % (self.definition.component_id, authored, application)
-            )
-        scoped["application"] = application
-        return scoped
 
 
 def _optional_str(value: Any) -> str | None:

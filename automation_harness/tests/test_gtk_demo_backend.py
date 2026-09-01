@@ -22,6 +22,20 @@ def test_gtk_demo_backend_rejects_unknown_display_mode():
         raise AssertionError("unknown display mode must be rejected")
 
 
+def test_bundle_rejects_legacy_target_configuration(tmp_path):
+    (tmp_path / "test_case.py").write_text("def test_case(): pass\n", encoding="utf-8")
+    (tmp_path / "manifest.yaml").write_text(
+        "name: legacy\nversion: 1\ntarget: {kind: attached-desktop}\ntests: [test_case.py]\n",
+        encoding="utf-8",
+    )
+    try:
+        TestBundle.load(tmp_path)
+    except BundleError as exc:
+        assert "manifest.target is obsolete" in str(exc)
+    else:
+        raise AssertionError("legacy bundle target configuration must be rejected")
+
+
 def test_gtk_demo_bundle_backend_requires_example(tmp_path):
     (tmp_path / "test_case.py").write_text("def test_case(): pass\n", encoding="utf-8")
     (tmp_path / "manifest.yaml").write_text(

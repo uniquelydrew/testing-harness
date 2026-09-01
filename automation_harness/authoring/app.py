@@ -9,26 +9,29 @@ from typing import Any
 
 import cairo  # noqa: F401
 import gi
-import yaml
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.action_catalog import action_by_id, actions_for
-from automation_harness.authoring.project import AttachedExecutionBackend, AuthoringProject, applications_for_plan, create_authoring_project
-from automation_harness.backends.attached_desktop import AttachedDesktopBackend
+from automation_harness.authoring.project import AuthoringProject, create_authoring_project
+from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.reusable_steps import ReusableStepDefinition, list_reusable_steps
 from automation_harness.core.object_capture import ObjectCaptureService
+from automation_harness.core.script_steps import ScriptStepDefinition, registered_script_step
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.core.visual_baselines import approve_visual_candidate, reject_visual_candidate
+from automation_harness.drivers.atspi_driver import AtspiDriver
+from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
 from automation_harness.runner.plan_execution import execute_plan
 
 
 class AuthoringApp:
-    """GTK3 authoring/Object Capture client for the RHEL deployment target."""
+    """GTK3 authoring/Object Capture client for the RHEL deployment environment."""
 
     def __init__(self, repository_path: Path | None = None, *, mode: str = "author", project_path: Path | None = None) -> None:
         self.mode = mode
@@ -56,19 +59,12 @@ class AuthoringApp:
         self._highlight_windows = []
         self._highlight_timeout = None
         self.last_run_dir = None
-        self._target_backend = None
-        self._target_environment = None
-        self._attached_application = None
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
         self.window.show_all()
 
     def _on_destroy(self, *_args) -> None:
-        backend = getattr(self, "_target_backend", None)
-        if backend is not None:
-            try: backend.stop()
-            except Exception: pass
         Gtk.main_quit()
 
     def _load_repository(self) -> ComponentRepository:
@@ -85,28 +81,19 @@ class AuthoringApp:
 
         toolbar = Gtk.Box(spacing=6)
         outer.pack_start(toolbar, False, False, 0)
-        target_toolbar = Gtk.Box(spacing=6)
-        if self.mode == "author":
-            outer.pack_start(target_toolbar, False, False, 0)
         self._button(toolbar, "Open Repository", self.open_repository)
         if self.mode == "author":
-            self._button(target_toolbar, "New Project", self.new_project_dialog)
-            self._button(target_toolbar, "Open Project", self.open_project_dialog)
-            self._button(target_toolbar, "Configure Target", self.configure_target_dialog)
-            self.launch_target_button = self._button(target_toolbar, "Launch Target", self.launch_target)
-            self.stop_target_button = self._button(target_toolbar, "Stop Target", self.stop_target)
-            self.stop_target_button.set_sensitive(False)
+            self._button(toolbar, "New Project", self.new_project_dialog)
+            self._button(toolbar, "Open Project", self.open_project_dialog)
             self._button(toolbar, "Open Plan", self.open_plan_dialog)
             self._button(toolbar, "Save Plan", self.save_plan_dialog)
             self._button(toolbar, "Validate Plan", self.validate_plan_dialog)
             self.run_reference_button = self._button(toolbar, "Run Test", self.run_reference_plan)
+            self._button(toolbar, "Add Script Step", self.add_script_step_dialog)
             self._button(toolbar, "Save as Reusable Step", self.save_reusable_step)
-            target = self.project.target.get("kind", "reference") if self.project else "unconfigured"
-            self.target_label = Gtk.Label(label="Target: " + str(target))
-            target_toolbar.pack_start(self.target_label, False, False, 0)
             count = len(list_reusable_steps(self.project.root / "reusable_steps")) if self.project else 0
             if count:
-                target_toolbar.pack_start(Gtk.Label(label="Reusable steps: %d" % count), False, False, 0)
+                toolbar.pack_start(Gtk.Label(label="Reusable steps: %d" % count), False, False, 0)
         self.status = Gtk.Label(label="Ready")
         self.status.set_halign(Gtk.Align.END)
         toolbar.pack_end(self.status, True, True, 0)
@@ -179,6 +166,8 @@ class AuthoringApp:
         self._button(buttons, "Highlight", self.highlight_selected_object)
         if self.mode != "capture":
             self._button(buttons, "Edit Selected", self.edit_selected_object)
+        if self.mode == "author":
+            self._button(buttons, "Click Selected", self.click_selected_object)
         if self.mode != "repository":
             capture_buttons = Gtk.Box(spacing=5)
             left.pack_start(capture_buttons, False, False, 0)
@@ -376,7 +365,7 @@ class AuthoringApp:
     def capture_pointer_delayed(self) -> None:
         if not self.capture.available:
             return self._error("AT-SPI unavailable", "pyatspi is not installed on this host.")
-        self._set_status("Move pointer over target object…")
+        self._set_status("Move pointer over object…")
         GLib.timeout_add(2000, self._capture_pointer_now)
 
     def _capture_pointer_now(self):
@@ -398,7 +387,7 @@ class AuthoringApp:
         if self._click_capture_active:
             return
         self._click_capture_active = True
-        self._set_status("Click the target object within 30 seconds…")
+        self._set_status("Click the object within 30 seconds…")
         self.window.hide()
         GLib.timeout_add(150, self._show_click_picker)
 
@@ -514,6 +503,10 @@ class AuthoringApp:
             except Exception as exc:
                 self._error("Visual capture", "%s: %s" % (type(exc).__name__, exc))
 
+    def bind_captured_application(self, _captured) -> bool:
+        # Application/window ownership remains in the captured object's locator.
+        return True
+
     def highlight_last_capture(self) -> None:
         if self._last_capture is None or self._last_capture.bounds is None:
             return self._info("Highlight capture", "Capture an object with screen bounds first.")
@@ -581,6 +574,58 @@ class AuthoringApp:
         if captured.bounds is None:
             return self._error("Highlight failed", "The resolved object has no screen bounds to highlight.")
         self.window.hide(); self._show_highlight(captured.bounds, True); return False
+
+    def click_selected_object(self) -> None:
+        component_id = self._selected(self.object_tree)
+        if not component_id:
+            return self._info("Click", "Select a captured object first.")
+        definition = self.repository.get(component_id)
+        if not any(strategy.type in {"atspi", "java_accessibility", "javafx"} for strategy in definition.strategies):
+            return self._error("Click", "The selected object has no interactive accessibility strategy.")
+        self._set_status("Clicking %s…" % component_id)
+        threading.Thread(
+            target=self._click_selected_worker,
+            args=(definition,),
+            name="automation-author-click",
+            daemon=True,
+        ).start()
+
+    def _click_selected_worker(self, definition) -> None:
+        errors = []
+        for strategy in definition.strategies:
+            identification = strategy.options.get("identification")
+            try:
+                if strategy.type == "atspi":
+                    result = AtspiDriver().activate(identification=identification)
+                elif strategy.type == "java_accessibility":
+                    result = JavaAccessibilityDriver().activate(identification=identification)
+                elif strategy.type == "javafx":
+                    result = JavaFxBridgeDriver().activate(identification=identification)
+                else:
+                    continue
+            except Exception as exc:
+                errors.append("%s: %s: %s" % (strategy.type, type(exc).__name__, exc))
+                continue
+            GLib.idle_add(self._finish_selected_click, definition.component_id, result, None)
+            return
+        GLib.idle_add(
+            self._finish_selected_click,
+            definition.component_id,
+            None,
+            RuntimeError("; ".join(errors) or "no compatible accessibility strategy"),
+        )
+
+    def _finish_selected_click(self, component_id, result=None, error=None):
+        if error is not None:
+            self._set_status("Click failed")
+            self._error("Click failed", "%s: %s" % (type(error).__name__, error))
+            return False
+        self._set_status("Clicked %s" % component_id)
+        self._set_text(
+            self.object_detail,
+            json.dumps({"component_id": component_id, "click": result}, indent=2, default=str),
+        )
+        return False
 
     def approve_visual_candidate(self) -> None:
         if self.repository_path is None: return self._error("Visual approval", "Open an editable repository first.")
@@ -692,6 +737,103 @@ class AuthoringApp:
                 dialog.destroy(); return values
             error.set_text("Required: " + ", ".join(missing))
 
+    def add_script_step_dialog(self) -> None:
+        if self.project is None:
+            return self._info("Script step", "Create or open a project before adding project-registered script steps.")
+        if not self.project.script_steps:
+            return self._info("Script step", "This project has no script_steps manifests registered.")
+
+        available = []
+        for manifest in self.project.script_steps:
+            try:
+                available.append(ScriptStepDefinition.load(manifest).step_id)
+            except Exception as exc:
+                return self._error("Script step", "%s: %s" % (type(exc).__name__, exc))
+        available = sorted(set(available))
+        selected = self._ask_text(
+            "Add Script Step",
+            "Registered script step ID:\n" + "\n".join(available),
+            available[0] if len(available) == 1 else "",
+        )
+        if not selected:
+            return
+        selected = selected.strip()
+        if selected not in available:
+            return self._error(
+                "Script step",
+                "Unknown project script step %r. Available: %s" % (selected, ", ".join(available)),
+            )
+
+        try:
+            metadata = registered_script_step(selected)
+            definition = self.registry.get(selected)
+        except Exception as exc:
+            return self._error("Script step", "%s: %s" % (type(exc).__name__, exc))
+
+        dialog = Gtk.Dialog(title="Configure %s" % selected, transient_for=self.window, modal=True)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add to Test", Gtk.ResponseType.OK)
+        box = dialog.get_content_area(); box.set_spacing(8); box.set_border_width(10)
+        description = Gtk.Label(label=metadata.description or selected)
+        description.set_xalign(0)
+        box.pack_start(description, False, False, 0)
+
+        input_entries = {}
+        for item in definition.inputs:
+            row = Gtk.Box(spacing=8)
+            label = Gtk.Label(label="%s%s (%s)" % (item.name, " *" if item.required else "", item.annotation))
+            label.set_xalign(0); label.set_size_request(220, -1)
+            entry = Gtk.Entry()
+            if not item.required:
+                entry.set_text(json.dumps(item.default))
+            entry.set_placeholder_text("JSON value" + (" — required" if item.required else ""))
+            row.pack_start(label, False, False, 0); row.pack_start(entry, True, True, 0); box.pack_start(row, False, False, 0)
+            input_entries[item.name] = (item, entry)
+
+        output_entries = {}
+        if definition.outputs:
+            box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+            caption = Gtk.Label(label="Output bindings"); caption.set_xalign(0); box.pack_start(caption, False, False, 0)
+        for output in definition.outputs:
+            row = Gtk.Box(spacing=8)
+            label = Gtk.Label(label=output.name); label.set_xalign(0); label.set_size_request(220, -1)
+            entry = Gtk.Entry(); entry.set_text(output.name); entry.set_placeholder_text("test variable name; blank to ignore")
+            row.pack_start(label, False, False, 0); row.pack_start(entry, True, True, 0); box.pack_start(row, False, False, 0)
+            output_entries[output.name] = entry
+
+        error = Gtk.Label(); error.set_xalign(0); box.pack_start(error, False, False, 0)
+        dialog.show_all()
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy(); return
+            try:
+                inputs = {}
+                missing = []
+                for name, (item, entry) in input_entries.items():
+                    raw = entry.get_text().strip()
+                    if not raw:
+                        if item.required: missing.append(name)
+                        continue
+                    try: inputs[name] = json.loads(raw)
+                    except json.JSONDecodeError: inputs[name] = raw
+                if missing:
+                    error.set_text("Required inputs: " + ", ".join(missing)); continue
+                outputs = {name: entry.get_text().strip() for name, entry in output_entries.items() if entry.get_text().strip()}
+                call = StepCall(node_id=_next_node_id(self.plan.steps), step_id=selected, inputs=inputs, outputs=outputs)
+                candidate = replace(self.plan, steps=self.plan.steps + (call,))
+                issues = validate_plan(candidate, self.registry)
+                if issues:
+                    error.set_text("; ".join(issues)); continue
+            except Exception as exc:
+                error.set_text("%s: %s" % (type(exc).__name__, exc)); continue
+            dialog.destroy()
+            self.plan = candidate
+            self.refresh_plan(); self.refresh_state()
+            self.notebook.set_current_page(2)
+            self._select_value(self.plan_tree, call.node_id)
+            self._set_status("Added script step %s to test" % selected)
+            return
+
     def duplicate_plan_step(self) -> None:
         node_id = self._selected(self.plan_tree)
         if not node_id: return
@@ -776,8 +918,7 @@ class AuthoringApp:
             self.repository = self._load_repository()
         except Exception as exc:
             return self._error("New project", "%s: %s" % (type(exc).__name__, exc))
-        self.target_label.set_text("Target: " + str(self.project.target.get("kind", "reference")))
-        self.refresh_all(); self._set_status("Created project — capture an object from the target application")
+        self.refresh_all(); self._set_status("Created project — capture an object or add a registered script step")
 
     def open_project_dialog(self) -> None:
         path = self._choose_file(yaml=True)
@@ -786,127 +927,10 @@ class AuthoringApp:
         try:
             project = AuthoringProject.load(Path(path))
             self.project_path = Path(path); self.project = project
-            self._attached_application = project.target.get("expected_application") if project.target.get("kind") == "attached-desktop" else None
             self.repository_path = project.repository; self.repository = self._load_repository()
         except Exception as exc:
             return self._error("Open project", "%s: %s" % (type(exc).__name__, exc))
-        target_caption = str(project.target.get("kind", "attached-desktop"))
-        if project.target.get("expected_application"):
-            target_caption += " — " + str(project.target["expected_application"])
-        self.target_label.set_text("Target: " + target_caption)
         self.refresh_all(); self._set_status("Opened project: " + project.name)
-
-    def bind_captured_application(self, captured) -> bool:
-        application = getattr(captured, "application", None)
-        if not application:
-            self._error("Attach application", "The captured object does not expose an application identity.")
-            return False
-        current = self._attached_application
-        if self.project is not None:
-            configured = self.project.target.get("expected_application")
-            kind = self.project.target.get("kind")
-            if configured and str(configured).casefold() == str(application).casefold():
-                self._attached_application = str(configured)
-                return True
-            if kind not in {None, "attached-desktop"} and configured:
-                self._error(
-                    "Application mismatch",
-                    "This managed project targets %s, but the captured object belongs to %s."
-                    % (configured, application),
-                )
-                return False
-            if configured and str(configured).casefold() != str(application).casefold():
-                if not self._confirm(
-                    "Switch attached application?",
-                    "This project targets %s, but the captured object belongs to %s. Switch the project target?"
-                    % (configured, application),
-                ):
-                    return False
-            target = {"kind": "attached-desktop", "expected_application": str(application)}
-            self.project = replace(self.project, target=target)
-            if self.project_path is not None:
-                self.project_path.write_text(yaml.safe_dump(self.project.to_document(), sort_keys=False), encoding="utf-8")
-        elif current and current.casefold() != str(application).casefold():
-            if not self._confirm(
-                "Switch attached application?",
-                "The current test targets %s. Switch it to %s?" % (current, application),
-            ):
-                return False
-        self._attached_application = str(application)
-        self.target_label.set_text("Target: attached-desktop — " + self._attached_application)
-        self._set_status("Attached target inferred from capture: " + self._attached_application)
-        return True
-
-    def configure_target_dialog(self) -> None:
-        if self.project is None or self.project_path is None:
-            return self._info("Configure Target", "Create or open a project first.")
-        raw = self._ask_text(
-            "Configure Target", "Target configuration:",
-            json.dumps(dict(self.project.target), indent=2), multiline=True,
-        )
-        if raw is None:
-            return
-        try:
-            target = json.loads(raw)
-            if not isinstance(target, dict):
-                raise ValueError("target must be an object")
-            candidate = replace(self.project, target=target)
-            # Constructing the adapter validates target kind and required fields.
-            candidate.backend()
-            self.project_path.write_text(yaml.safe_dump(candidate.to_document(), sort_keys=False), encoding="utf-8")
-            self.project = candidate
-            self._attached_application = (
-                str(target["expected_application"])
-                if target.get("kind") == "attached-desktop" and target.get("expected_application")
-                else None
-            )
-        except Exception as exc:
-            return self._error("Configure Target", "%s: %s" % (type(exc).__name__, exc))
-        target_caption = str(target.get("kind", "reference"))
-        if target.get("expected_application"):
-            target_caption += " — " + str(target["expected_application"])
-        self.target_label.set_text("Target: " + target_caption)
-        self._set_status("Updated target configuration")
-
-    def launch_target(self) -> None:
-        if self.project is None:
-            return self._info("Launch Target", "Create or open a project first.")
-        if self._target_backend is not None:
-            return self._info("Launch Target", "The project target is already running.")
-        self.launch_target_button.set_sensitive(False); self._set_status("Launching target…")
-        project = self.project
-        def worker():
-            backend = None
-            try:
-                project.prepare_environment(); backend = project.backend()
-                lifecycle_dir = project.runs_dir / "authoring-target"
-                (lifecycle_dir / "logs").mkdir(parents=True, exist_ok=True)
-                environment = backend.start(run_dir=lifecycle_dir)
-                health = backend.health_check()
-                if not health.healthy: raise RuntimeError("target failed health check: %s" % health.details)
-            except Exception as exc:
-                if backend is not None:
-                    try: backend.stop()
-                    except Exception: pass
-                GLib.idle_add(self._finish_target_launch, None, None, exc); return
-            GLib.idle_add(self._finish_target_launch, backend, environment, None)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_target_launch(self, backend=None, environment=None, error=None):
-        self.launch_target_button.set_sensitive(True)
-        if error is not None:
-            self._set_status("Target launch failed"); self._error("Launch Target", "%s: %s" % (type(error).__name__, error)); return False
-        self._target_backend = backend; self._target_environment = environment
-        self.launch_target_button.set_sensitive(False); self.stop_target_button.set_sensitive(True)
-        self._set_status("Target ready — capture objects or run the test"); return False
-
-    def stop_target(self) -> None:
-        backend = self._target_backend
-        self._target_backend = None; self._target_environment = None
-        if backend is not None:
-            try: backend.stop()
-            except Exception as exc: self._error("Stop Target", "%s: %s" % (type(exc).__name__, exc))
-        self.launch_target_button.set_sensitive(True); self.stop_target_button.set_sensitive(False); self._set_status("Target stopped")
 
     def save_reusable_step(self) -> None:
         self.refresh_plan()
@@ -930,56 +954,27 @@ class AuthoringApp:
 
     def run_reference_plan(self) -> None:
         if self._run_active: return
-        # Read the visible flow first so target inference and execution use the
-        # same set of component references.
         self.refresh_plan()
-        if self._attached_application is None and (
-            self.project is None
-            or (self.project.target.get("kind") == "attached-desktop" and not self.project.target.get("expected_application"))
-        ):
-            applications = self._plan_applications()
-            if len(applications) == 1:
-                application = next(iter(applications))
-                self._attached_application = application
-                if self.project is not None:
-                    self.project = replace(self.project, target={"kind": "attached-desktop", "expected_application": application})
-                    if self.project_path is not None:
-                        self.project_path.write_text(yaml.safe_dump(self.project.to_document(), sort_keys=False), encoding="utf-8")
-                self.target_label.set_text("Target: attached-desktop — " + application)
-            elif len(applications) > 1:
-                return self._error(
-                    "Multiple applications referenced",
-                    "This test references objects from multiple applications: %s. Configure a multi-application target explicitly."
-                    % ", ".join(sorted(applications)),
-                )
-        if self.project is None and self._target_backend is None and self._attached_application is None:
-            return self._error(
-                "Target not configured",
-                "Create or open a project, configure its target, and use Launch Target before running this test.",
-            )
         issues = validate_plan(self.plan, self.registry); issues.extend(validate_plan_components(self.plan, self.repository))
         if issues: return self._error("Plan validation", "\n".join(issues))
         self._run_active = True; self.run_reference_button.set_sensitive(False)
-        target_name = self.project.target.get("kind", "attached-desktop") if self.project else "attached-desktop"
-        self._set_status("Running test against %s…" % target_name)
+        self._set_status("Running test against the current desktop environment…")
         plan = self.plan
         runs_dir = self.project.runs_dir if self.project else (Path.cwd() / "runs").resolve()
+
         def worker():
             try:
-                if self._target_backend is not None:
-                    backend = AttachedExecutionBackend(self._target_backend, self._target_environment or {})
-                elif self.project:
-                    self.project.prepare_environment(); backend = self.project.backend()
-                else:
-                    backend = AttachedDesktopBackend({"expected_application": self._attached_application})
-                result = execute_plan(plan, backend, runs_dir=runs_dir, component_repository=self.repository)
+                result = execute_plan(
+                    plan,
+                    LiveDesktopBackend(),
+                    runs_dir=runs_dir,
+                    component_repository=self.repository,
+                )
             except Exception as exc:
                 GLib.idle_add(self._present_run_error, exc); return
             GLib.idle_add(self._present_reference_result, result)
-        threading.Thread(target=worker, daemon=True).start()
 
-    def _plan_applications(self):
-        return applications_for_plan(self.plan, self.repository)
+        threading.Thread(target=worker, name="automation-author-run", daemon=True).start()
 
     def _present_run_error(self, error):
         self._run_active = False; self.run_reference_button.set_sensitive(True); self._set_status("Test run failed to start")

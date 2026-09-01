@@ -91,18 +91,3 @@ def create_authoring_project(path: Path, name: str) -> AuthoringProject:
         project.repository.write_text("version: 2\ncomponents: {}\n", encoding="utf-8")
     path.write_text(yaml.safe_dump(project.to_document(), sort_keys=False), encoding="utf-8")
     return project
-
-
-# Import-only shims for the old base GTK module. Live authoring replaces every
-# code path that could invoke these names; they deliberately provide no legacy
-# application-scope behavior.
-class AttachedExecutionBackend:
-    def __init__(self, *_args, **_kwargs) -> None:
-        raise ProjectError("managed application execution has been removed from authoring")
-
-
-def applications_for_plan(*_args, **_kwargs):
-    return frozenset()
-
-
-create_reference_project = create_authoring_project

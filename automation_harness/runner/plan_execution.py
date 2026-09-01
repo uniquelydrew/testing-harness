@@ -101,7 +101,6 @@ def execute_plan(
             steps=registry,
             globals=variables,
             reference=reference,
-            target_application=getattr(backend, "expected_application", None),
         )
         _write_catalog(artifacts.root, registry)
         _write_execution_state(artifacts.root, queue)
