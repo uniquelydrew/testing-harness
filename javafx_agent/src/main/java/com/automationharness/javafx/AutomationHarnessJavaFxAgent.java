@@ -156,6 +156,12 @@ public final class AutomationHarnessJavaFxAgent {
         if ("state".equals(op)) {
             return ok(singleton("node", FxRuntime.findUnique(mapValue(request.get("identification")))));
         }
+        if ("activate_window".equals(op)) {
+            return ok(FxRuntime.activateWindow(mapValue(request.get("identification"))));
+        }
+        if ("focus".equals(op)) {
+            return ok(FxRuntime.focus(mapValue(request.get("identification"))));
+        }
         if ("activate".equals(op)) {
             return ok(FxRuntime.activate(mapValue(request.get("identification"))));
         }
@@ -500,6 +506,48 @@ public final class AutomationHarnessJavaFxAgent {
                 Map<String, Object> payload = nodePayload(match.node, match.window);
                 payload.put("resolution_stages", resolution.stages);
                 return payload;
+            });
+        }
+
+        static Map<String, Object> activateWindow(final Map<String, Object> identification) throws Exception {
+            return onFx(() -> {
+                NodeMatch match = unique(resolve(identification, true), identification);
+                Method toFront = findMethod(match.window.getClass(), "toFront");
+                Method requestFocus = findMethod(match.window.getClass(), "requestFocus");
+                if (toFront == null || toFront.getParameterCount() != 0
+                        || requestFocus == null || requestFocus.getParameterCount() != 0) {
+                    throw new UnsupportedOperationException(
+                            "JavaFX owning window does not expose toFront()/requestFocus()");
+                }
+                toFront.invoke(match.window);
+                requestFocus.invoke(match.window);
+                boolean focused = boolCall(match.window, "isFocused", false);
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("operation", "activate_window");
+                result.put("window", windowTitle(match.window));
+                result.put("focused", focused);
+                return result;
+            });
+        }
+
+        static Map<String, Object> focus(final Map<String, Object> identification) throws Exception {
+            return onFx(() -> {
+                NodeMatch match = unique(resolve(identification, true), identification);
+                Method requestFocus = findMethod(match.node.getClass(), "requestFocus");
+                if (requestFocus == null || requestFocus.getParameterCount() != 0) {
+                    throw new UnsupportedOperationException(
+                            "JavaFX node does not expose requestFocus(): " + match.node.getClass().getName());
+                }
+                requestFocus.invoke(match.node);
+                boolean focused = boolCall(match.node, "isFocused", false);
+                if (!focused) {
+                    throw new IllegalStateException("JavaFX node did not accept focus");
+                }
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("operation", "focus");
+                result.put("focused", Boolean.TRUE);
+                result.put("node", nodePayload(match.node, match.window));
+                return result;
             });
         }
 

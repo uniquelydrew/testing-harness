@@ -110,6 +110,12 @@ class _BridgeServer:
                     {"source": "mandatory", "criteria": dict(mandatory), "matches": len(matches)}
                 ],
             }
+        if op == "activate_window":
+            return {**base, "operation": "activate_window", "window": self.node["window"], "focused": True}
+        if op == "focus":
+            focused = dict(self.node)
+            focused["focused"] = True
+            return {**base, "operation": "focus", "focused": True, "node": focused}
         if op == "activate":
             return {**base, "action": "fire", "node": self.node}
         if op == "get_text":
@@ -309,3 +315,33 @@ def test_stale_discovery_record_is_ignored(tmp_path):
         encoding="utf-8",
     )
     assert discover_javafx_endpoints(tmp_path) == ()
+
+
+
+
+def test_javafx_window_activation_uses_distinct_bridge_operation(tmp_path):
+    server = _BridgeServer()
+    try:
+        _write_discovery(tmp_path, server)
+        driver = JavaFxBridgeDriver(discovery_dir=tmp_path)
+        result = driver.activate_window(
+            identification={"mandatory": {"id": "cameraSelectorButton"}},
+        )
+        assert result["window"] == "ERSA Main Video Display"
+        assert result["focused"] is True
+    finally:
+        server.close()
+
+
+def test_javafx_component_focus_requires_verified_state(tmp_path):
+    server = _BridgeServer()
+    try:
+        _write_discovery(tmp_path, server)
+        driver = JavaFxBridgeDriver(discovery_dir=tmp_path)
+        result = driver.focus(
+            identification={"mandatory": {"id": "cameraSelectorButton"}},
+        )
+        assert result["focused"] is True
+        assert result["node"]["ref"] == "n17"
+    finally:
+        server.close()

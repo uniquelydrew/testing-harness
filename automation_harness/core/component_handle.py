@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from automation_harness.core.pointer_actions import click_bounds
+from automation_harness.core.interaction_preparation import (
+    InteractionPreparation,
+    PreparationOutcome,
+    preparation_requirement,
+    validate_preparation,
+)
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
@@ -116,7 +122,11 @@ class ComponentHandle:
             raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
 
         execution_strategy = strategy or "accessibility"
+        preparation = None
         try:
+            preparation = self.prepare_for_interaction(semantic, strategy=strategy)
+            if preparation.strategy != "none":
+                execution_strategy = preparation.strategy
             if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK}:
                 if strategy not in {None, "pointer"}:
                     raise ComponentResolutionError(
@@ -131,6 +141,11 @@ class ComponentHandle:
                 payload = click_bounds(bounds, semantic.type)
                 payload["resolved_strategy"] = resolved.strategy
                 execution_strategy = "pointer"
+            elif semantic.type == ActionType.FOCUS:
+                if preparation is None:
+                    raise ComponentResolutionError("focus preparation produced no result")
+                payload = dict(preparation.component_focus.details)
+                payload["focused"] = preparation.component_focus.success
             elif semantic.type == ActionType.ACTIVATE:
                 payload = self.activate()
             elif semantic.type == ActionType.SET_TEXT:
@@ -179,8 +194,110 @@ class ComponentHandle:
             action=semantic.to_dict(),
             strategy=result.strategy,
             result=dict(payload),
+            preparation=preparation.to_dict() if preparation is not None else None,
         )
         return result
+
+    def prepare_for_interaction(
+        self,
+        action: GuiAction | ActionType | str | dict,
+        *,
+        strategy: str | None = None,
+    ) -> InteractionPreparation:
+        """Establish live-desktop interaction preconditions without firing the object."""
+        semantic = GuiAction.from_value(action)
+        requirement = preparation_requirement(semantic)
+        if getattr(self.context, "backend", None) != "live-desktop":
+            preparation = InteractionPreparation(
+                "none",
+                PreparationOutcome.skipped("activate_window", "not a live-desktop execution"),
+                PreparationOutcome.skipped("focus", "not a live-desktop execution"),
+            )
+            self.context.evidence.record(
+                "interaction_prepared",
+                component_id=self.definition.component_id,
+                action=semantic.to_dict(),
+                preparation=preparation.to_dict(),
+            )
+            return preparation
+
+        candidates = [
+            item for item in self.definition.strategies
+            if item.type in {"atspi", "java_accessibility", "javafx"}
+            and strategy in {None, "accessibility", item.type}
+        ]
+        if not candidates:
+            preparation = InteractionPreparation(
+                "none",
+                PreparationOutcome.skipped("activate_window", "no accessibility-backed strategy"),
+                PreparationOutcome.skipped("focus", "no accessibility-backed strategy"),
+            )
+            self.context.evidence.record(
+                "interaction_prepared",
+                component_id=self.definition.component_id,
+                action=semantic.to_dict(),
+                preparation=preparation.to_dict(),
+            )
+            return preparation
+
+        selected = candidates[0]
+        identification = selected.options.get("identification")
+        if selected.type == "atspi":
+            driver = AtspiDriver(self.context)
+            kwargs = {
+                "identification": identification,
+                "name": _optional_str(selected.options.get("name")),
+                "role": _optional_str(selected.options.get("role")),
+                "accessible_id": _optional_str(selected.options.get("accessible_id")),
+            }
+        else:
+            driver = JavaAccessibilityDriver(self.context) if selected.type == "java_accessibility" else JavaFxBridgeDriver(self.context)
+            kwargs = {"identification": identification}
+
+        window = PreparationOutcome.skipped("activate_window", "not required")
+        focus = PreparationOutcome.skipped("focus", "not required")
+        if requirement.activate_window:
+            method = getattr(driver, "activate_window", None)
+            if method is None:
+                window = PreparationOutcome(
+                    "activate_window", False, not requirement.require_window_activation,
+                    supported=False, error=f"{selected.type} does not yet implement window activation",
+                )
+            else:
+                try:
+                    details = method(**kwargs)
+                    window = PreparationOutcome("activate_window", True, True, details=details)
+                except Exception as exc:
+                    window = PreparationOutcome(
+                        "activate_window", True, False,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+        if requirement.request_focus:
+            method = getattr(driver, "focus", None)
+            if method is None:
+                focus = PreparationOutcome(
+                    "focus", False, not requirement.require_focus,
+                    supported=False, error=f"{selected.type} does not yet implement component focus",
+                )
+            else:
+                try:
+                    details = method(**kwargs)
+                    focus = PreparationOutcome("focus", True, True, details=details)
+                except Exception as exc:
+                    focus = PreparationOutcome(
+                        "focus", True, False,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+
+        preparation = InteractionPreparation(selected.type, window, focus)
+        self.context.evidence.record(
+            "interaction_prepared",
+            component_id=self.definition.component_id,
+            action=semantic.to_dict(),
+            preparation=preparation.to_dict(),
+        )
+        validate_preparation(requirement, preparation)
+        return preparation
 
     def assert_state(self, **expected: Any) -> ComponentState:
         observed = self.state()
