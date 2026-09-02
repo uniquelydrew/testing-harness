@@ -37,6 +37,44 @@ def test_plan_round_trip_and_dataflow_queue(tmp_path: Path):
     assert loaded == plan
 
 
+def test_plan_round_trip_preserves_inline_objects_and_step_definitions(tmp_path: Path):
+    plan = TestPlan(
+        name="self-contained",
+        objects={
+            "submit": {
+                "object_type": "button",
+                "actions": ["click"],
+                "strategies": [
+                    {
+                        "type": "atspi",
+                        "identification": {
+                            "mandatory": {
+                                "name": {"match": "regex", "value": "Submit.*"}
+                            }
+                        },
+                    }
+                ],
+            }
+        },
+        step_definitions={
+            "gui.object.action": {
+                "name": "gui.object.action",
+                "description": "Execute an object action.",
+            }
+        },
+        steps=(
+            StepCall(
+                node_id="click-submit",
+                step_id="gui.object.action",
+                inputs={"component_id": "submit", "action": {"type": "click"}},
+            ),
+        ),
+    )
+    path = tmp_path / "self-contained.yaml"
+    save_plan(plan, path)
+    assert load_plan(path) == plan
+
+
 def test_plan_validation_catches_unknown_step_and_output():
     plan = TestPlan(
         name="bad",

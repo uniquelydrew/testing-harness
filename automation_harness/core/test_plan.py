@@ -30,6 +30,12 @@ def load_plan(path: Path) -> TestPlan:
     variables = raw.get("variables", {})
     if not isinstance(variables, Mapping):
         raise TestPlanError("test plan variables must be a mapping")
+    objects = raw.get("objects", {})
+    step_definitions = raw.get("step_definitions", {})
+    if not isinstance(objects, Mapping):
+        raise TestPlanError("test plan objects must be a mapping")
+    if not isinstance(step_definitions, Mapping):
+        raise TestPlanError("test plan step_definitions must be a mapping")
     steps_raw = raw.get("steps", [])
     if not isinstance(steps_raw, list):
         raise TestPlanError("test plan steps must be a list")
@@ -56,7 +62,14 @@ def load_plan(path: Path) -> TestPlan:
                 description=str(item.get("description", "")),
             )
         )
-    return TestPlan(name=name, version=1, variables=_decode_refs(dict(variables)), steps=tuple(steps))
+    return TestPlan(
+        name=name,
+        version=1,
+        variables=_decode_refs(dict(variables)),
+        steps=tuple(steps),
+        objects=_decode_refs(dict(objects)),
+        step_definitions=_decode_refs(dict(step_definitions)),
+    )
 
 
 def save_plan(plan: TestPlan, path: Path) -> None:

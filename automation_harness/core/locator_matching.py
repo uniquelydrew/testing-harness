@@ -5,16 +5,34 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def _regex_pattern(value: Any) -> str | None:
+    """Return an opted-in regex pattern, accepting the legacy shorthand."""
+    if not isinstance(value, Mapping):
+        return None
+    if set(value) == {"match", "value"} and value.get("match") == "regex":
+        pattern = value.get("value")
+        return pattern if isinstance(pattern, str) else None
+    if set(value) == {"regex"}:  # Backward compatibility for pre-mode repositories.
+        pattern = value.get("regex")
+        return pattern if isinstance(pattern, str) else None
+    return None
+
+
+def _is_regex_matcher(value: Any) -> bool:
+    return _regex_pattern(value) is not None
+
+
 def _matches_value(actual: Any, expected: Any, *, case_insensitive: bool = False) -> bool:
     """Match an identity value exactly or by a full regular expression.
 
-    Regex values are represented as ``{"regex": "..."}``. Full-match
+    Regex is an explicit per-property mode represented as
+    ``{"match": "regex", "value": "..."}``. Full-match
     semantics are intentional: object properties remain predicates over the
     complete runtime value instead of silently becoming substring searches.
     """
-    if isinstance(expected, Mapping) and set(expected) == {"regex"}:
-        pattern = expected.get("regex")
-        if not isinstance(pattern, str) or not pattern:
+    pattern = _regex_pattern(expected)
+    if pattern is not None:
+        if not pattern:
             return False
         flags = re.IGNORECASE if case_insensitive else 0
         return actual is not None and re.fullmatch(pattern, str(actual), flags=flags) is not None
@@ -28,21 +46,23 @@ def _validate_match_value(error_type, prefix: str, value: Any, *, allow_empty: b
         if value or allow_empty:
             return
         raise error_type(f"{prefix} must be a non-empty string")
-    if isinstance(value, Mapping) and set(value) == {"regex"}:
-        pattern = value.get("regex")
-        if not isinstance(pattern, str) or not pattern:
-            raise error_type(f"{prefix}.regex must be a non-empty string")
+    pattern = _regex_pattern(value)
+    if pattern is not None:
+        if not pattern:
+            raise error_type(f"{prefix} regex value must be a non-empty string")
         try:
             re.compile(pattern)
         except re.error as exc:
-            raise error_type(f"{prefix}.regex is invalid: {exc}") from exc
+            raise error_type(f"{prefix} regex is invalid: {exc}") from exc
         return
-    raise error_type(f"{prefix} must be a string or {{regex: pattern}}")
+    raise error_type(
+        f"{prefix} must be an exact string or {{match: regex, value: pattern}}"
+    )
 
 
 def _contains_regex(value: Any) -> bool:
     if isinstance(value, Mapping):
-        if set(value) == {"regex"}:
+        if _is_regex_matcher(value):
             return True
         return any(_contains_regex(item) for item in value.values())
     if isinstance(value, (list, tuple)):
@@ -53,7 +73,7 @@ def _contains_regex(value: Any) -> bool:
 def _exact_subset(value: Any) -> Any:
     """Return the safely bridge-evaluable subset of a matcher structure."""
     if isinstance(value, Mapping):
-        if set(value) == {"regex"}:
+        if _is_regex_matcher(value):
             return None
         result = {}
         for key, item in value.items():
@@ -69,7 +89,7 @@ def _exact_subset(value: Any) -> Any:
 
 
 def _structure_matches(actual: Any, expected: Any) -> bool:
-    if isinstance(expected, Mapping) and set(expected) == {"regex"}:
+    if _is_regex_matcher(expected):
         return _matches_value(actual, expected)
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
