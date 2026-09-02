@@ -237,6 +237,28 @@ class JavaFxBridgeDriver:
     def state(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> ComponentState:
         return self.inspect(identification=identification).state
 
+    def activate_window(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request("activate_window", timeout=5.0, identification=dict(identification or {}))
+        return {
+            "operation": "activate_window",
+            "bridge_pid": endpoint.pid,
+            "window": response.get("window"),
+            "focused": response.get("focused"),
+        }
+
+    def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request("focus", timeout=5.0, identification=dict(identification or {}))
+        if response.get("focused") is not True:
+            raise RuntimeError("JavaFX node did not report focused state")
+        return {
+            "operation": "focus",
+            "bridge_pid": endpoint.pid,
+            "node": response.get("node"),
+            "focused": True,
+        }
+
     def activate(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
         response = endpoint.request("activate", timeout=5.0, identification=dict(identification or {}))

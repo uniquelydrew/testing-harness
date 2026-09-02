@@ -309,3 +309,35 @@ def test_stale_discovery_record_is_ignored(tmp_path):
         encoding="utf-8",
     )
     assert discover_javafx_endpoints(tmp_path) == ()
+
+
+
+def test_javafx_window_activation_uses_distinct_bridge_operation(monkeypatch, tmp_path):
+    endpoint = _endpoint(tmp_path)
+    observed = {}
+
+    def request(op, **payload):
+        observed["op"] = op
+        observed["payload"] = payload
+        return {"ok": True, "window": "Editor", "focused": True}
+
+    monkeypatch.setattr(endpoint, "request", request)
+    driver = JavaFxBridgeDriver(discovery_dir=tmp_path)
+    monkeypatch.setattr(driver, "_find_unique", lambda identification: (endpoint, {}, ()))
+    result = driver.activate_window(identification={"mandatory": {"ref": "n1"}})
+    assert observed["op"] == "activate_window"
+    assert result["window"] == "Editor"
+
+
+def test_javafx_component_focus_requires_verified_state(monkeypatch, tmp_path):
+    endpoint = _endpoint(tmp_path)
+
+    def request(op, **payload):
+        assert op == "focus"
+        return {"ok": True, "focused": True, "node": {"ref": "n1"}}
+
+    monkeypatch.setattr(endpoint, "request", request)
+    driver = JavaFxBridgeDriver(discovery_dir=tmp_path)
+    monkeypatch.setattr(driver, "_find_unique", lambda identification: (endpoint, {}, ()))
+    result = driver.focus(identification={"mandatory": {"ref": "n1"}})
+    assert result["focused"] is True
