@@ -7,9 +7,13 @@ import socket
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
+from automation_harness.core.semantic_target import SemanticTargetResolution
 from automation_harness.models.component import CapturedComponent, ComponentState, ComponentStrategy, ResolvedComponent
+from automation_harness.models.gui import ObjectType, classify_accessibility
 
 
 class JavaFxBridgeUnavailable(RuntimeError):
@@ -18,6 +22,41 @@ class JavaFxBridgeUnavailable(RuntimeError):
 
 class JavaFxBridgeProtocolError(RuntimeError):
     pass
+
+
+class JavaFxRecordingTransport(Protocol):
+    def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class HttpJavaFxBridgeTransport:
+    """Loopback-only HTTP transport used by the recording agent endpoints."""
+    endpoint: str
+    token: str
+    timeout: float = 5.0
+
+    def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not self.endpoint.startswith(("http://127.0.0.1", "http://localhost")):
+            raise ValueError("JavaFX agent endpoint must be loopback-only")
+        request = Request(
+            f"{self.endpoint.rstrip('/')}/{operation}", data=json.dumps(dict(payload)).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Automation-Harness-Token": self.token}, method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                value = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RuntimeError(f"JavaFX agent {operation} failed: HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"JavaFX agent {operation} is unavailable: {exc.reason}") from exc
+        if not isinstance(value, Mapping):
+            raise RuntimeError(f"JavaFX agent {operation} returned a non-object response")
+        if value.get("ok") is False:
+            raise RuntimeError(f"JavaFX agent {operation} failed: {value.get('error', 'unknown error')}")
+        result = value.get("result", value)
+        if not isinstance(result, Mapping):
+            raise RuntimeError(f"JavaFX agent {operation} result must be an object")
+        return result
 
 
 @dataclass(frozen=True)
@@ -319,6 +358,30 @@ class JavaFxBridgeDriver:
         return matches, trace
 
 
+@dataclass
+class JavaFxRecordingBridge:
+    """Semantic-capture view over the recording agent's HTTP protocol."""
+    transport: JavaFxRecordingTransport
+
+    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
+        return self.semantic_target(self.transport.request("capture_next_click", {"timeout": timeout})).capture()
+
+    def hit_test(self, x: int, y: int) -> CapturedComponent:
+        return self.semantic_target(self.transport.request("hit_test", {"x": x, "y": y})).capture()
+
+    @staticmethod
+    def semantic_target(response: Mapping[str, Any]) -> SemanticTargetResolution:
+        physical = _captured_recording_node(_require_mapping(response, "physical_node", fallback="node"))
+        semantic = _captured_recording_node(_require_mapping(response, "semantic_node", fallback="node"))
+        promotion = response.get("promotion", {})
+        if not isinstance(promotion, Mapping):
+            raise ValueError("JavaFX capture response promotion must be an object")
+        return SemanticTargetResolution(
+            physical, semantic, bool(promotion.get("promoted", physical != semantic)),
+            {key: value for key, value in promotion.items() if key != "promoted"},
+        )
+
+
 def discover_javafx_endpoints(discovery_dir: Path | None = None) -> tuple[JavaFxBridgeEndpoint, ...]:
     directory = discovery_dir or _default_discovery_dir()
     if not directory.is_dir():
@@ -581,6 +644,41 @@ def _optional_str(value: Any):
 
 def _optional_bool(value: Any):
     return bool(value) if value is not None else None
+
+
+def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) -> Mapping[str, Any]:
+    value = response.get(key, response.get(fallback))
+    if not isinstance(value, Mapping):
+        raise ValueError("JavaFX capture response requires %s" % key)
+    return value
+
+
+def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
+    state_value = node.get("state", {})
+    state = state_value if isinstance(state_value, Mapping) else {}
+    bounds_value = node.get("bounds")
+    bounds = tuple(int(value) for value in bounds_value) if isinstance(bounds_value, (list, tuple)) and len(bounds_value) == 4 else None
+    native_class = _optional_str(node.get("native_class") or node.get("class"))
+    role = _optional_str(node.get("role"))
+    object_type_value = node.get("object_type")
+    try:
+        object_type = ObjectType(str(object_type_value)) if object_type_value else (
+            ObjectType.LABEL if native_class in {"javafx.scene.text.Text", "javafx.scene.control.Label"}
+            else classify_accessibility(role, native_class)
+        )
+    except ValueError:
+        object_type = classify_accessibility(role, native_class)
+    properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    return CapturedComponent(
+        name=_optional_str(node.get("name") or node.get("text")), role=role,
+        description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
+        application=_optional_str(node.get("application")), window=_optional_str(node.get("window")),
+        hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
+        actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
+        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
+        backend_properties={**dict(properties), **({"ref": node["ref"]} if node.get("ref") else {})},
+        object_type=object_type, framework="javafx", native_class=native_class,
+    )
 
 
 def _monotonic():
