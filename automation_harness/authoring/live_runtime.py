@@ -9,6 +9,7 @@ from automation_harness.authoring import capture_runtime
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+from automation_harness.core.locator_matching import _is_regex_matcher, _regex_pattern
 
 
 def _install_workbench_controls() -> None:
@@ -26,7 +27,7 @@ def _install_workbench_controls() -> None:
     def flatten(value, path=()):
         # Regex is a scalar matcher specification, not another level of object
         # identity structure.
-        if isinstance(value, Mapping) and set(value) == {"regex"}:
+        if _is_regex_matcher(value):
             yield path, value
             return
         for item in original_flatten(value, path):
@@ -51,8 +52,8 @@ def _install_workbench_controls() -> None:
         grid.attach(key_label, 1, row, 1, 1)
         grid.attach(Gtk.Label(label="="), 2, row, 1, 1)
 
-        is_regex = isinstance(value, Mapping) and set(value) == {"regex"}
-        display_value = value.get("regex") if is_regex else value
+        is_regex = _is_regex_matcher(value)
+        display_value = _regex_pattern(value) if is_regex else value
         field, entry = workbench._value_field(logical_key, display_value, known_classes)
         field.set_hexpand(True)
         field.set_sensitive(bool(policy.selectable))
@@ -63,8 +64,8 @@ def _install_workbench_controls() -> None:
         match_mode = None
         if regex_capable and policy.selectable:
             match_mode = Gtk.ComboBoxText()
-            match_mode.append("exact", "Exact")
-            match_mode.append("regex", "Regex")
+            match_mode.append("exact", "Exact value")
+            match_mode.append("regex", "Regular expression")
             match_mode.set_active_id("regex" if is_regex else "exact")
             detail.pack_start(match_mode, False, False, 0)
         status = Gtk.Label(label="%s · %s" % (policy.stability, policy.reason))
@@ -101,11 +102,11 @@ def _install_workbench_controls() -> None:
                         "%s.%s has invalid regex: %s"
                         % (section, workbench._path_text(path), exc)
                     )
-                parsed = {"regex": text}
+                parsed = {"match": "regex", "value": text}
             else:
                 parse_original = original
-                if isinstance(original, Mapping) and set(original) == {"regex"}:
-                    parse_original = str(original.get("regex") or "")
+                if _is_regex_matcher(original):
+                    parse_original = str(_regex_pattern(original) or "")
                 parsed = workbench._parse_value(
                     text,
                     parse_original,
