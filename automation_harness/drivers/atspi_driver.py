@@ -266,6 +266,56 @@ class AtspiDriver:
             )
         return _capture_accessible(match, pyatspi).state
 
+    def activate_window(
+        self,
+        *,
+        identification: Mapping[str, Any] | AtspiIdentification | None = None,
+        name: str | None = None,
+        role: str | None = None,
+        accessible_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Raise the owning top-level accessible without invoking its action."""
+        pyatspi = _pyatspi()
+        locator = _identification(identification, name=name, role=role, accessible_id=accessible_id)
+        match, trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
+        window = _owning_window(match)
+        if window is None:
+            raise RuntimeError("AT-SPI component has no owning top-level window")
+        _grab_focus(window, label="owning window")
+        return {
+            "operation": "activate_window",
+            "window": str(getattr(window, "name", "") or ""),
+            "resolution_stages": [stage.to_dict() for stage in trace],
+        }
+
+    def focus(
+        self,
+        *,
+        identification: Mapping[str, Any] | AtspiIdentification | None = None,
+        name: str | None = None,
+        role: str | None = None,
+        accessible_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Request and verify component focus without invoking an action."""
+        pyatspi = _pyatspi()
+        locator = _identification(identification, name=name, role=role, accessible_id=accessible_id)
+        match, trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
+        _grab_focus(match, label="component")
+        deadline = time.monotonic() + 1.0
+        focused = False
+        while time.monotonic() < deadline:
+            focused = bool(_capture_accessible(match, pyatspi).state.focused)
+            if focused:
+                break
+            time.sleep(0.02)
+        if not focused:
+            raise RuntimeError("AT-SPI component did not report focused state")
+        return {
+            "operation": "focus",
+            "focused": True,
+            "resolution_stages": [stage.to_dict() for stage in trace],
+        }
+
     def activate(
         self,
         *,
@@ -364,6 +414,40 @@ class AtspiDriver:
         except Exception as exc:
             raise RuntimeError("AT-SPI component does not expose a writable numeric value") from exc
         return {"value": float(value), "resolution_stages": [stage.to_dict() for stage in trace]}
+
+
+def _owning_window(accessible: Any) -> Any | None:
+    """Return the nearest dialog/frame/window ancestor for an accessible."""
+    current = accessible
+    fallback = None
+    while current is not None:
+        try:
+            role = str(current.getRoleName() or "").casefold()
+        except Exception:
+            role = ""
+        if role in {"dialog", "frame", "window"}:
+            return current
+        if role == "application":
+            return fallback
+        fallback = current
+        try:
+            parent = current.parent
+        except Exception:
+            parent = None
+        if parent is current:
+            break
+        current = parent
+    return fallback
+
+
+def _grab_focus(accessible: Any, *, label: str) -> None:
+    try:
+        component = accessible.queryComponent()
+        result = component.grabFocus()
+    except Exception as exc:
+        raise RuntimeError(f"AT-SPI {label} does not expose focus control") from exc
+    if result is False:
+        raise RuntimeError(f"AT-SPI {label} rejected focus request")
 
 
 def _pyatspi():
