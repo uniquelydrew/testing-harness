@@ -74,6 +74,7 @@ class AuthoringApp:
         self._recording_stop_active = False
         self._recorded_object_save_active = False
         self.recorded_interactions: list[RecordedInteraction] = []
+        self._recorded_plan_indices = set()
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
@@ -1095,7 +1096,9 @@ class AuthoringApp:
             self._error("Recording", "%s: %s" % (type(error).__name__, error))
             return False
         self.recorded_interactions = list(interactions or ())
+        self._recorded_plan_indices = set()
         self.refresh_recorded_interactions()
+        self._append_resolved_recorded_steps()
         new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
         self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
         interacted = tuple(
@@ -1107,6 +1110,38 @@ class AuthoringApp:
                 self, interacted[0], recorded_captures=interacted,
             )
         return False
+
+    def recorded_capture_saved(self, captured, component_id) -> None:
+        """Bind reviewed captures and materialize their recorded actions."""
+        updated = []
+        for interaction in self.recorded_interactions:
+            if interaction.target == captured:
+                interaction = replace(
+                    interaction,
+                    repository_match=RepositoryMatch("known_unique", (component_id,)),
+                )
+            updated.append(interaction)
+        self.recorded_interactions = updated
+        self.refresh_recorded_interactions()
+        self._append_resolved_recorded_steps()
+
+    def _append_resolved_recorded_steps(self) -> None:
+        changed = False
+        for index, interaction in enumerate(self.recorded_interactions):
+            if index in self._recorded_plan_indices:
+                continue
+            if interaction.repository_match.component_id is None:
+                continue
+            call = interactions_to_steps(
+                (interaction,), start_index=len(self.plan.steps) + 1,
+            )[0]
+            call = replace(call, group="Recorded session")
+            self.plan = replace(self.plan, steps=(*self.plan.steps, call))
+            self._recorded_plan_indices.add(index)
+            changed = True
+        if changed:
+            self.refresh_plan()
+            self.refresh_state()
 
     def refresh_recorded_interactions(self) -> None:
         self.recording_store.clear()

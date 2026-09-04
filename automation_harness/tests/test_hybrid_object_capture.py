@@ -124,6 +124,24 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert "activate" in definition.actions
 
 
+def test_recorded_javafx_definition_does_not_require_closed_transient_to_reappear():
+    class ClosedTransient(_JavaFxSuccess):
+        def assess_identification(self, identification):
+            raise AssertionError("closed transient must not be queried during persistence")
+
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=ClosedTransient(),
+    )
+    captured = _capture("javafx")
+
+    definition = service.definition_from_capture(
+        "mvd.file_menu", captured, validate_live=False,
+    )
+
+    assert definition.framework == "javafx"
+    assert definition.strategies[0] == captured.candidate_strategy()
+
+
 def test_javafx_definition_rejects_ambiguous_identity():
     class Ambiguous(_JavaFxSuccess):
         def assess_identification(self, identification):

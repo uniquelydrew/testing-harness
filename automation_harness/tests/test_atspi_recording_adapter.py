@@ -440,6 +440,53 @@ def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
     assert not javafx.called
 
 
+def test_javafx_only_session_starts_physical_recording_without_atspi_registry():
+    javafx_target = replace(
+        _target(), name="File", accessible_id="fileMenu", role="menu",
+        framework="javafx",
+    )
+
+    class UnavailableAtspi:
+        available = False
+
+    class JavaFxDriver:
+        available = True
+
+        def capture_at_point(self, x, y):
+            return javafx_target
+
+    class PointerMonitor:
+        callback = None
+        stopped = False
+
+        def start(self, callback):
+            self.callback = callback
+
+        def stop(self):
+            self.stopped = True
+
+    monitor = PointerMonitor()
+    emitted = []
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        UnavailableAtspi(), javafx_driver=JavaFxDriver(),
+        pointer_monitor=monitor,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+
+    assert adapter.available
+    adapter.start(emitted.append)
+    monitor.callback("mouse:button:1p", (140, 70), 1.0)
+    monitor.callback("mouse:button:1r", (140, 70), 2.0)
+    adapter.stop()
+
+    assert monitor.stopped
+    assert highlighted == [javafx_target]
+    assert len(emitted) == 1
+    assert emitted[0].target is javafx_target
+
+
 def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
     highlighted = []
     adapter = AtspiRecordingAdapter(

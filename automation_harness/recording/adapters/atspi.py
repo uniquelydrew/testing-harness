@@ -226,6 +226,7 @@ class AtspiRecordingAdapter:
         # not reliably expose its scene graph through Linux AT-SPI.
         self._javafx_driver = javafx_driver or JavaFxBridgeDriver()
         self._using_x11_pointer = False
+        self._active = False
         self._emit: Callable[[Observation], None] | None = None
         self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
@@ -242,13 +243,19 @@ class AtspiRecordingAdapter:
 
     @property
     def available(self) -> bool:
-        return bool(self.driver.available)
+        if bool(self.driver.available):
+            return True
+        try:
+            return bool(self._javafx_driver.available)
+        except Exception:
+            return False
 
     def start(self, emit: Callable[[Observation], None]) -> None:
-        if self._lease is not None:
+        if self._active:
             raise RuntimeError("AT-SPI recording adapter is already active")
         self._emit = emit
-        self._pyatspi = _pyatspi()
+        atspi_available = bool(self.driver.available)
+        self._pyatspi = _pyatspi() if atspi_available else None
         self._stop_requested.clear()
         self._pointer_worker.start()
         with self._callback_condition:
@@ -257,7 +264,7 @@ class AtspiRecordingAdapter:
             (self._action, "object:state-changed:checked"),
             (self._action, "object:state-changed:selected"),
             (self._text, "object:text-changed"),
-        ]
+        ] if atspi_available else []
         try:
             try:
                 self._pointer_monitor.start(self._physical_pointer)
@@ -265,15 +272,21 @@ class AtspiRecordingAdapter:
             except Exception:
                 # Non-X11 sessions retain the legacy AT-SPI device-event path.
                 self._using_x11_pointer = False
+                if not atspi_available:
+                    raise RuntimeError(
+                        "recording requires X11 pointer monitoring when AT-SPI is unavailable"
+                    )
                 self._listeners[0:0] = [
                     (self._pointer, "mouse:button:1p"),
                     (self._pointer, "mouse:button:1r"),
                     (self._pointer, "mouse:button:3p"),
                     (self._pointer, "mouse:button:3r"),
                 ]
-            for callback, event_type in self._listeners:
-                self._pyatspi.Registry.registerEventListener(callback, event_type)
-            self._lease = acquire_atspi_registry(self._pyatspi)
+            if atspi_available:
+                for callback, event_type in self._listeners:
+                    self._pyatspi.Registry.registerEventListener(callback, event_type)
+                self._lease = acquire_atspi_registry(self._pyatspi)
+            self._active = True
         except Exception:
             with self._callback_condition:
                 self._callbacks_accepting = False
@@ -288,13 +301,15 @@ class AtspiRecordingAdapter:
                 self._using_x11_pointer = False
             self._pointer_worker.stop_and_drain()
             self._emit = None
+            self._pyatspi = None
             raise
 
     def stop(self) -> None:
-        if self._lease is None:
+        if not self._active and self._lease is None:
             return
         lease = self._lease
         self._lease = None
+        self._active = False
         self._stop_requested.set()
         with self._callback_condition:
             self._callbacks_accepting = False
@@ -303,23 +318,25 @@ class AtspiRecordingAdapter:
             self._using_x11_pointer = False
         deferred_release = False
         try:
-            for callback, event_type in self._listeners:
-                self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            if self._pyatspi is not None:
+                for callback, event_type in self._listeners:
+                    self._pyatspi.Registry.deregisterEventListener(callback, event_type)
             with self._callback_condition:
                 deferred_release = bool(self._active_callbacks)
         finally:
             self._pointer_worker.stop_and_drain()
-            if deferred_release:
+            if deferred_release and lease is not None:
                 threading.Thread(
                     target=self._release_after_callbacks,
                     args=(lease,),
                     name="atspi-recording-release",
                     daemon=True,
                 ).start()
-            else:
+            elif lease is not None:
                 lease.close()
             self._listeners = []
             self._emit = None
+            self._pyatspi = None
 
     def _release_after_callbacks(self, lease) -> None:
         with self._callback_condition:

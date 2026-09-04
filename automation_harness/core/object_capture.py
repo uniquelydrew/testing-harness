@@ -207,6 +207,7 @@ class ObjectCaptureService:
         criteria: Mapping[str, Any] | None = None,
         identification: AtspiIdentification | Mapping[str, Any] | None = None,
         revision: int = 1,
+        validate_live: bool = True,
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
         if authored.type == "anchored_visual" and criteria is None and identification is None:
@@ -245,7 +246,7 @@ class ObjectCaptureService:
             )
         if not identity.mandatory:
             raise ValueError("captured AT-SPI object requires at least one mandatory identification condition")
-        if self.driver.available:
+        if validate_live and self.driver.available:
             stages = self.driver.assess_identification(identity)
             if not stages or stages[-1].matches == 0:
                 raise ValueError("authored AT-SPI identity does not resolve the captured object")

@@ -155,6 +155,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
         criteria: Mapping[str, Any] | None = None,
         identification: AtspiIdentification | Mapping[str, Any] | None = None,
         revision: int = 1,
+        validate_live: bool = True,
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
         if authored.type != "javafx":
@@ -165,6 +166,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 criteria=criteria,
                 identification=identification,
                 revision=revision,
+                validate_live=validate_live,
             )
         if criteria is not None and identification is not None:
             raise ValueError("supply criteria or identification, not both")
@@ -174,7 +176,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
         if not isinstance(mandatory, Mapping) or not mandatory:
             raise ValueError("captured JavaFX object requires at least one mandatory identification condition")
 
-        if self._javafx_available():
+        if validate_live and self._javafx_available():
             stages = self.javafx_driver.assess_identification(identity)
             if not stages or stages[-1].matches == 0:
                 raise ValueError("authored JavaFX identity does not resolve the captured object")

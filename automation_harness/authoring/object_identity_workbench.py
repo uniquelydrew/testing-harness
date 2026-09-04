@@ -540,8 +540,11 @@ class ObjectIdentityWorkbench:
             captured,
             identification=identity,
             revision=revision,
+            validate_live=not bool(self.recorded_captures),
         )
         self.app.repository = self.app.repository.with_component(definition)
+        if self.recorded_captures and hasattr(self.app, "recorded_capture_saved"):
+            self.app.recorded_capture_saved(captured, component_id)
         if hasattr(self.app, "_mark_repository_dirty"):
             self.app._mark_repository_dirty(True)
         self.app.refresh_objects()
