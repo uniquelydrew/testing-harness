@@ -131,6 +131,24 @@ class AtspiDriver:
             raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
         return _capture_semantic_accessible(match, desktop, pyatspi)
 
+    def capture_at_point_snapshot(self, x: int, y: int) -> CapturedComponent:
+        """Capture a semantic point target without a desktop uniqueness scan."""
+        pyatspi = _pyatspi()
+        desktop = pyatspi.Registry.getDesktop(0)
+        match = _deepest_at_point(desktop, x=x, y=y, pyatspi=pyatspi)
+        if match is None:
+            raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
+        return _capture_accessible(_semantic_accessible(match), pyatspi)
+
+    def capture_event_source_snapshot(self, source: Any) -> CapturedComponent:
+        """Snapshot an event source at its nearest semantic boundary.
+
+        Recording runs this inside AT-SPI dispatch. It deliberately omits the
+        settling, re-hit-testing, and repository-wide uniqueness work used by
+        interactive authoring; the workbench performs that refinement later.
+        """
+        return _capture_accessible(_semantic_accessible(source), _pyatspi())
+
     def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
         """Identify the application under a point, then resolve within it.
 
@@ -715,7 +733,10 @@ def _semantic_accessible(node: Any) -> Any:
         parent_role = (_role_name(parent) or "").replace("_", " ").casefold()
         if parent_role in _SEMANTIC_ROLES or _actions(parent):
             return parent
-        if parent_role in {"application", "desktop", "frame", "window"}:
+        if parent_role in {
+            "application", "application window", "desktop", "desktop frame",
+            "frame", "window", "root pane", "dialog", "alert", "file chooser",
+        }:
             break
         parent = _parent(parent)
     return current

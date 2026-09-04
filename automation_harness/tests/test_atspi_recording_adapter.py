@@ -1,3 +1,5 @@
+import threading
+import time
 from types import SimpleNamespace
 
 from automation_harness.models.component import CapturedComponent, ComponentState
@@ -11,10 +13,13 @@ from automation_harness.recording.adapters.atspi import (
 class _Driver:
     available = True
 
-    def __init__(self, target):
+    def __init__(self, target, source_target=None):
         self.target = target
+        self.source_target = source_target or target
         self.points = []
         self.sources = []
+        self.point_snapshots = []
+        self.source_snapshots = []
 
     def capture_scoped_at_point(self, x, y):
         self.points.append((x, y))
@@ -23,6 +28,14 @@ class _Driver:
     def capture_event_source(self, source, *, settle_delay=0.08):
         self.sources.append((source, settle_delay))
         return self.target
+
+    def capture_at_point_snapshot(self, x, y):
+        self.point_snapshots.append((x, y))
+        return self.target
+
+    def capture_event_source_snapshot(self, source):
+        self.source_snapshots.append(source)
+        return self.source_target
 
 
 def _target():
@@ -38,11 +51,15 @@ def test_pointer_event_is_re_hit_tested_at_desktop_coordinates():
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     emitted = []
     adapter._emit = emitted.append
-    event = SimpleNamespace(type="mouse:button:1r", detail1=125, detail2=240, source=None)
     adapter._pointer_worker.start()
-    adapter._pointer(event)
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=None,
+    ))
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=125, detail2=240, source=None,
+    ))
     adapter._pointer_worker.stop_and_drain()
-    assert driver.points == [(125, 240)]
+    assert driver.point_snapshots == [(125, 240)]
     assert emitted[0].target.name == "Save"
     assert emitted[0].coordinates == (125, 240)
 
@@ -54,23 +71,23 @@ def test_pointer_release_uses_semantic_target_resolved_from_matching_press():
     adapter._emit = emitted.append
 
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=125, detail2=240, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=126, detail2=241, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
     assert driver.sources == []
-    assert driver.points == [(125, 240)]
+    assert len(driver.source_snapshots) == 1
     assert len(emitted) == 1
     assert emitted[0].target.name == "Save"
     assert emitted[0].phase == "released"
     assert emitted[0].coordinates == (126, 241)
 
 
-def test_registry_pointer_callback_only_enqueues_resolution_work():
+def test_registry_pointer_callback_resolves_before_enqueuing_work():
     driver = _Driver(_target())
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     event = SimpleNamespace(
@@ -79,28 +96,58 @@ def test_registry_pointer_callback_only_enqueues_resolution_work():
 
     assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 1.0) is False
     adapter._pointer_worker.start()
-    adapter._pointer(event)
+    adapter._handle_pointer(event)
 
     assert driver.sources == []
+    assert len(driver.source_snapshots) == 1
     adapter._pointer_worker.stop_and_drain()
-    assert driver.points == [(125, 240)]
     assert driver.sources == []
     assert adapter._pointer_worker.state == "stopped"
     assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 2.0) is False
 
 
 def test_pointer_press_coordinates_override_generic_shell_event_source():
-    driver = _Driver(_target())
+    shell = CapturedComponent(
+        name="GNOME Shell", role="application", description=None,
+        accessible_id=None, application="gnome-shell", hierarchy=(), actions=(),
+        bounds=(0, 0, 1920, 1080), state=ComponentState(True),
+    )
+    driver = _Driver(_target(), source_target=shell)
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
 
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=500, detail2=600, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
-    assert driver.points == [(500, 600)]
+    assert driver.point_snapshots == [(500, 600)]
     assert driver.sources == []
+
+
+def test_desktop_frame_event_source_falls_through_to_clicked_component():
+    desktop_frame = CapturedComponent(
+        name="main", role="desktop frame", description=None,
+        accessible_id="-1", application="Application Window", hierarchy=(),
+        actions=(), bounds=(0, 0, 1024, 768), state=ComponentState(True),
+    )
+    driver = _Driver(_target(), source_target=desktop_frame)
+    events = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: events.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert len(driver.source_snapshots) == 1
+    assert driver.point_snapshots == [(125, 240)]
+    assert events == [_target()]
+    assert not _is_recordable_target(desktop_frame)
 
 
 def test_resolved_target_is_acknowledged_before_next_interaction():
@@ -113,15 +160,70 @@ def test_resolved_target_is_acknowledged_before_next_interaction():
     )
     adapter._emit = lambda observation: events.append(("emit", observation.target.name))
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    # Acknowledgement is produced while recording is active, without relying
+    # on stop_and_drain() to unblock semantic resolution.
+    for _unused in range(100):
+        if events:
+            break
+        time.sleep(0.001)
+    assert events == [("highlight", "Save")]
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=10, detail2=20, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
     assert events == [("highlight", "Save"), ("emit", "Save")]
+
+
+def test_stop_returns_while_deferring_lease_release_until_active_resolution_finishes():
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingDriver(_Driver):
+        def capture_event_source_snapshot(self, source):
+            entered.set()
+            release.wait(1)
+            return self.target
+
+    class Lease:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    registry = SimpleNamespace(deregisterEventListener=lambda callback, event_type: None)
+    adapter = AtspiRecordingAdapter(BlockingDriver(_target()), acknowledgement_seconds=0)
+    adapter._pyatspi = SimpleNamespace(Registry=registry)
+    lease = Lease()
+    adapter._lease = lease
+    adapter._listeners = [(adapter._pointer, "mouse:button:1p")]
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    callback = threading.Thread(target=adapter._pointer, args=(SimpleNamespace(
+        type="mouse:button:1p", detail1=10, detail2=20, source=object(),
+    ),))
+    callback.start()
+    assert entered.wait(1)
+
+    stopping = threading.Thread(target=adapter.stop)
+    stopping.start()
+    stopping.join(1)
+    assert not stopping.is_alive()
+    assert not lease.closed
+
+    release.set()
+    callback.join(1)
+    assert not callback.is_alive()
+    for _unused in range(100):
+        if lease.closed:
+            break
+        time.sleep(0.001)
+    assert lease.closed
 
 
 def test_action_and_text_events_drain_against_last_resolved_target():
@@ -130,10 +232,10 @@ def test_action_and_text_events_drain_against_last_resolved_target():
     emitted = []
     adapter._emit = emitted.append
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=10, detail2=20, source=object(),
     ))
     adapter._action(SimpleNamespace(
