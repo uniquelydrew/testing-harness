@@ -158,8 +158,6 @@ class _PointerRecordingWorker:
                 self._set_state(self.ACKNOWLEDGING)
                 if self._acknowledge is not None:
                     self._acknowledge(target, self._acknowledgement_seconds)
-                if self._acknowledgement_seconds:
-                    time.sleep(self._acknowledgement_seconds)
             self._set_state(self.READY)
             return
         target = self._pressed.pop(button, None)

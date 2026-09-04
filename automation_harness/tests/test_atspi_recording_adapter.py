@@ -1,3 +1,4 @@
+from dataclasses import replace
 import threading
 import time
 from types import SimpleNamespace
@@ -176,6 +177,32 @@ def test_resolved_target_is_acknowledged_before_next_interaction():
     adapter._pointer_worker.stop_and_drain()
 
     assert events == [("highlight", "Save"), ("emit", "Save")]
+
+
+def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        _Driver(_target()),
+        on_resolved=lambda target, duration: highlighted.append(target.name),
+        acknowledgement_seconds=0.3,
+    )
+    adapter._pointer_worker.start()
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1p", (10, 20), 1.0, _target(),
+    )
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1r", (10, 20), 1.01,
+    )
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1p", (12, 22), 1.02, replace(_target(), name="Open"),
+    )
+
+    deadline = time.monotonic() + 0.1
+    while len(highlighted) < 2 and time.monotonic() < deadline:
+        time.sleep(0.001)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert highlighted == ["Save", "Open"]
 
 
 def test_stop_returns_while_deferring_lease_release_until_active_resolution_finishes():
