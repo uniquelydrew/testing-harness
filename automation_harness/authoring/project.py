@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from automation_harness.core.script_steps import load_script_steps
+from automation_harness.formats import REPOSITORY_SUFFIX
 
 
 class ProjectError(ValueError):
@@ -83,7 +84,7 @@ def create_authoring_project(path: Path, name: str) -> AuthoringProject:
     project = AuthoringProject(
         name=name,
         root=path.parent,
-        repository=path.parent / "components.yaml",
+        repository=path.parent / ("objects" + REPOSITORY_SUFFIX),
         runs_dir=path.parent / "runs",
     )
     project.repository.parent.mkdir(parents=True, exist_ok=True)

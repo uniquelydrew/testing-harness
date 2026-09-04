@@ -10,7 +10,7 @@ from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_context import TestContext
-from automation_harness.core.test_plan import ManagedExecutionQueue, validate_plan, validate_plan_components, validate_plan_execution
+from automation_harness.core.test_plan import ManagedExecutionQueue, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
 from automation_harness.core.variables import VariableRef, VariableStore
 from automation_harness.models.plan import PlanVariableRef, StepStatus, TestPlan
 from automation_harness.models.run import RunResult, utc_now
@@ -48,11 +48,14 @@ def execute_plan(
     initial_variables = dict(plan.variables)
     if variable_overrides:
         initial_variables.update(variable_overrides)
-    runtime_plan = TestPlan(name=plan.name, version=plan.version, variables=initial_variables, steps=plan.steps)
+    runtime_plan = TestPlan(
+        name=plan.name, version=plan.version, variables=initial_variables,
+        steps=plan.steps, objects=plan.objects, step_definitions=plan.step_definitions,
+    )
 
-    package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
-    package_repository = ComponentRepository.load([package_components])
-    components = package_repository if component_repository is None else package_repository.overlay(component_repository)
+    components = repository_from_plan(plan)
+    if component_repository is not None:
+        components = components.overlay(component_repository)
 
     issues = validate_plan(runtime_plan, registry)
     issues.extend(validate_plan_components(runtime_plan, components))

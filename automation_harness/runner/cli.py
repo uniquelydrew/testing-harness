@@ -15,7 +15,7 @@ from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
-from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
+from automation_harness.core.test_plan import derive_execution_state, load_plan, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
 from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
@@ -230,12 +230,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         registry = default_step_registry()
         issues = validate_plan(test_plan, registry)
-        package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
-        component_paths = [package_components]
+        component_repository = repository_from_plan(test_plan)
         selected_components = getattr(args, "components", None)
         if selected_components is not None:
-            component_paths.append(selected_components.resolve())
-        component_repository = ComponentRepository.load(component_paths)
+            component_repository = component_repository.overlay(ComponentRepository.load([selected_components.resolve()]))
         issues.extend(validate_plan_components(test_plan, component_repository))
         if args.plan_command == "validate":
             if args.backend:

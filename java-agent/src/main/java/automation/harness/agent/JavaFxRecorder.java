@@ -174,7 +174,17 @@ final class JavaFxRecorder {
         if (id != null) result.put("accessible_id", String.valueOf(id));
         if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
         else if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
-        result.put("role", role(node)); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        String role = role(node);
+        result.put("role", role); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        if (role.equals("menu") || role.equals("menu bar") || role.equals("context menu")) {
+            Object children = invoke(node, "getItems");
+            if (!(children instanceof Iterable<?>)) children = invoke(node, "getMenus");
+            if (children instanceof Iterable<?> iterable) {
+                List<Map<String, Object>> snapshots = new java.util.ArrayList<>();
+                for (Object child : iterable) snapshots.add(snapshot(child));
+                result.put("menu_children", snapshots);
+            }
+        }
         return result;
     }
 
@@ -184,6 +194,12 @@ final class JavaFxRecorder {
             case "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink" -> "button";
             case "TextField", "PasswordField", "TextArea" -> "text";
             case "ComboBox", "ChoiceBox" -> "combo box";
+            case "MenuBar" -> "menu bar";
+            case "Menu" -> "menu";
+            case "MenuItem", "CustomMenuItem" -> "menu item";
+            case "CheckMenuItem" -> "check menu item";
+            case "RadioMenuItem" -> "radio menu item";
+            case "ContextMenu" -> "context menu";
             case "Tab" -> "tab";
             case "Label", "Text" -> "label";
             default -> "custom";

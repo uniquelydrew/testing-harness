@@ -9,7 +9,7 @@ from automation_harness.core.script_steps import registered_script_step
 
 
 def test_project_round_trip_contains_only_authoring_resources(tmp_path):
-    path = tmp_path / "project.yaml"
+    path = tmp_path / "project.ahproject"
     created = create_authoring_project(path, "Authoring smoke test")
     loaded = AuthoringProject.load(path)
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -22,7 +22,7 @@ def test_project_round_trip_contains_only_authoring_resources(tmp_path):
     assert document == {
         "version": 1,
         "name": "Authoring smoke test",
-        "repository": "components.yaml",
+        "repository": "objects.ahobjects",
         "runs_dir": "runs",
     }
 

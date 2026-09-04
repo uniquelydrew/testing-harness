@@ -22,16 +22,18 @@ from automation_harness.core.reusable_steps import ReusableStepDefinition, list_
 from automation_harness.core.object_capture import ObjectCaptureService
 from automation_harness.core.script_steps import ScriptStepDefinition, registered_script_step
 from automation_harness.core.step_registry import default_step_registry
-from automation_harness.core.test_plan import derive_execution_state, load_plan, save_plan, validate_plan, validate_plan_components
+from automation_harness.core.test_plan import derive_execution_state, embed_plan_repository, load_plan, repository_from_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.core.visual_baselines import approve_visual_candidate, reject_visual_candidate
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
-from automation_harness.recording import RecordedInteraction, RecordingSession, interactions_to_steps
+from automation_harness.recording import RecordedInteraction, RecordingSession, RepositoryMatch, interactions_to_steps
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
+from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
 from automation_harness.drivers.javafx_bridge import HttpJavaFxBridgeTransport
 from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.formats import PLAN_SUFFIX, PROJECT_SUFFIX, REPOSITORY_SUFFIX, artifact_stem, with_artifact_suffix
 
 
 class AuthoringApp:
@@ -40,6 +42,7 @@ class AuthoringApp:
     def __init__(self, repository_path: Path | None = None, *, mode: str = "author", project_path: Path | None = None, recording_session_factory=None) -> None:
         self.mode = mode
         self.project_path = project_path
+        self.plan_path = None
         self.project = AuthoringProject.load(project_path) if project_path is not None else None
         if self.project is not None:
             repository_path = self.project.repository
@@ -63,11 +66,9 @@ class AuthoringApp:
         self._highlight_windows = []
         self._highlight_timeout = None
         self.last_run_dir = None
-        self._target_backend = None
-        self._target_environment = None
-        self._attached_application = None
         self.recording_session_factory = recording_session_factory
         self.recording_session: RecordingSession | None = None
+        self.recording_stop_window = None
         self.recorded_interactions: list[RecordedInteraction] = []
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
@@ -78,11 +79,9 @@ class AuthoringApp:
         Gtk.main_quit()
 
     def _load_repository(self) -> ComponentRepository:
-        package_repo = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
-        paths = [package_repo]
-        if self.repository_path is not None:
-            paths.append(self.repository_path)
-        return ComponentRepository.load(paths)
+        if self.repository_path is None:
+            return ComponentRepository({})
+        return ComponentRepository.load([self.repository_path])
 
     def _build(self) -> None:
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -97,6 +96,7 @@ class AuthoringApp:
             self._button(toolbar, "Open Project", self.open_project_dialog)
             self._button(toolbar, "Open Plan", self.open_plan_dialog)
             self._button(toolbar, "Save Plan", self.save_plan_dialog)
+            self._button(toolbar, "Save Plan As", self.save_plan_as_dialog)
             self._button(toolbar, "Validate Plan", self.validate_plan_dialog)
             self.run_reference_button = self._button(toolbar, "Run Test", self.run_reference_plan)
             self._button(toolbar, "Add Script Step", self.add_script_step_dialog)
@@ -176,6 +176,7 @@ class AuthoringApp:
         self._button(buttons, "Highlight", self.highlight_selected_object)
         if self.mode != "capture":
             self._button(buttons, "Edit Selected", self.edit_selected_object)
+            self._button(buttons, "Remove Selected", self.remove_selected_object)
         if self.mode == "author":
             self._button(buttons, "Click Selected", self.click_selected_object)
         if self.mode != "repository":
@@ -213,7 +214,7 @@ class AuthoringApp:
         self.step_tree.get_selection().connect("changed", lambda *_args: self.show_step())
         self.step_tree.connect("row-activated", lambda *_args: self.add_selected_step())
         left.pack_start(self._scrolled(self.step_tree), True, True, 0)
-        self._button(left, "Add Action to Test", self.add_selected_step)
+        self._button(left, "Add Action as Step", self.add_selected_step)
         self.step_detail = Gtk.TextView()
         self.step_detail.set_editable(False)
         self.step_detail.set_monospace(True)
@@ -247,7 +248,7 @@ class AuthoringApp:
         recording.pack_start(buttons, False, False, 0)
         self._button(buttons, "Keep", self.keep_recorded_interaction)
         self._button(buttons, "Delete", self.delete_recorded_interaction)
-        self._button(buttons, "Add Selected to Test", self.add_recorded_interaction_to_test)
+        self._button(buttons, "Add Selected as Step", self.add_recorded_interaction_to_test)
 
     def _on_key_press(self, _widget, event):
         control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
@@ -358,6 +359,23 @@ class AuthoringApp:
             "strategies": [{"type": item.type, **item.options} for item in definition.strategies],
         }
         self._set_text(self.object_detail, json.dumps(payload, indent=2, default=str))
+
+    def remove_selected_object(self) -> None:
+        component_id = self._selected(self.object_tree)
+        if not component_id:
+            return self._info("Object Repository", "Select an object first.")
+        if not self._confirm("Remove object", "Remove %s from the current repository?" % component_id):
+            return
+        components = dict(self.repository.components)
+        components.pop(component_id, None)
+        self.repository = ComponentRepository(components)
+        if self.mode in {"capture", "repository"} and hasattr(self, "_mark_repository_dirty"):
+            self._mark_repository_dirty(True)
+        elif self.repository_path is not None:
+            self.repository.save(self.repository_path)
+        self.refresh_objects()
+        self._set_text(self.object_detail, "")
+        self._set_status("Removed object: " + component_id)
 
     def _object_selection_changed(self) -> None:
         self.show_object()
@@ -495,7 +513,7 @@ class AuthoringApp:
         if self.repository_path is None:
             if not self._confirm("Save capture", "No editable repository is open. Choose a repository file now?"):
                 return
-            path = self._choose_file(save=True, yaml=True)
+            path = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save Object Repository")
             if not path:
                 return
             self.repository_path = Path(path)
@@ -722,7 +740,7 @@ class AuthoringApp:
         self.refresh_plan(); self.refresh_state()
         self.notebook.set_current_page(2)
         self._select_value(self.plan_tree, call.node_id)
-        self._set_status("Added %s on %s to test" % (definition.name, component_id))
+        self._set_status("Added %s on %s as a test step" % (definition.name, component_id))
 
     def _configure_action(self, definition):
         if not definition.inputs:
@@ -899,7 +917,13 @@ class AuthoringApp:
         else:
             urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
             tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
-            adapters = tuple(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
+            adapters = []
+            atspi = AtspiRecordingAdapter()
+            if atspi.available:
+                adapters.append(atspi)
+            adapters.extend(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
+            if not adapters:
+                return self._error("Recording", "No AT-SPI desktop session or configured JavaFX recording agent is available.")
             self.recording_session = RecordingSession(adapters, repository=self.repository)
         try:
             self.recording_session.start()
@@ -909,7 +933,31 @@ class AuthoringApp:
             return
         self.start_recording_button.set_sensitive(False)
         self.stop_recording_button.set_sensitive(True)
+        self._show_recording_stop_window()
         self._set_status("Recording… interact with the target application, then stop recording")
+
+    def _show_recording_stop_window(self) -> None:
+        self.window.hide()
+        stop = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        stop.set_title("Recording")
+        stop.set_keep_above(True)
+        stop.set_decorated(False)
+        stop.set_border_width(10)
+        button = Gtk.Button(label="Stop Recording")
+        button.set_size_request(180, 52)
+        button.connect("clicked", lambda *_args: self.stop_recording())
+        stop.add(button)
+        stop.connect("delete-event", lambda *_args: (self.stop_recording(), True)[1])
+        stop.set_position(Gtk.WindowPosition.CENTER)
+        stop.show_all()
+        self.recording_stop_window = stop
+
+    def _restore_after_recording(self) -> None:
+        if self.recording_stop_window is not None:
+            self.recording_stop_window.destroy()
+            self.recording_stop_window = None
+        self.window.show_all()
+        self.window.present()
 
     def stop_recording(self) -> None:
         if self.recording_session is None:
@@ -922,17 +970,81 @@ class AuthoringApp:
         finally:
             self.start_recording_button.set_sensitive(True)
             self.stop_recording_button.set_sensitive(False)
+            self._restore_after_recording()
         self.refresh_recorded_interactions()
         new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
         self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
+        if new_count:
+            self._save_recorded_objects_dialog()
 
     def refresh_recorded_interactions(self) -> None:
         self.recording_store.clear()
         for index, interaction in enumerate(self.recorded_interactions):
-            target = interaction.target
-            target_name = (target.name or target.role) if target else "Unresolved target"
+            target_name = _recorded_target_label(interaction)
             match = interaction.repository_match
             self.recording_store.append((str(index), interaction.action.value, target_name, json.dumps(dict(interaction.parameters), separators=(",", ":")), match.component_id or match.status.replace("_", " "), "%.0f%%" % (interaction.confidence * 100)))
+
+    def _save_recorded_objects_dialog(self) -> None:
+        dialog = Gtk.Dialog(title="Save recorded objects", transient_for=self.window, modal=True)
+        dialog.add_buttons(
+            "Later", Gtk.ResponseType.CANCEL,
+            "Existing Repository", 1,
+            "Current Test Plan", 2,
+            "New Repository", 3,
+        )
+        box = dialog.get_content_area(); box.set_spacing(8); box.set_border_width(10)
+        label = Gtk.Label(label="Where should newly discovered objects be saved?")
+        label.set_xalign(0); box.pack_start(label, False, False, 0)
+        dialog.show_all(); response = dialog.run(); dialog.destroy()
+        if response == Gtk.ResponseType.CANCEL:
+            return
+        destination = self.repository_path
+        if response == 1 and destination is None:
+            filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Select Existing Object Repository")
+            if not filename: return
+            destination = Path(filename)
+            try: self.repository = ComponentRepository.load([destination])
+            except Exception as exc: return self._error("Object Repository", "%s: %s" % (type(exc).__name__, exc))
+            self.repository_path = destination
+        elif response == 3:
+            filename = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save New Object Repository")
+            if not filename: return
+            destination = Path(filename)
+            self.repository = ComponentRepository({})
+            self.repository_path = destination
+        elif response == 2:
+            destination = None
+        try:
+            self._persist_recorded_objects(destination)
+        except Exception as exc:
+            return self._error("Save recorded objects", "%s: %s" % (type(exc).__name__, exc))
+
+    def _persist_recorded_objects(self, destination) -> None:
+        repository = self.repository
+        updated = list(self.recorded_interactions)
+        saved = 0
+        saved_ids = []
+        for index, interaction in enumerate(updated):
+            if interaction.repository_match.status != "new_candidate" or interaction.target is None:
+                continue
+            component_id = _recorded_component_id(interaction.target, repository)
+            definition = self.capture.definition_from_capture(component_id, interaction.target)
+            repository = repository.with_component(definition)
+            updated[index] = replace(interaction, repository_match=RepositoryMatch("known_unique", (component_id,)))
+            saved += 1
+            saved_ids.append(component_id)
+        self.repository = repository
+        self.recorded_interactions = updated
+        if destination is not None:
+            repository.save(Path(destination))
+        else:
+            document = repository.to_document()["components"]
+            inline = dict(self.plan.objects)
+            inline.update({component_id: document[component_id] for component_id in saved_ids})
+            self.plan = replace(self.plan, objects=inline)
+        self.refresh_objects(); self.refresh_recorded_interactions()
+        location = "current test plan" if destination is None else str(destination)
+        self._set_status("Saved %d recorded object(s) to %s" % (saved, location))
 
     def keep_recorded_interaction(self) -> None:
         if self._selected(self.recording_tree) is not None:
@@ -955,7 +1067,7 @@ class AuthoringApp:
             return self._info("Recording", "This interaction cannot be added yet: %s" % exc)
         self.plan = replace(self.plan, steps=(*self.plan.steps, call))
         self.refresh_plan(); self.refresh_state()
-        self._set_status("Added reviewed recorded interaction to test")
+        self._set_status("Added reviewed recorded interaction as a test step")
 
     def refresh_plan(self) -> None:
         self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan")
@@ -980,23 +1092,40 @@ class AuthoringApp:
         self._error("Plan validation", "\n".join(issues)) if issues else self._info("Plan validation", "Plan is structurally valid against the current registered-step catalog.")
 
     def open_plan_dialog(self) -> None:
-        path = self._choose_file(yaml=True)
+        path = self._choose_file(yaml=True, artifact_suffix=PLAN_SUFFIX, title="Open Test Plan")
         if not path: return
         try:
-            self.plan = load_plan(Path(path)); self.plan_name.set_text(self.plan.name); self.refresh_plan(); self.refresh_variables(); self.refresh_state(); self._set_status("Opened plan: " + path)
+            self.plan = load_plan(Path(path))
+            self.plan_path = Path(path)
+            inline = repository_from_plan(self.plan)
+            if inline.components:
+                self.repository = inline
+                self.repository_path = None
+                self.refresh_objects()
+            self.plan_name.set_text(self.plan.name); self.refresh_plan(); self.refresh_variables(); self.refresh_state(); self._set_status("Opened plan: " + path)
         except Exception as exc: self._error("Plan error", "%s: %s" % (type(exc).__name__, exc))
 
     def save_plan_dialog(self) -> None:
         self.refresh_plan(); issues = validate_plan(self.plan, self.registry)
         if issues and not self._confirm("Plan has validation issues", "\n".join(issues) + "\n\nSave anyway?"): return
-        path = self._choose_file(save=True, yaml=True)
-        if path: save_plan(self.plan, Path(path)); self._set_status("Saved plan: " + path)
+        path = str(self.plan_path) if self.plan_path is not None else self._choose_file(save=True, yaml=True, artifact_suffix=PLAN_SUFFIX, title="Save Test Plan")
+        if path:
+            self.plan = embed_plan_repository(self.plan, self.repository)
+            self.plan_path = Path(path)
+            save_plan(self.plan, self.plan_path); self._set_status("Saved plan: " + str(self.plan_path))
+
+    def save_plan_as_dialog(self) -> None:
+        previous = self.plan_path
+        self.plan_path = None
+        self.save_plan_dialog()
+        if self.plan_path is None:
+            self.plan_path = previous
 
     def new_project_dialog(self) -> None:
-        path = self._choose_file(save=True, yaml=True)
+        path = self._choose_file(save=True, yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Create Test Project")
         if not path:
             return
-        name = self._ask_text("New Test Project", "Project name:", Path(path).stem)
+        name = self._ask_text("New Test Project", "Project name:", artifact_stem(Path(path), PROJECT_SUFFIX))
         if not name:
             return
         try:
@@ -1009,7 +1138,7 @@ class AuthoringApp:
         self.refresh_all(); self._set_status("Created project — capture an object or add a registered script step")
 
     def open_project_dialog(self) -> None:
-        path = self._choose_file(yaml=True)
+        path = self._choose_file(yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Open Test Project")
         if not path:
             return
         try:
@@ -1077,7 +1206,7 @@ class AuthoringApp:
         return False
 
     def open_repository(self) -> None:
-        path = self._choose_file(yaml=True)
+        path = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Open Object Repository")
         if not path: return
         self.repository_path = Path(path)
         try: self.repository = self._load_repository(); self.refresh_objects()
@@ -1103,14 +1232,21 @@ class AuthoringApp:
         value = self._get_text(widget) if multiline else widget.get_text(); dialog.destroy()
         return value if response == Gtk.ResponseType.OK else None
 
-    def _choose_file(self, save=False, yaml=False):
+    def _choose_file(self, save=False, yaml=False, artifact_suffix=None, title="Select file"):
         action = Gtk.FileChooserAction.SAVE if save else Gtk.FileChooserAction.OPEN
-        dialog = Gtk.FileChooserDialog(title="Select file", transient_for=self.window, action=action)
+        dialog = Gtk.FileChooserDialog(title=title, transient_for=self.window, action=action)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save" if save else "Open", Gtk.ResponseType.OK)
         if save: dialog.set_do_overwrite_confirmation(True)
         if yaml:
-            filt = Gtk.FileFilter(); filt.set_name("YAML"); filt.add_pattern("*.yaml"); filt.add_pattern("*.yml"); dialog.add_filter(filt)
-        response = dialog.run(); filename = dialog.get_filename() if response == Gtk.ResponseType.OK else None; dialog.destroy(); return filename
+            filt = Gtk.FileFilter(); filt.set_name("Automation Harness YAML")
+            if artifact_suffix: filt.add_pattern("*" + artifact_suffix)
+            filt.add_pattern("*.yaml"); filt.add_pattern("*.yml"); dialog.add_filter(filt)
+        if save and artifact_suffix:
+            dialog.set_current_name("untitled" + artifact_suffix)
+        response = dialog.run(); filename = dialog.get_filename() if response == Gtk.ResponseType.OK else None; dialog.destroy()
+        if filename and save and artifact_suffix:
+            filename = str(with_artifact_suffix(Path(filename), artifact_suffix))
+        return filename
 
 
 def _encode_gui(value: Any) -> Any:
@@ -1134,6 +1270,43 @@ def _next_node_id(steps):
     while "step-%03d" % index in existing:
         index += 1
     return "step-%03d" % index
+
+
+def _recorded_target_label(interaction):
+    match = interaction.repository_match
+    if match.component_id:
+        return match.component_id
+    target = interaction.target
+    if target is None:
+        return "Unresolved target"
+    physical = target.backend_properties.get("physical_target", {})
+    if isinstance(physical, dict):
+        for key in ("accessible_id", "name", "text"):
+            value = physical.get(key)
+            if value and str(value).casefold() != "main":
+                return str(value)
+    for value in (target.accessible_id, target.name):
+        if value and str(value).casefold() != "main":
+            return str(value)
+    return "%s (%s)" % (target.role or "object", target.native_class or target.framework or "unknown")
+
+
+def _recorded_component_id(target, repository):
+    parts = [target.application, target.name, target.accessible_id, target.role]
+    normalized = []
+    for part in parts:
+        if not part or str(part).casefold() == "main":
+            continue
+        value = "".join(character.casefold() if character.isalnum() else "_" for character in str(part))
+        value = "_".join(item for item in value.split("_") if item)
+        if value and value not in normalized:
+            normalized.append(value)
+    base = ".".join(normalized[:2]) or "recorded.object"
+    candidate = base
+    serial = 2
+    while repository.contains(candidate):
+        candidate = "%s_%d" % (base, serial); serial += 1
+    return candidate
 
 
 def _highlight_rectangles(bounds, thickness=4):

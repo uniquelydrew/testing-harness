@@ -34,6 +34,31 @@ automation-run plan run test.yaml \
   --script-step ./script_steps/environment_prepare.yaml
 ```
 
+Self-contained plans can be executed directly. The longer
+`automation-run plan run` spelling remains supported:
+
+```bash
+automation-plan checkout.ahplan --backend live-desktop
+```
+
+## YAML-backed artifact file types
+
+New authoring saves use distinct compound extensions so a file's role is
+visible without opening it. Every artifact remains human-readable YAML, and
+legacy `.yaml` and `.yml` files remain loadable.
+
+| Artifact | Extension |
+| --- | --- |
+| Test project | `.ahproject` |
+| Test plan | `.ahplan` |
+| Object repository | `.ahobjects` |
+| Script-step manifest | `.ahstep` |
+
+New projects begin with an empty `objects.ahobjects`. Saving a test plan
+embeds the definitions for every literal `component_id` referenced by its
+steps. CLI execution uses these inline objects by default; `--components`
+overlays an external repository when an explicit override is needed.
+
 `live-desktop` represents only the current desktop session and available interaction facilities. It does not select an application.
 
 Inside `automation-author`, **Run Test** executes the same plan against the current desktop session. If the first plan step prepares or launches applications, that preparation occurs as part of the test and is visible in execution state and evidence.

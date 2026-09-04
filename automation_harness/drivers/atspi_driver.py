@@ -651,9 +651,11 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     description = getattr(node, "description", None)
     state = _component_state(node, pyatspi, attributes=attributes, bounds=bounds)
     parent = _parent(node)
+    role = _role_name(node)
+    logical_subobjects = _menu_subobjects(node) if _is_menu_role(role) else {}
     return CapturedComponent(
         name=getattr(node, "name", None),
-        role=_role_name(node),
+        role=role,
         description=str(description) if description else None,
         accessible_id=_accessible_id(node, attributes=attributes),
         application=_application_name(node),
@@ -668,7 +670,49 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         parent_accessible_id=_accessible_id(parent) if parent is not None else None,
         framework="atspi",
         native_class=attributes.get("class") or attributes.get("class-name"),
+        logical_subobjects=logical_subobjects,
     )
+
+
+def _is_menu_role(role: str | None) -> bool:
+    normalized = (role or "").replace("_", " ").casefold()
+    return normalized in {"menu", "menu bar", "popup menu", "context menu"}
+
+
+def _menu_subobjects(node: Any) -> dict[str, dict[str, Any]]:
+    """Query visible menu descendants and retain their nested semantic selectors."""
+    result: dict[str, dict[str, Any]] = {}
+    used: set[str] = set()
+    for index, child in enumerate(_children(node), start=1):
+        role = _role_name(child)
+        normalized = (role or "").replace("_", " ").casefold()
+        if normalized not in {"menu", "menu item", "check menu item", "radio menu item", "separator"}:
+            continue
+        name = getattr(child, "name", None)
+        accessible_id = _accessible_id(child)
+        base = _subobject_key(accessible_id or name or normalized or "item")
+        key = base
+        suffix = 2
+        while key in used:
+            key = "%s_%d" % (base, suffix)
+            suffix += 1
+        used.add(key)
+        criteria = {"role": role} if role else {}
+        if accessible_id:
+            criteria["accessible_id"] = accessible_id
+        elif name:
+            criteria["name"] = str(name)
+        selector: dict[str, Any] = {"kind": normalized.replace(" ", "_"), "criteria": criteria, "ordinal": index - 1}
+        children = _menu_subobjects(child)
+        if children:
+            selector["subobjects"] = children
+        result[key] = selector
+    return result
+
+
+def _subobject_key(value: Any) -> str:
+    text = "".join(character.casefold() if character.isalnum() else "_" for character in str(value))
+    return "_".join(part for part in text.split("_") if part) or "item"
 
 
 def _component_state(
