@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
+from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.core.visual_baselines import VisualProfile, stage_visual_candidate
 
 
@@ -263,6 +264,10 @@ class ObjectCaptureService:
         action_names = {value.casefold() for value in captured.actions}
         if action_names & {"click", "press", "activate"}:
             actions.add("activate")
+        if captured.logical_subobjects and captured.semantic_type() in {
+            ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
+        }:
+            actions.add(ActionType.SELECT_MENU_ITEM.value)
         expected = {
             key: value
             for key, value in captured.state.to_dict().items()

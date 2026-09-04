@@ -40,6 +40,17 @@ def test_typed_action_values_are_embedded_in_semantic_action():
     assert call.inputs["action"] == {"type": "set_text", "value": "Drew"}
 
 
+def test_menu_path_is_offered_and_embedded_as_one_semantic_action():
+    definition = _component(ObjectType.MENU_BAR, {ActionType.SELECT_MENU_ITEM.value})
+    call = action_by_id(definition, "select_menu_item").to_step_call(
+        "step-001", definition.component_id, {"path": ["file", "recent", "report_yaml"]},
+    )
+    assert call.inputs["action"] == {
+        "type": "select_menu_item",
+        "path": ["file", "recent", "report_yaml"],
+    }
+
+
 def test_assertion_uses_internal_executor_but_is_not_presented_as_step_library():
     definition = _component(ObjectType.BUTTON, {"click"})
     call = action_by_id(definition, "assert_state").to_step_call(

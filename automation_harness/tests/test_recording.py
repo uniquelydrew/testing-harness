@@ -64,6 +64,29 @@ def test_direct_toggle_state_promotes_a_pointer_click_to_a_semantic_toggle():
     assert session.stop()[0].action.value == "toggle"
 
 
+def test_duplicate_cross_backend_pointer_observations_prefer_javafx_target():
+    atspi = CapturedComponent(
+        **{
+            **_capture("Open").__dict__,
+            "framework": "atspi",
+            "role": "button",
+            "application": "Demo",
+            "window": "Demo",
+        }
+    )
+    javafx = _capture("Open")
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(1.0, "atspi", atspi, phase="released"))
+    session.observe(PointerInteraction(1.05, "javafx", javafx, phase="released"))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].target.framework == "javafx"
+    assert interactions[0].evidence["correlated_sources"] == ["atspi", "javafx"]
+
+
 def test_modal_visibility_is_retained_as_contextual_effect_of_click():
     session = RecordingSession()
     session.start()

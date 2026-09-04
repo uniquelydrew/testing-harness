@@ -4,9 +4,29 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from automation_harness.drivers.atspi_driver import AtspiDriver, _capture_accessible, _pyatspi
+from automation_harness.drivers.atspi_driver import AtspiDriver, _capture_semantic_accessible, _pyatspi
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
+
+
+_STRUCTURAL_ROLES = frozenset({"application", "desktop", "frame", "window", "root pane"})
+_PRESENTATION_CONTAINER_ROLES = frozenset({"panel", "filler", "section", "unknown"})
+_PASSIVE_ROLES = frozenset({"label", "static", "paragraph", "icon", "image"})
+
+
+def _is_recordable_target(captured) -> bool:
+    """Reject authoring chrome and non-interactive accessibility skin nodes."""
+    application = str(getattr(captured, "application", None) or "")
+    name = str(getattr(captured, "name", None) or "")
+    role = str(getattr(captured, "role", None) or "").replace("_", " ").casefold()
+    actions = tuple(getattr(captured, "actions", ()) or ())
+    if application.startswith("Automation Harness") or name == "Stop Recording":
+        return False
+    if role in _STRUCTURAL_ROLES:
+        return False
+    if role in (_PRESENTATION_CONTAINER_ROLES | _PASSIVE_ROLES) and not actions:
+        return False
+    return True
 
 
 class AtspiRecordingAdapter:
@@ -65,7 +85,8 @@ class AtspiRecordingAdapter:
     def _target(self, event: Any, coordinates=None):
         if coordinates is not None:
             try:
-                return self.driver.capture_scoped_at_point(*coordinates)
+                captured = self.driver.capture_scoped_at_point(*coordinates)
+                return captured if _is_recordable_target(captured) else None
             except Exception:
                 # Some AT-SPI implementations omit useful device coordinates.
                 # Fall back only when the event source is itself a semantic
@@ -75,15 +96,9 @@ class AtspiRecordingAdapter:
         if source is None:
             return None
         try:
-            captured = _capture_accessible(source, self._pyatspi)
-            structural_roles = {"application", "desktop", "frame", "window", "root pane"}
-            if (
-                (captured.application or "").startswith("Automation Harness")
-                or captured.name == "Stop Recording"
-                or (captured.role or "").replace("_", " ").casefold() in structural_roles
-            ):
-                return None
-            return captured
+            desktop = self._pyatspi.Registry.getDesktop(0)
+            captured = _capture_semantic_accessible(source, desktop, self._pyatspi)
+            return captured if _is_recordable_target(captured) else None
         except Exception:
             return None
 

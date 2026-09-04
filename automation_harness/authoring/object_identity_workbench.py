@@ -11,6 +11,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import (
     build_capture_context,
+    build_recording_context,
     suggested_name,
 )
 from automation_harness.authoring.capture_property_policy import (
@@ -23,9 +24,10 @@ from automation_harness.authoring.identity_editor import _known_classes
 class ObjectIdentityWorkbench:
     """Window-rooted capture tree and structured object-property editor."""
 
-    def __init__(self, app, captured):
+    def __init__(self, app, captured, *, recorded_captures=()):
         self.app = app
         self.original_capture = captured
+        self.recorded_captures = tuple(recorded_captures)
         self.context = None
         self.nodes = {}
         self.names = {}
@@ -73,13 +75,13 @@ class ObjectIdentityWorkbench:
         caption.set_halign(Gtk.Align.START)
         left.pack_start(caption, False, False, 0)
 
-        self.tree_store = Gtk.TreeStore(bool, str, str)
+        self.tree_store = Gtk.TreeStore(bool, str, str, bool)
         self.tree = Gtk.TreeView(model=self.tree_store)
         toggle = Gtk.CellRendererToggle()
         toggle.connect("toggled", self._toggle_path)
-        self.tree.append_column(Gtk.TreeViewColumn("Use", toggle, active=0))
+        self.tree.append_column(Gtk.TreeViewColumn("Use", toggle, active=0, activatable=3))
         renderer = Gtk.CellRendererText()
-        self.tree.append_column(Gtk.TreeViewColumn("Object", renderer, text=1))
+        self.tree.append_column(Gtk.TreeViewColumn("Object", renderer, text=1, sensitive=3))
         self.tree.get_selection().connect("changed", self._selection_changed)
         left.pack_start(self._scrolled(self.tree), True, True, 0)
 
@@ -110,7 +112,11 @@ class ObjectIdentityWorkbench:
     def _load_context_async(self):
         def worker():
             try:
-                context = build_capture_context(self.original_capture)
+                context = (
+                    build_recording_context(self.recorded_captures)
+                    if self.recorded_captures
+                    else build_capture_context(self.original_capture)
+                )
             except Exception as exc:
                 GLib.idle_add(self._context_failed, exc)
             else:
@@ -125,11 +131,14 @@ class ObjectIdentityWorkbench:
         self.nodes = {node.key: node for node in context.root.walk()}
         self._append_tree(None, context.root)
         self.tree.expand_all()
+        checked = context.target_keys or (context.target_key,)
+        for key in checked:
+            self._set_checked(key, True)
         self._select_key(context.target_key)
-        target_iter = self._iter_for_key(context.target_key)
-        if target_iter is not None:
-            self.tree_store.set_value(target_iter, 0, True)
-        self._set_status("Capture scope loaded")
+        self._set_status(
+            "Recording scope loaded — %d interacted object(s) checked" % len(checked)
+            if self.recorded_captures else "Capture scope loaded"
+        )
         return False
 
     def _context_failed(self, error):
@@ -139,13 +148,17 @@ class ObjectIdentityWorkbench:
         return False
 
     def _append_tree(self, parent_iter, node):
-        iterator = self.tree_store.append(parent_iter, (bool(node.is_target), node.label, node.key))
+        iterator = self.tree_store.append(parent_iter, (
+            bool(node.is_target and node.is_semantic), node.label, node.key, bool(node.is_semantic),
+        ))
         for child in node.children:
             self._append_tree(iterator, child)
         return iterator
 
     def _toggle_path(self, _renderer, path):
         iterator = self.tree_store.get_iter(path)
+        if not self.tree_store.get_value(iterator, 3):
+            return
         current = bool(self.tree_store.get_value(iterator, 0))
         self.tree_store.set_value(iterator, 0, not current)
 
@@ -178,7 +191,7 @@ class ObjectIdentityWorkbench:
                 pass
 
     def _selection_summary(self, node):
-        kind = "Window root" if node.is_window_root else "Object"
+        kind = "Window root" if node.is_window_root else ("Object" if node.is_semantic else "Structural context")
         if node.is_target:
             kind += " · captured target"
         peer_count = len(self.context.selected_group(node.key)) if self.context else 0
@@ -210,7 +223,9 @@ class ObjectIdentityWorkbench:
 
         inherited = self.context.inherited_descriptors(node.key) if self.context else {}
         common = self.context.common_peer_descriptors(node.key) if self.context else {}
-        framework = self.context.framework if self.context else str(getattr(captured, "framework", "") or "")
+        framework = str(getattr(captured, "framework", "") or "") if captured is not None else (
+            self.context.framework if self.context else ""
+        )
         self._build_property_inventory(node, identity, inherited, common, framework)
         self.properties_box.show_all()
 
@@ -435,7 +450,8 @@ class ObjectIdentityWorkbench:
             self._set_checked(node.key, True)
             return
         for child in parent.children:
-            self._set_checked(child.key, True)
+            if child.is_semantic:
+                self._set_checked(child.key, True)
         self._set_status("Checked semantic sibling group")
 
     def check_branch(self):
@@ -443,7 +459,8 @@ class ObjectIdentityWorkbench:
         if node is None:
             return
         for item in node.walk():
-            self._set_checked(item.key, True)
+            if item.is_semantic:
+                self._set_checked(item.key, True)
         self._set_status("Checked selected branch")
 
     def clear_checks(self):
@@ -464,6 +481,8 @@ class ObjectIdentityWorkbench:
         node = self._selected_node()
         if node is None:
             return
+        if not node.is_semantic:
+            return self.app._info("Save object", "Structural context identifies semantic descendants but cannot be saved as an object.")
         try:
             identity = self.current_identity()
             self.identity_overrides[node.key] = identity
@@ -485,7 +504,7 @@ class ObjectIdentityWorkbench:
         errors = []
         for key in checked:
             node = self.nodes.get(key)
-            if node is None:
+            if node is None or not node.is_semantic:
                 continue
             try:
                 captured = self._captured_for_node(node)
@@ -509,6 +528,8 @@ class ObjectIdentityWorkbench:
             self.app._error("Batch save", "Saved %d object(s).\n\n%s" % (saved, "\n".join(errors[:12])))
 
     def _save_node(self, node, component_id, identity):
+        if not node.is_semantic:
+            raise ValueError("structural context cannot be saved as an object")
         captured = self._captured_for_node(node)
         if hasattr(self.app, "bind_captured_application") and not self.app.bind_captured_application(captured):
             raise ValueError("captured object belongs to an application that is not the current test target")
@@ -530,7 +551,11 @@ class ObjectIdentityWorkbench:
             self.app.save_repository()
 
     def _captured_for_node(self, node):
-        if node.key == self.context.target_key:
+        mapped = self.context.captured_by_key.get(node.key) if self.context else None
+        if mapped is not None:
+            return mapped
+        original_ref = str(self.original_capture.backend_properties.get("node_ref") or "")
+        if node.key == self.context.target_key and (not original_ref or node.key == original_ref):
             return self.original_capture
         return self.context.captured_component(node.key)
 
@@ -563,7 +588,7 @@ class ObjectIdentityWorkbench:
         return result
 
     def _collect_checked(self, iterator, result):
-        if self.tree_store.get_value(iterator, 0):
+        if self.tree_store.get_value(iterator, 0) and self.tree_store.get_value(iterator, 3):
             result.append(self.tree_store.get_value(iterator, 2))
         child = self.tree_store.iter_children(iterator)
         while child is not None:
@@ -572,7 +597,7 @@ class ObjectIdentityWorkbench:
 
     def _set_checked(self, key, value):
         iterator = self._iter_for_key(key)
-        if iterator is not None:
+        if iterator is not None and self.tree_store.get_value(iterator, 3):
             self.tree_store.set_value(iterator, 0, bool(value))
 
     def _iter_for_key(self, key):
@@ -617,14 +642,14 @@ class ObjectIdentityWorkbench:
             pass
 
 
-def open_capture_workbench(app, captured):
+def open_capture_workbench(app, captured, *, recorded_captures=()):
     existing = getattr(app, "_capture_workbench", None)
     if existing is not None:
         try:
             existing.window.destroy()
         except Exception:
             pass
-    workbench = ObjectIdentityWorkbench(app, captured)
+    workbench = ObjectIdentityWorkbench(app, captured, recorded_captures=recorded_captures)
     app._capture_workbench = workbench
     return workbench
 

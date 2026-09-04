@@ -21,6 +21,7 @@ public final class JavaFxSemanticTargetResolverSmoke {
     static class Hyperlink extends Node { Hyperlink(Node parent) { super(parent); } }
     static class TextField extends Node { TextField(Node parent) { super(parent); } }
     static class ComboBox extends Node { ComboBox(Node parent) { super(parent); } }
+    static class MenuButton extends Node { MenuButton(Node parent) { super(parent); } }
     static class Tab extends Node { Tab(Node parent) { super(parent); } }
     static class Control extends Node { Control(Node parent) { super(parent); } }
     static class CustomControl extends Control { CustomControl(Node parent) { super(parent); } }
@@ -45,6 +46,8 @@ public final class JavaFxSemanticTargetResolverSmoke {
         assertTarget(new Text(new Skin(textField)), textField, 2);
         ComboBox comboBox = new ComboBox(null);
         assertTarget(new Text(new Skin(comboBox)), comboBox, 2);
+        MenuButton menu = new MenuButton(null);
+        assertTarget(new Label(menu), menu, 1);
         Tab tab = new Tab(null);
         assertTarget(new Text(tab), tab, 1);
         Text standalone = new Text(null);

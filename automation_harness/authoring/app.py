@@ -58,6 +58,7 @@ class AuthoringApp:
         self.repository = self._load_repository()
         self.plan = TestPlan(name="new-test-plan")
         self.selected_action = None
+        self._syncing_step_object = False
         self._run_active = False
         self._click_capture_active = False
         self._click_picker = None
@@ -204,6 +205,19 @@ class AuthoringApp:
     def _build_steps(self) -> None:
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.steps_tab.pack1(left, resize=True, shrink=False)
+        group_row = Gtk.Box(spacing=6)
+        left.pack_start(group_row, False, False, 0)
+        group_row.pack_start(Gtk.Label(label="Object:"), False, False, 0)
+        self.step_object = Gtk.ComboBoxText()
+        self.step_object.set_id_column(0)
+        self.step_object.connect("changed", lambda *_args: self._step_object_changed())
+        group_row.pack_start(self.step_object, True, True, 0)
+        group_row.pack_start(Gtk.Label(label="Composed step:"), False, False, 0)
+        self.step_group = Gtk.Entry()
+        self.step_group.set_text("Step 1")
+        self.step_group.set_placeholder_text("Logical step containing these object actions")
+        group_row.pack_start(self.step_group, True, True, 0)
+        self._button(group_row, "New Step", self.new_step_group)
         filter_row = Gtk.Box(spacing=6)
         left.pack_start(filter_row, False, False, 0)
         filter_row.pack_start(Gtk.Label(label="Filter:"), False, False, 0)
@@ -217,7 +231,7 @@ class AuthoringApp:
         self.step_tree.get_selection().connect("changed", lambda *_args: self.show_step())
         self.step_tree.connect("row-activated", lambda *_args: self.add_selected_step())
         left.pack_start(self._scrolled(self.step_tree), True, True, 0)
-        self._button(left, "Add Action as Step", self.add_selected_step)
+        self._button(left, "Add Action to Composed Step", self.add_selected_step)
         self.step_detail = Gtk.TextView()
         self.step_detail.set_editable(False)
         self.step_detail.set_monospace(True)
@@ -239,7 +253,7 @@ class AuthoringApp:
         self.stop_recording_button = self._button(top, "Stop Recording", self.stop_recording)
         self.stop_recording_button.set_sensitive(False)
         self.start_recording_button = self._button(top, "Start Recording", self.start_recording)
-        self.plan_tree, self.plan_store = self._tree((("Node", 100), ("Registered Step", 260), ("Inputs", 300), ("Outputs", 220), ("Depends", 140)))
+        self.plan_tree, self.plan_store = self._tree((("Composed Step", 150), ("Node", 100), ("Action", 240), ("Inputs", 300), ("Outputs", 180), ("Depends", 120)))
         self.plan_tree.connect("row-activated", lambda *_args: self.edit_plan_step())
         self.plan_tree.connect("key-press-event", self._on_plan_tree_key_press)
         self.plan_tab.pack_start(self._scrolled(self.plan_tree), True, True, 0)
@@ -328,10 +342,15 @@ class AuthoringApp:
 
     def refresh_objects(self) -> None:
         selected = self._selected(self.object_tree)
+        selected_for_step = self.step_object.get_active_id() if hasattr(self, "step_object") else selected
         self.object_store.clear()
+        if hasattr(self, "step_object"):
+            self.step_object.remove_all()
         query = self.object_filter.get_text().strip().casefold()
         visible = 0
         for component_id, definition in sorted(self.repository.components.items()):
+            if hasattr(self, "step_object"):
+                self.step_object.append(component_id, component_id)
             searchable = " ".join((component_id, definition.description, definition.object_type.value, definition.framework or "", definition.native_class or "")).casefold()
             if query and query not in searchable:
                 continue
@@ -340,6 +359,9 @@ class AuthoringApp:
         total = len(self.repository.components)
         self.object_count.set_text("%d of %d" % (visible, total) if query else "%d objects" % total)
         self._select_value(self.object_tree, selected)
+        if hasattr(self, "step_object"):
+            available = set(self.repository.components)
+            self.step_object.set_active_id(selected_for_step if selected_for_step in available else (next(iter(sorted(available)), None)))
 
     def show_object(self) -> None:
         component_id = self._selected(self.object_tree)
@@ -383,7 +405,20 @@ class AuthoringApp:
     def _object_selection_changed(self) -> None:
         self.show_object()
         if self.mode == "author":
+            component_id = self._selected(self.object_tree)
+            if component_id and self.step_object.get_active_id() != component_id:
+                self._syncing_step_object = True
+                self.step_object.set_active_id(component_id)
+                self._syncing_step_object = False
             self.refresh_steps()
+
+    def _step_object_changed(self) -> None:
+        if self._syncing_step_object:
+            return
+        component_id = self.step_object.get_active_id()
+        if component_id:
+            self._select_value(self.object_tree, component_id)
+        self.refresh_steps()
 
     def edit_selected_object(self) -> None:
         component_id = self._selected(self.object_tree)
@@ -693,7 +728,7 @@ class AuthoringApp:
     def refresh_steps(self) -> None:
         selected = self._selected(self.step_tree, 1)
         self.step_store.clear()
-        component_id = self._selected(self.object_tree)
+        component_id = self.step_object.get_active_id()
         if not component_id:
             self.step_count.set_text("Select an object")
             self._set_text(self.step_detail, "Select a captured object to see its supported actions.")
@@ -712,7 +747,7 @@ class AuthoringApp:
 
     def show_step(self) -> None:
         action_id = self._selected(self.step_tree, 1)
-        component_id = self._selected(self.object_tree)
+        component_id = self.step_object.get_active_id()
         if not action_id or not component_id:
             return
         definition = action_by_id(self.repository.get(component_id), action_id)
@@ -729,23 +764,41 @@ class AuthoringApp:
 
     def add_selected_step(self) -> None:
         action_id = self._selected(self.step_tree, 1)
-        component_id = self._selected(self.object_tree)
+        component_id = self.step_object.get_active_id()
         if not component_id:
             return self._info("Actions", "Select a captured object first.")
         if not action_id:
             return self._info("Actions", "Select an action first.")
         definition = action_by_id(self.repository.get(component_id), action_id)
-        values = self._configure_action(definition)
+        values = self._configure_action(definition, self.repository.get(component_id))
         if values is None:
             return
-        call = definition.to_step_call(_next_node_id(self.plan.steps), component_id, values)
+        call = replace(
+            definition.to_step_call(_next_node_id(self.plan.steps), component_id, values),
+            group=self._current_step_group(),
+        )
         self.plan = replace(self.plan, steps=self.plan.steps + (call,))
         self.refresh_plan(); self.refresh_state()
         self.notebook.set_current_page(2)
-        self._select_value(self.plan_tree, call.node_id)
-        self._set_status("Added %s on %s as a test step" % (definition.name, component_id))
+        self._select_value(self.plan_tree, call.node_id, 1)
+        self._set_status("Added %s on %s to %s" % (definition.name, component_id, call.group))
 
-    def _configure_action(self, definition):
+    def _current_step_group(self) -> str:
+        name = self.step_group.get_text().strip()
+        if name:
+            return name
+        self.new_step_group()
+        return self.step_group.get_text()
+
+    def new_step_group(self) -> None:
+        existing = {call.group for call in self.plan.steps if call.group}
+        index = 1
+        while "Step %d" % index in existing:
+            index += 1
+        self.step_group.set_text("Step %d" % index)
+        self.step_group.grab_focus()
+
+    def _configure_action(self, definition, component=None):
         if not definition.inputs:
             return {}
         dialog = Gtk.Dialog(title="Configure %s" % definition.name, transient_for=self.window, modal=True)
@@ -755,9 +808,18 @@ class AuthoringApp:
         for item in definition.inputs:
             row = Gtk.Box(spacing=8)
             label = Gtk.Label(label=item.name + (" *" if item.required else "")); label.set_xalign(0); label.set_size_request(150, -1)
-            entry = Gtk.Entry()
-            if item.default is not None: entry.set_text(json.dumps(item.default))
-            entry.set_placeholder_text(item.description or item.value_type)
+            if item.value_type == "menu_path" and component is not None:
+                entry = Gtk.ComboBoxText()
+                paths = _flatten_menu_paths(component.subobjects)
+                for path, terminal in paths:
+                    encoded = json.dumps(path, separators=(",", ":"))
+                    entry.append(encoded, "  ›  ".join(path) + "  (%s)" % terminal)
+                if paths:
+                    entry.set_active(0)
+            else:
+                entry = Gtk.Entry()
+                if item.default is not None: entry.set_text(json.dumps(item.default))
+                entry.set_placeholder_text(item.description or item.value_type)
             row.pack_start(label, False, False, 0); row.pack_start(entry, True, True, 0); box.pack_start(row, False, False, 0)
             entries[item.name] = (item, entry)
         error = Gtk.Label(); error.set_xalign(0); box.pack_start(error, False, False, 0)
@@ -769,7 +831,8 @@ class AuthoringApp:
             values = {}
             missing = []
             for name, (item, entry) in entries.items():
-                raw = entry.get_text().strip()
+                raw = entry.get_active_id() if item.value_type == "menu_path" else entry.get_text().strip()
+                raw = raw or ""
                 if not raw:
                     if item.required: missing.append(name)
                     elif item.default is not None: values[name] = item.default
@@ -862,7 +925,10 @@ class AuthoringApp:
                 if missing:
                     error.set_text("Required inputs: " + ", ".join(missing)); continue
                 outputs = {name: entry.get_text().strip() for name, entry in output_entries.items() if entry.get_text().strip()}
-                call = StepCall(node_id=_next_node_id(self.plan.steps), step_id=selected, inputs=inputs, outputs=outputs)
+                call = StepCall(
+                    node_id=_next_node_id(self.plan.steps), step_id=selected,
+                    inputs=inputs, outputs=outputs, group=self._current_step_group(),
+                )
                 candidate = replace(self.plan, steps=self.plan.steps + (call,))
                 issues = validate_plan(candidate, self.registry)
                 if issues:
@@ -873,43 +939,43 @@ class AuthoringApp:
             self.plan = candidate
             self.refresh_plan(); self.refresh_state()
             self.notebook.set_current_page(2)
-            self._select_value(self.plan_tree, call.node_id)
+            self._select_value(self.plan_tree, call.node_id, 1)
             self._set_status("Added script step %s to test" % selected)
             return
 
     def duplicate_plan_step(self) -> None:
-        node_id = self._selected(self.plan_tree)
+        node_id = self._selected(self.plan_tree, 1)
         if not node_id: return
         steps = list(self.plan.steps)
         index = next(index for index, item in enumerate(steps) if item.node_id == node_id)
         duplicate = replace(steps[index], node_id=_next_node_id(self.plan.steps))
         steps.insert(index + 1, duplicate)
-        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, duplicate.node_id)
+        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, duplicate.node_id, 1)
 
     def move_plan_step(self, offset) -> None:
-        node_id = self._selected(self.plan_tree)
+        node_id = self._selected(self.plan_tree, 1)
         if not node_id: return
         steps = list(self.plan.steps)
         index = next(index for index, item in enumerate(steps) if item.node_id == node_id)
         target = index + offset
         if target < 0 or target >= len(steps): return
         steps[index], steps[target] = steps[target], steps[index]
-        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, node_id)
+        self.plan = replace(self.plan, steps=tuple(steps)); self.refresh_state(); self._select_value(self.plan_tree, node_id, 1)
 
     def edit_plan_step(self) -> None:
-        node_id = self._selected(self.plan_tree)
+        node_id = self._selected(self.plan_tree, 1)
         if not node_id: return
         call = next(item for item in self.plan.steps if item.node_id == node_id)
-        raw = self._ask_text("Edit step", "JSON object with inputs and outputs:", json.dumps({"inputs": _encode_gui(call.inputs), "outputs": dict(call.outputs)}, indent=2), multiline=True)
+        raw = self._ask_text("Edit action", "JSON object with group, inputs and outputs:", json.dumps({"group": call.group, "inputs": _encode_gui(call.inputs), "outputs": dict(call.outputs)}, indent=2), multiline=True)
         if raw is None: return
         try:
             payload = json.loads(raw); inputs = _decode_gui(payload.get("inputs", {})); outputs = payload.get("outputs", {})
-            updated = replace(call, inputs=inputs, outputs={str(k): str(v) for k, v in outputs.items()})
+            updated = replace(call, group=str(payload.get("group", "")).strip(), inputs=inputs, outputs={str(k): str(v) for k, v in outputs.items()})
             self.plan = replace(self.plan, steps=tuple(updated if item.node_id == node_id else item for item in self.plan.steps)); self.refresh_plan(); self.refresh_state()
         except Exception as exc: self._error("Invalid step data", str(exc))
 
     def remove_plan_step(self) -> None:
-        node_id = self._selected(self.plan_tree)
+        node_id = self._selected(self.plan_tree, 1)
         if node_id: self.plan = replace(self.plan, steps=tuple(item for item in self.plan.steps if item.node_id != node_id)); self.refresh_plan(); self.refresh_state()
 
     def start_recording(self) -> None:
@@ -1003,8 +1069,14 @@ class AuthoringApp:
         self.refresh_recorded_interactions()
         new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
         self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
-        if new_count:
-            self._save_recorded_objects_dialog()
+        interacted = tuple(
+            item.target for item in self.recorded_interactions if item.target is not None
+        )
+        if interacted:
+            from automation_harness.authoring.object_identity_workbench import open_capture_workbench
+            open_capture_workbench(
+                self, interacted[0], recorded_captures=interacted,
+            )
         return False
 
     def refresh_recorded_interactions(self) -> None:
@@ -1118,17 +1190,20 @@ class AuthoringApp:
         if index is None:
             return self._info("Recording", "Select a recorded interaction first.")
         try:
-            call = interactions_to_steps((self.recorded_interactions[int(index)],), start_index=len(self.plan.steps) + 1)[0]
+            call = replace(
+                interactions_to_steps((self.recorded_interactions[int(index)],), start_index=len(self.plan.steps) + 1)[0],
+                group=self._current_step_group(),
+            )
         except Exception as exc:
             return self._info("Recording", "This interaction cannot be added yet: %s" % exc)
         self.plan = replace(self.plan, steps=(*self.plan.steps, call))
         self.refresh_plan(); self.refresh_state()
-        self._set_status("Added reviewed recorded interaction as a test step")
+        self._set_status("Added reviewed recorded interaction to %s" % call.group)
 
     def refresh_plan(self) -> None:
         self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan")
         self.plan_store.clear()
-        for call in self.plan.steps: self.plan_store.append((call.node_id, call.step_id, json.dumps(_encode_gui(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
+        for call in self.plan.steps: self.plan_store.append((call.group or "Ungrouped", call.node_id, call.step_id, json.dumps(_encode_gui(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
 
     def refresh_variables(self) -> None: self._set_text(self.variables_text, json.dumps(dict(self.plan.variables), indent=2, default=str))
 
@@ -1326,6 +1401,21 @@ def _next_node_id(steps):
     while "step-%03d" % index in existing:
         index += 1
     return "step-%03d" % index
+
+
+def _flatten_menu_paths(subobjects, prefix=()):
+    """Return terminal menu paths in repository order for the action picker."""
+    result = []
+    for key, raw in subobjects.items():
+        if not isinstance(raw, dict):
+            continue
+        path = prefix + (str(key),)
+        nested = raw.get("subobjects", {})
+        if isinstance(nested, dict) and nested:
+            result.extend(_flatten_menu_paths(nested, path))
+        else:
+            result.append((list(path), str(raw.get("kind") or "menu_item")))
+    return result
 
 
 def _recorded_target_label(interaction):

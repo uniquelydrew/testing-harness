@@ -163,6 +163,30 @@ class RecordingSession:
                 return
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
+        if (
+            self._pending
+            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK}
+            and self._pending.action == action
+            and abs(observation.timestamp - self._pending.completed_at) <= min(self.correlation_window, 0.2)
+            and _same_logical_target(self._pending.target, observation.target)
+        ):
+            target = _preferred_target(self._pending.target, observation.target)
+            self._pending = RecordedInteraction(
+                action, target, dict(parameters) if target is observation.target else self._pending.parameters,
+                self._pending.started_at, max(self._pending.completed_at, observation.timestamp),
+                self._pending.resulting_changes,
+                {
+                    **dict(self._pending.evidence),
+                    **dict(observation.evidence),
+                    "correlated_sources": sorted({
+                        str(self._pending.target.framework if self._pending.target else ""),
+                        str(observation.target.framework if observation.target else ""),
+                    }),
+                },
+                max(self._pending.confidence, 1.0 if target else 0.4),
+                self._match(target),
+            )
+            return
         if self._pending and (
             observation.timestamp - self._pending.completed_at > self.correlation_window
             or not _same_target(self._pending.target, observation.target)
@@ -260,6 +284,30 @@ def _same_target(left: CapturedComponent | None, right: CapturedComponent | None
     if left is None or right is None:
         return left is right
     return (left.framework, left.accessible_id, left.name, left.role, left.window) == (right.framework, right.accessible_id, right.name, right.role, right.window)
+
+
+def _same_logical_target(left: CapturedComponent | None, right: CapturedComponent | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    left_scope = (left.window or left.application or "").casefold()
+    right_scope = (right.window or right.application or "").casefold()
+    shared_identity = (
+        bool(left.accessible_id and right.accessible_id and left.accessible_id == right.accessible_id)
+        or bool(left.name and right.name and left.name.casefold() == right.name.casefold())
+    )
+    return (
+        shared_identity
+        and (not left.accessible_id or not right.accessible_id or left.accessible_id == right.accessible_id)
+        and (left.name or "").casefold() == (right.name or "").casefold()
+        and left.semantic_type() == right.semantic_type()
+        and (not left_scope or not right_scope or left_scope == right_scope)
+    )
+
+
+def _preferred_target(left: CapturedComponent | None, right: CapturedComponent | None) -> CapturedComponent | None:
+    if right is not None and right.framework == "javafx":
+        return right
+    return left if left is not None else right
 
 
 def _action_type(value: str) -> ActionType:

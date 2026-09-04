@@ -73,6 +73,9 @@ class JavaAccessibilityDriver:
     def select_child(self, child_index: int, **kwargs: Any):
         return self._linux().select_child(child_index, **kwargs) if platform.system() == "Linux" else self._windows().select_child(child_index, **kwargs)
 
+    def select_menu_path(self, selectors: list[Mapping[str, Any]], **kwargs: Any):
+        return self._linux().select_menu_path(selectors, **kwargs) if platform.system() == "Linux" else self._windows().select_menu_path(selectors, **kwargs)
+
     def get_value(self, **kwargs: Any):
         return self._linux().get_value(**kwargs) if platform.system() == "Linux" else self._windows().get_value(**kwargs)
 
@@ -244,5 +247,6 @@ class JavaAccessBridgeDriver:
     def set_text(self, value: str, **kwargs: Any): return self._unsupported("text entry")
     def get_selection(self, **kwargs: Any): return self._unsupported("selection retrieval")
     def select_child(self, child_index: int, **kwargs: Any): return self._unsupported("selection")
+    def select_menu_path(self, selectors: list[Mapping[str, Any]], **kwargs: Any): return self._unsupported("menu path selection")
     def get_value(self, **kwargs: Any): return self._unsupported("value retrieval")
     def set_value(self, value: float, **kwargs: Any): return self._unsupported("value setting")

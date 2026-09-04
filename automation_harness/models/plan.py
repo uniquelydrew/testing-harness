@@ -21,9 +21,10 @@ class StepCall:
     outputs: Mapping[str, str] = field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
     description: str = ""
+    group: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.node_id,
             "step": self.step_id,
             "description": self.description,
@@ -31,6 +32,9 @@ class StepCall:
             "outputs": dict(self.outputs),
             "depends_on": list(self.depends_on),
         }
+        if self.group:
+            result["group"] = self.group
+        return result
 
 
 @dataclass(frozen=True)

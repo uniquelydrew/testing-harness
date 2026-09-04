@@ -23,6 +23,7 @@ def test_plan_round_trip_and_dataflow_queue(tmp_path: Path):
                 node_id="follow",
                 step_id="track.follow",
                 inputs={"track_id": PlanVariableRef("active_track")},
+                group="Acquire and follow track",
             ),
         ),
     )

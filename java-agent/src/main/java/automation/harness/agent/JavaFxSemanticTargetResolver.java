@@ -14,7 +14,7 @@ public final class JavaFxSemanticTargetResolver {
         "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
         "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
         "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
-        "TreeCell", "MenuItem", "Tab", "Control"
+        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab"
     );
 
     private JavaFxSemanticTargetResolver() { }
@@ -40,12 +40,16 @@ public final class JavaFxSemanticTargetResolver {
 
     static boolean isInteractionBoundary(Object node) {
         Class<?> type = node.getClass();
+        boolean controlSubclass = false;
         while (type != null) {
             if (BOUNDARY_NAMES.contains(type.getSimpleName())) {
                 return true;
             }
+            if ("Control".equals(type.getSimpleName())) controlSubclass = true;
             type = type.getSuperclass();
         }
+        String className = node.getClass().getName();
+        if (controlSubclass && !className.startsWith("javafx.") && !className.startsWith("com.sun.")) return true;
         // Applications can opt in without adding an agent-specific component
         // type; this property is intentionally evaluated at the source.
         Object marker = property(node, "getProperties", "automation.semanticBoundary");

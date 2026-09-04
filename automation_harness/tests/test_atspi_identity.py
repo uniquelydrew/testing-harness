@@ -75,6 +75,19 @@ def test_presentation_leaf_promotes_to_actionable_parent():
     assert _semantic_accessible(label) is button
 
 
+def test_noneditable_text_skin_promotes_to_actionable_parent():
+    text = FakeAccessible("2", "text")
+    button = FakeAccessible("Increase", "push button", "increase", children=[text])
+    assert _semantic_accessible(text) is button
+
+
+def test_editable_text_remains_the_semantic_target():
+    text = FakeAccessible("Search", "text")
+    text.queryEditableText = lambda: object()
+    field = FakeAccessible(None, "panel", children=[text])
+    assert _semantic_accessible(text) is text
+
+
 def test_actionable_leaf_is_not_promoted():
     button = FakeAccessible("2", "push button", "digit-two")
     window = FakeAccessible("Calculator", "frame", children=[button])

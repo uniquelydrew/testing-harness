@@ -165,6 +165,16 @@ class ComponentHandle:
                 if not isinstance(index, int):
                     raise ValueError(f"{semantic.type.value} currently requires selector.criteria.index")
                 payload = self.select_child(index)
+            elif semantic.type == ActionType.SELECT_MENU_ITEM:
+                path = semantic.options.get("path")
+                if not isinstance(path, (list, tuple)) or not path or not all(
+                    isinstance(segment, str) and segment for segment in path
+                ):
+                    raise ValueError("select_menu_item requires a non-empty string path")
+                selectors = self._menu_path_selectors(path)
+                payload = self._accessibility_operation(
+                    "select menu item", "select_menu_path", selectors,
+                )
             elif semantic.type == ActionType.SET_VALUE:
                 if not isinstance(semantic.value, (int, float)) or isinstance(semantic.value, bool):
                     raise ValueError("set_value requires a numeric value")
@@ -378,6 +388,30 @@ class ComponentHandle:
 
     def select_child(self, child_index: int) -> dict[str, Any]:
         return self._accessibility_operation("select child", "select_child", child_index)
+
+    def _menu_path_selectors(self, path: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
+        current = self.definition.subobjects
+        selectors: list[dict[str, Any]] = []
+        walked: list[str] = []
+        for segment in path:
+            walked.append(segment)
+            raw = current.get(segment)
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    "menu path %r is not defined under %r"
+                    % (segment, ".".join(walked[:-1]) or self.definition.component_id)
+                )
+            selector = {
+                key: value for key, value in raw.items()
+                if key in {"kind", "criteria", "ordinal"}
+            }
+            criteria = selector.get("criteria")
+            if not isinstance(selector.get("kind"), str) or not isinstance(criteria, dict):
+                raise ValueError("menu path %r has an invalid persisted selector" % ".".join(walked))
+            selectors.append(selector)
+            nested = raw.get("subobjects", {})
+            current = nested if isinstance(nested, dict) else {}
+        return selectors
 
     def get_value(self) -> float:
         return self._accessibility_operation("read value", "get_value")

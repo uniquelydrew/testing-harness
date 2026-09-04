@@ -739,6 +739,46 @@ actions:
 
 The harness does not assume that every resolvable object is activatable.
 
+## Standard menu hierarchies
+
+Captured AT-SPI and JavaFX menu bars persist standard menus, submenus, and
+items as nested `subobjects`. The authoring UI presents each terminal path as
+one **Select Menu Item** action:
+
+```yaml
+components:
+  application.menu_bar:
+    actions: [resolve, select_menu_item]
+    subobjects:
+      file:
+        kind: menu
+        criteria: {name: File, role: menu}
+        subobjects:
+          recent:
+            kind: menu
+            criteria: {name: Recent, role: menu}
+            subobjects:
+              report:
+                kind: menu_item
+                criteria: {name: Report, role: menu item}
+```
+
+A test stores only the stable subobject IDs:
+
+```yaml
+- id: open-recent-report
+  step: gui.object.action
+  inputs:
+    component_id: application.menu_bar
+    action:
+      type: select_menu_item
+      path: [file, recent, report]
+```
+
+The backend resolves and activates the entire path in one call. It does not
+return control between menu-opening operations, so transient submenus remain
+open until the terminal item is activated.
+
 ## Strategies
 
 `strategies` contains ordered mechanisms for locating/observing the object.

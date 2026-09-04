@@ -172,8 +172,8 @@ final class JavaFxRecorder {
         Object text = invoke(node, "getText");
         Object accessibleText = invoke(node, "getAccessibleText");
         if (id != null) result.put("accessible_id", String.valueOf(id));
-        if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
-        else if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
+        if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
+        else if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
         String role = role(node);
         result.put("role", role); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
         if (role.equals("menu") || role.equals("menu bar") || role.equals("context menu")) {
@@ -189,10 +189,20 @@ final class JavaFxRecorder {
     }
 
     private static String role(Object node) {
+        Object accessibleRole = invoke(node, "getAccessibleRole");
+        if (accessibleRole != null) {
+            return String.valueOf(accessibleRole).replace('_', ' ').toLowerCase(java.util.Locale.ROOT);
+        }
         String name = node.getClass().getSimpleName();
         return switch (name) {
-            case "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink" -> "button";
-            case "TextField", "PasswordField", "TextArea" -> "text";
+            case "Button" -> "button";
+            case "ToggleButton" -> "toggle button";
+            case "CheckBox" -> "check box";
+            case "RadioButton" -> "radio button";
+            case "Hyperlink" -> "hyperlink";
+            case "TextField" -> "text field";
+            case "PasswordField" -> "password field";
+            case "TextArea" -> "text area";
             case "ComboBox", "ChoiceBox" -> "combo box";
             case "MenuBar" -> "menu bar";
             case "Menu" -> "menu";

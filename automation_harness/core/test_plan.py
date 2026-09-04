@@ -60,6 +60,7 @@ def load_plan(path: Path) -> TestPlan:
                 outputs={str(k): str(v) for k, v in outputs.items()},
                 depends_on=tuple(str(value) for value in depends_on),
                 description=str(item.get("description", "")),
+                group=str(item.get("group", "")),
             )
         )
     return TestPlan(

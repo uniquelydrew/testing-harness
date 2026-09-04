@@ -391,6 +391,38 @@ class AtspiDriver:
             raise RuntimeError("AT-SPI component does not expose selectable children") from exc
         return {"child_index": child_index, "resolution_stages": [stage.to_dict() for stage in trace]}
 
+    def select_menu_path(
+        self,
+        selectors: list[Mapping[str, Any]],
+        *,
+        identification: Mapping[str, Any] | AtspiIdentification,
+    ) -> dict[str, Any]:
+        """Traverse and activate a menu path without returning between clicks."""
+        if not selectors:
+            raise ValueError("AT-SPI menu path must not be empty")
+        root, trace = _select_accessible(
+            _pyatspi().Registry.getDesktop(0), _identification(identification)
+        )
+        current = root
+        traversed: list[dict[str, Any]] = []
+        for index, selector in enumerate(selectors):
+            child = _wait_for_menu_child(current, selector, timeout=1.0)
+            terminal = index == len(selectors) - 1
+            action_name = _activate_accessible(child)
+            traversed.append({
+                "selector": dict(selector),
+                "name": getattr(child, "name", None),
+                "role": _role_name(child),
+                "action": action_name,
+            })
+            if not terminal:
+                current = child
+        return {
+            "action": "select_menu_item",
+            "path": traversed,
+            "resolution_stages": [stage.to_dict() for stage in trace],
+        }
+
     def get_value(self, *, identification: Mapping[str, Any] | AtspiIdentification) -> float:
         match, _ = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
         try:
@@ -646,12 +678,12 @@ def _deepest_at_point(node: Any, *, x: int, y: int, pyatspi: Any) -> Any | None:
 
 _SEMANTIC_ROLES = frozenset({
     "push button", "button", "toggle button", "check box", "radio button",
-    "combo box", "entry", "text", "password text", "spin button", "slider",
+    "combo box", "entry", "password text", "spin button", "slider",
     "list item", "table cell", "tree item", "menu", "menu item",
     "check menu item", "radio menu item", "page tab", "link",
 })
 _PRESENTATION_ROLES = frozenset({
-    "label", "static", "paragraph", "icon", "image", "section", "panel",
+    "label", "static", "text", "paragraph", "icon", "image", "section", "panel",
     "filler", "unknown",
 })
 
@@ -660,7 +692,7 @@ def _semantic_accessible(node: Any) -> Any:
     """Promote a presentation leaf to the nearest actionable semantic owner."""
     current = node
     role = (_role_name(current) or "").replace("_", " ").casefold()
-    if role in _SEMANTIC_ROLES or _actions(current):
+    if role in _SEMANTIC_ROLES or _actions(current) or _is_editable_text(current, role):
         return current
     if role not in _PRESENTATION_ROLES:
         return current
@@ -673,6 +705,17 @@ def _semantic_accessible(node: Any) -> Any:
             break
         parent = _parent(parent)
     return current
+
+
+def _is_editable_text(node: Any, role: str) -> bool:
+    """Distinguish an editable AT-SPI text control from a rendered text leaf."""
+    if role != "text":
+        return False
+    try:
+        node.queryEditableText()
+    except Exception:
+        return False
+    return True
 
 
 def _capture_semantic_accessible(node: Any, search_root: Any, pyatspi: Any) -> CapturedComponent:
@@ -875,6 +918,57 @@ def _children(node: Any) -> list[Any]:
         if child is not None:
             result.append(child)
     return result
+
+
+def _wait_for_menu_child(parent: Any, selector: Mapping[str, Any], *, timeout: float) -> Any:
+    criteria = selector.get("criteria", {})
+    if not isinstance(criteria, Mapping):
+        raise ValueError("menu selector criteria must be a mapping")
+    ordinal = selector.get("ordinal")
+    deadline = time.monotonic() + timeout
+    while True:
+        children = _children(parent)
+        if isinstance(ordinal, int) and not isinstance(ordinal, bool) and 0 <= ordinal < len(children):
+            candidate = children[ordinal]
+            if _menu_child_matches(candidate, criteria):
+                return candidate
+        matches = [child for child in children if _menu_child_matches(child, criteria)]
+        if matches:
+            if len(matches) == 1:
+                return matches[0]
+            raise LookupError("AT-SPI menu selector is ambiguous: %r (%d matches)" % (criteria, len(matches)))
+        if time.monotonic() >= deadline:
+            raise LookupError("AT-SPI menu child was not exposed: %r" % criteria)
+        time.sleep(0.02)
+
+
+def _menu_child_matches(child: Any, criteria: Mapping[str, Any]) -> bool:
+    actual = {
+        "name": getattr(child, "name", None),
+        "role": _role_name(child),
+        "accessible_id": _accessible_id(child),
+    }
+    return all(
+        key in actual
+        and str(actual.get(key) or "").casefold() == str(expected or "").casefold()
+        for key, expected in criteria.items()
+    )
+
+
+def _activate_accessible(node: Any) -> str:
+    try:
+        actions = node.queryAction()
+    except Exception as exc:
+        raise RuntimeError("AT-SPI menu item exposes no actions") from exc
+    available: list[str] = []
+    for index in range(actions.nActions):
+        name = str(actions.getName(index))
+        available.append(name)
+        if name.casefold() in {"click", "press", "activate", "open"}:
+            if actions.doAction(index) is False:
+                raise RuntimeError("AT-SPI menu action %r reported failure" % name)
+            return name
+    raise RuntimeError("AT-SPI menu item exposes no activation action: %s" % ", ".join(available))
 
 
 def _role_name(node: Any) -> str | None:
