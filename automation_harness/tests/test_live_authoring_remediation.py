@@ -160,6 +160,16 @@ def test_java_accessibility_driver_has_no_application_presence_gate():
     assert "application_present" not in source
 
 
+def test_main_authoring_mode_exposes_explicit_repository_persistence():
+    source = (
+        Path(__file__).resolve().parents[1] / "authoring" / "capture_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'self._button(toolbar, "Save Repository", self.save_repository)' in source
+    assert 'self._button(toolbar, "Save Repository As", self.save_repository_as)' in source
+    assert 'if self.mode not in {"capture", "repository"}' not in source
+
+
 def test_installed_javafx_regex_wrapper_preserves_process_scope():
     class Endpoint:
         def __init__(self, pid):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import gi
@@ -12,6 +13,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.identity_editor import edit_identity, edit_locator
 from automation_harness.authoring.object_identity_workbench import open_capture_workbench
+from automation_harness.authoring.project import save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.repository_merge import component_diff, definitions_equal
@@ -72,7 +74,6 @@ def _install_repository_workspace(app_module):
     original_init = app_module.AuthoringApp.__init__
     original_build = app_module.AuthoringApp._build
     original_build_objects = app_module.AuthoringApp._build_objects
-    original_open_repository = app_module.AuthoringApp.open_repository
 
     def init(self, repository_path=None, mode="author", project_path=None):
         # Object Capture always starts from a clean workspace. An existing
@@ -87,12 +88,10 @@ def _install_repository_workspace(app_module):
             self.repository = ComponentRepository({})
             self.refresh_objects()
             self._set_status("New empty repository — capture an object to begin")
-            self._update_repository_title()
+        self._update_repository_title()
 
     def build(self):
         original_build(self)
-        if self.mode not in {"capture", "repository"}:
-            return
         outer = self.window.get_child()
         if outer is None or not hasattr(outer, "get_children"):
             return
@@ -125,10 +124,11 @@ def _install_repository_workspace(app_module):
             "repository": "Automation Harness Object Repository",
         }.get(self.mode, "Automation Harness Author")
         path = getattr(self, "repository_path", None)
-        if self.mode in {"capture", "repository"}:
-            suffix = path.name if path is not None else "Untitled Repository"
-            dirty = " *" if getattr(self, "_repository_dirty", False) else ""
-            self.window.set_title("%s — %s%s" % (base, suffix, dirty))
+        suffix = path.name if path is not None else "Untitled Repository"
+        if self.mode == "author" and getattr(self, "project", None) is not None:
+            suffix = "%s — %s" % (self.project.name, suffix)
+        dirty = " *" if getattr(self, "_repository_dirty", False) else ""
+        self.window.set_title("%s — %s%s" % (base, suffix, dirty))
 
     def save_repository(self):
         path = getattr(self, "repository_path", None)
@@ -149,16 +149,20 @@ def _install_repository_workspace(app_module):
         path = Path(filename)
         try:
             self.repository.save(path)
+            updated_project = None
+            if self.mode == "author" and self.project is not None and self.project_path is not None:
+                updated_project = replace(self.project, repository=path.resolve())
+                save_authoring_project(self.project_path, updated_project)
         except Exception as exc:
             return self._error("Repository save failed", "%s: %s" % (type(exc).__name__, exc))
         self.repository_path = path
+        if updated_project is not None:
+            self.project = updated_project
         self._mark_repository_dirty(False)
         self._set_status("Saved repository: " + str(path))
         return path
 
     def open_repository(self):
-        if self.mode not in {"capture", "repository"}:
-            return original_open_repository(self)
         filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Open Object Repository")
         if not filename:
             return
@@ -171,10 +175,16 @@ def _install_repository_workspace(app_module):
                 return
         try:
             repository = ComponentRepository.load([path])
+            updated_project = None
+            if self.mode == "author" and self.project is not None and self.project_path is not None:
+                updated_project = replace(self.project, repository=path.resolve())
+                save_authoring_project(self.project_path, updated_project)
         except Exception as exc:
             return self._error("Repository error", "%s: %s" % (type(exc).__name__, exc))
         self.repository = repository
         self.repository_path = path
+        if updated_project is not None:
+            self.project = updated_project
         self._mark_repository_dirty(False)
         self.refresh_objects()
         self._set_status("Opened repository: " + str(path))

@@ -395,7 +395,7 @@ class AuthoringApp:
         components = dict(self.repository.components)
         components.pop(component_id, None)
         self.repository = ComponentRepository(components)
-        if self.mode in {"capture", "repository"} and hasattr(self, "_mark_repository_dirty"):
+        if hasattr(self, "_mark_repository_dirty"):
             self._mark_repository_dirty(True)
         elif self.repository_path is not None:
             self.repository.save(self.repository_path)
@@ -425,8 +425,6 @@ class AuthoringApp:
         component_id = self._selected(self.object_tree)
         if not component_id:
             return self._info("Object Repository", "Select a component to edit.")
-        if self.repository_path is None:
-            return self._error("Object Repository", "Open or create an editable repository first.")
         definition = self.repository.get(component_id)
         document = ComponentRepository({component_id: definition}).to_document()["components"][component_id]
         raw = self._ask_text("Edit component", "Component definition JSON:", json.dumps(document, indent=2), multiline=True)
@@ -435,9 +433,11 @@ class AuthoringApp:
         try:
             value = json.loads(raw)
             parsed = ComponentRepository.from_document({"version": 1, "components": {component_id: value}}, source="editor")
-            editable = ComponentRepository.load([self.repository_path]) if self.repository_path.exists() else ComponentRepository({})
-            editable.with_component(parsed.get(component_id)).save(self.repository_path)
-            self.repository = self._load_repository(); self.refresh_objects(); self._set_status("Saved " + component_id)
+            self.repository = self.repository.with_component(parsed.get(component_id))
+            if hasattr(self, "_mark_repository_dirty"):
+                self._mark_repository_dirty(True)
+            self.refresh_objects()
+            self._set_status("Updated %s — repository has unsaved changes" % component_id)
         except Exception as exc:
             self._error("Object Repository", "%s: %s" % (type(exc).__name__, exc))
 
@@ -1233,6 +1233,8 @@ class AuthoringApp:
             self.plan = replace(self.plan, objects=inline)
         elif destination is not None:
             self.repository_path = Path(destination)
+            if hasattr(self, "_mark_repository_dirty"):
+                self._mark_repository_dirty(False)
         self.refresh_objects(); self.refresh_recorded_interactions()
         location = "current test plan" if destination is None else str(destination)
         self._set_status("Saved %d recorded object(s) to %s" % (len(saved_ids), location))
@@ -1287,6 +1289,11 @@ class AuthoringApp:
         self._error("Plan validation", "\n".join(issues)) if issues else self._info("Plan validation", "Plan is structurally valid against the current registered-step catalog.")
 
     def open_plan_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Opening a plan may replace the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(yaml=True, artifact_suffix=PLAN_SUFFIX, title="Open Test Plan")
         if not path: return
         try:
@@ -1296,6 +1303,8 @@ class AuthoringApp:
             if inline.components:
                 self.repository = inline
                 self.repository_path = None
+                if hasattr(self, "_mark_repository_dirty"):
+                    self._mark_repository_dirty(False)
                 self.refresh_objects()
             self.plan_name.set_text(self.plan.name); self.refresh_plan(); self.refresh_variables(); self.refresh_state(); self._set_status("Opened plan: " + path)
         except Exception as exc: self._error("Plan error", "%s: %s" % (type(exc).__name__, exc))
@@ -1317,6 +1326,11 @@ class AuthoringApp:
             self.plan_path = previous
 
     def new_project_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Creating a project replaces the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(save=True, yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Create Test Project")
         if not path:
             return
@@ -1330,9 +1344,16 @@ class AuthoringApp:
             self.repository = self._load_repository()
         except Exception as exc:
             return self._error("New project", "%s: %s" % (type(exc).__name__, exc))
+        if hasattr(self, "_mark_repository_dirty"):
+            self._mark_repository_dirty(False)
         self.refresh_all(); self._set_status("Created project — capture an object or add a registered script step")
 
     def open_project_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Opening a project replaces the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Open Test Project")
         if not path:
             return
@@ -1342,6 +1363,8 @@ class AuthoringApp:
             self.repository_path = project.repository; self.repository = self._load_repository()
         except Exception as exc:
             return self._error("Open project", "%s: %s" % (type(exc).__name__, exc))
+        if hasattr(self, "_mark_repository_dirty"):
+            self._mark_repository_dirty(False)
         self.refresh_all(); self._set_status("Opened project: " + project.name)
 
     def save_reusable_step(self) -> None:

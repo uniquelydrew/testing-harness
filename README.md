@@ -1449,6 +1449,12 @@ Use the Object Repository view to:
 - save/recapture an object
 - inspect revision and locator details
 
+Repository edits remain in memory until **Save Repository** is used. **Save
+Repository As** creates or rebinds the current `.ahobjects` file; for an open
+project, the project document is updated to reference that file. An asterisk in
+the main window title indicates unsaved repository changes. Opening another
+repository, project, or inline-object plan prompts before discarding them.
+
 ## Actions
 
 The Actions view is scoped to the selected captured object. It lists only
