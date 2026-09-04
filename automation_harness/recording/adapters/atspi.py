@@ -201,6 +201,18 @@ def _is_authoring_chrome(captured) -> bool:
     return application.startswith("Automation Harness") or name == "Stop Recording"
 
 
+def _captured_process_id(captured):
+    properties = dict(getattr(captured, "backend_properties", {}) or {})
+    for key in ("bridge_pid", "process_id", "process-id", "pid"):
+        try:
+            value = int(properties.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 class AtspiRecordingAdapter:
     """Translate bounded AT-SPI events into the framework-neutral observation stream."""
 
@@ -402,24 +414,40 @@ class AtspiRecordingAdapter:
             target,
         )
 
-    def _physical_pointer(self, event_type, coordinates, timestamp) -> None:
+    def _physical_pointer(self, event_type, coordinates, timestamp, owner_pid=None) -> None:
         """Handle an X11 transition without waiting for AT-SPI device events."""
         if not self._begin_callback():
             return
         try:
             target = None
             if event_type.endswith(("1p", "3p")):
-                target = self._resolve_physical_pointer_target(coordinates)
+                target = self._resolve_physical_pointer_target(coordinates, owner_pid=owner_pid)
             self._pointer_worker.accept_pointer(
                 event_type, coordinates, timestamp, target,
             )
         finally:
             self._end_callback()
 
-    def _resolve_physical_pointer_target(self, coordinates):
-        # Establish the actual topmost desktop surface before asking an
-        # in-process JavaFX bridge to hit-test. Otherwise a JavaFX window below
-        # the GTK recording controls can incorrectly win by geometry alone.
+    def _resolve_physical_pointer_target(self, coordinates, owner_pid=None):
+        # X11 owns z-order arbitration. Query only a bridge belonging to the
+        # topmost client process; a bridge for a covered JavaFX window must
+        # never participate merely because its bounds contain the pointer.
+        if owner_pid is not None:
+            try:
+                captured = self._javafx_driver.capture_at_point(
+                    *coordinates, process_id=owner_pid,
+                )
+                if (
+                    _is_recordable_target(captured)
+                    and _captured_process_id(captured) == owner_pid
+                ):
+                    return captured
+            except Exception:
+                pass
+
+        # Swing on Linux has no in-process capture bridge yet. AT-SPI through
+        # java-atk-wrapper is therefore the final semantic fallback, and its
+        # owning PID must agree with X11 whenever both are available.
         atspi_candidate = None
         try:
             snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
@@ -427,19 +455,31 @@ class AtspiRecordingAdapter:
                 atspi_candidate = snapshot(*coordinates)
                 if _is_authoring_chrome(atspi_candidate):
                     return None
+                atspi_pid = _captured_process_id(atspi_candidate)
+                if owner_pid is not None and atspi_pid != owner_pid:
+                    return None
         except Exception:
             pass
-        # The in-process bridge is authoritative for instrumented JavaFX.  Its
-        # point resolver is the same one used by Capture Next Click and can see
-        # semantic controls which AT-SPI exposes only as a window or skin node.
-        try:
-            captured = self._javafx_driver.capture_at_point(*coordinates)
-            if _is_recordable_target(captured):
-                return captured
-        except Exception:
-            pass
+
+        # Compatibility path for non-X11/manual invocations: use AT-SPI to
+        # establish process ownership, then restrict JavaFX to that process.
+        if owner_pid is None and atspi_candidate is not None:
+            atspi_pid = _captured_process_id(atspi_candidate)
+            if atspi_pid is not None:
+                try:
+                    captured = self._javafx_driver.capture_at_point(
+                        *coordinates, process_id=atspi_pid,
+                    )
+                    if _is_recordable_target(captured):
+                        return captured
+                except Exception:
+                    pass
         if atspi_candidate is not None and _is_recordable_target(atspi_candidate):
             return atspi_candidate
+        if owner_pid is not None:
+            # Never discard known X11 ownership and retry through an
+            # unconstrained accessibility lookup.
+            return None
         return self._resolve_pointer_event(
             SimplePointerEvent("mouse:button:1p", coordinates), coordinates,
         )

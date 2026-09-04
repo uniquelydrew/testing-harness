@@ -197,9 +197,11 @@ class JavaFxBridgeDriver:
             % (timeout, ("; " + "; ".join(errors)) if errors else "")
         )
 
-    def capture_at_point(self, x: int, y: int) -> CapturedComponent:
+    def capture_at_point(self, x: int, y: int, *, process_id: int | None = None) -> CapturedComponent:
         errors = []
         for endpoint in self.endpoints():
+            if process_id is not None and endpoint.pid != process_id:
+                continue
             try:
                 response = endpoint.request("hit_test", timeout=2.0, x=x, y=y)
                 node = response.get("node")
@@ -208,8 +210,12 @@ class JavaFxBridgeDriver:
             except Exception as exc:
                 errors.append("pid %s: %s" % (endpoint.pid, exc))
         raise LookupError(
-            "no JavaFX node found at (%s, %s)%s"
-            % (x, y, ("; " + "; ".join(errors)) if errors else "")
+            "no JavaFX node found at (%s, %s)%s%s"
+            % (
+                x, y,
+                " for owning pid %s" % process_id if process_id is not None else "",
+                ("; " + "; ".join(errors)) if errors else "",
+            )
         )
 
     def inspect(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> CapturedComponent:

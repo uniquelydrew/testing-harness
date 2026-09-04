@@ -914,6 +914,9 @@ def _capture_semantic_accessible(node: Any, search_root: Any, pyatspi: Any) -> C
 
 def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     attributes = _attributes(node)
+    process_id = _process_id(node, attributes)
+    if process_id is not None:
+        attributes["process_id"] = process_id
     bounds = _bounds(node, pyatspi)
     actions = _actions(node)
     hierarchy = _hierarchy(node)
@@ -941,6 +944,34 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         native_class=attributes.get("class") or attributes.get("class-name"),
         logical_subobjects=logical_subobjects,
     )
+
+
+def _process_id(node: Any, attributes: Mapping[str, Any] | None = None) -> int | None:
+    """Return the owning application's PID without making it identity evidence."""
+    raw_attributes = attributes or {}
+    for key in ("process_id", "process-id", "pid"):
+        value = raw_attributes.get(key)
+        try:
+            if value is not None and int(value) > 0:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    current = node
+    for _depth in range(64):
+        if current is None:
+            break
+        for method_name in ("get_process_id", "getProcessId"):
+            method = getattr(current, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                value = int(method())
+            except Exception:
+                continue
+            if value > 0:
+                return value
+        current = _parent(current)
+    return None
 
 
 def _is_menu_role(role: str | None) -> bool:

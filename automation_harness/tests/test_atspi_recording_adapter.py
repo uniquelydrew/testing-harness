@@ -9,6 +9,7 @@ from automation_harness.drivers.atspi_driver import (
     AtspiExcludedClickSource,
     _deepest_at_point,
 )
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
     _event_coordinates,
@@ -50,6 +51,33 @@ def _target():
         application="Example", hierarchy=(), actions=("click",), bounds=(10, 20, 30, 40),
         state=ComponentState(True),
     )
+
+
+def test_javafx_point_capture_queries_only_the_x11_owner_process():
+    class Endpoint:
+        def __init__(self, pid):
+            self.pid = pid
+            self.calls = []
+
+        def request(self, operation, **payload):
+            self.calls.append((operation, payload))
+            return {"node": {"ref": "owned-%s" % self.pid}}
+
+    covered = Endpoint(701)
+    owner = Endpoint(702)
+
+    class Driver(JavaFxBridgeDriver):
+        def endpoints(self):
+            return (covered, owner)
+
+        def _captured_for_capture(self, endpoint, node):
+            return node["ref"]
+
+    captured = Driver().capture_at_point(25, 30, process_id=702)
+
+    assert captured == "owned-702"
+    assert covered.calls == []
+    assert owner.calls[0][0] == "hit_test"
 
 
 def test_pointer_event_is_re_hit_tested_at_desktop_coordinates():
@@ -385,15 +413,18 @@ def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
         def __init__(self):
             self.points = []
 
-        def capture_at_point(self, x, y):
+        def capture_at_point(self, x, y, *, process_id=None):
             self.points.append((x, y))
+            assert process_id == 702
             return javafx_target
 
     atspi = _Driver(_target())
     atspi.target = replace(
         atspi.target, name="main", role="desktop frame", accessible_id="-1",
         application="Application Window", actions=(),
+        backend_properties={"process_id": 702},
     )
+    javafx_target = replace(javafx_target, backend_properties={"bridge_pid": 702})
     javafx = JavaFxDriver()
     highlighted = []
     emitted = []
@@ -408,12 +439,12 @@ def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
     with adapter._callback_condition:
         adapter._callbacks_accepting = True
 
-    adapter._physical_pointer("mouse:button:1p", (140, 70), 1.0)
-    adapter._physical_pointer("mouse:button:1r", (140, 70), 2.0)
+    adapter._physical_pointer("mouse:button:1p", (140, 70), 1.0, 702)
+    adapter._physical_pointer("mouse:button:1r", (140, 70), 2.0, 702)
     adapter._pointer_worker.stop_and_drain()
 
     assert javafx.points == [(140, 70)]
-    assert atspi.point_snapshots == [(140, 70)]
+    assert atspi.point_snapshots == []
     assert highlighted == [javafx_target]
     assert len(emitted) == 1
     assert emitted[0].target is javafx_target
@@ -424,19 +455,96 @@ def test_physical_press_prefers_javafx_semantic_target_over_recordable_atspi_pro
     coarse = replace(
         _target(), name="File", role="menu", accessible_id=None,
         application="ERSA test.build.0", bounds=(0, 0, 1024, 768),
+        backend_properties={"process_id": 702},
     )
     exact = replace(
         coarse, accessible_id="fileMenu", framework="javafx",
         native_class="javafx.scene.control.Menu", bounds=(10, 20, 80, 24),
+        backend_properties={"bridge_pid": 702},
     )
 
     class JavaFxDriver:
-        def capture_at_point(self, x, y):
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
             return exact
 
     adapter = AtspiRecordingAdapter(_Driver(coarse), javafx_driver=JavaFxDriver())
 
-    assert adapter._resolve_physical_pointer_target((25, 30)) is exact
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=702) is exact
+
+
+def test_physical_press_rejects_javafx_window_beneath_topmost_application():
+    topmost = replace(
+        _target(), name="Confirm", application="Native Dialog",
+        backend_properties={"process_id": 701}, bounds=(0, 0, 400, 300),
+    )
+    underneath = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is topmost
+
+
+def test_structural_topmost_window_blocks_javafx_window_beneath_it():
+    topmost = replace(
+        _target(), name="main", role="desktop frame", actions=(),
+        application="Native Dialog", backend_properties={"process_id": 701},
+        bounds=(0, 0, 400, 300),
+    )
+    underneath = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is None
+
+
+def test_x11_owner_rejects_atspi_target_with_unknown_process():
+    unowned = replace(
+        _target(), name="Confirm", application="Unknown Native Dialog",
+        backend_properties={}, bounds=(0, 0, 400, 300),
+    )
+
+    class NoJavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(unowned), javafx_driver=NoJavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is None
+
+
+def test_matching_process_uses_javafx_semantic_target():
+    proxy = replace(
+        _target(), name="main", role="desktop frame", actions=(),
+        application="Application Window", backend_properties={"process_id": 702},
+    )
+    semantic = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
+            return semantic
+
+    adapter = AtspiRecordingAdapter(_Driver(proxy), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=702) is semantic
 
 
 def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
@@ -462,7 +570,7 @@ def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
 def test_javafx_only_session_starts_physical_recording_without_atspi_registry():
     javafx_target = replace(
         _target(), name="File", accessible_id="fileMenu", role="menu",
-        framework="javafx",
+        framework="javafx", backend_properties={"bridge_pid": 702},
     )
 
     class UnavailableAtspi:
@@ -471,7 +579,8 @@ def test_javafx_only_session_starts_physical_recording_without_atspi_registry():
     class JavaFxDriver:
         available = True
 
-        def capture_at_point(self, x, y):
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
             return javafx_target
 
     class PointerMonitor:
@@ -496,8 +605,8 @@ def test_javafx_only_session_starts_physical_recording_without_atspi_registry():
 
     assert adapter.available
     adapter.start(emitted.append)
-    monitor.callback("mouse:button:1p", (140, 70), 1.0)
-    monitor.callback("mouse:button:1r", (140, 70), 2.0)
+    monitor.callback("mouse:button:1p", (140, 70), 1.0, 702)
+    monitor.callback("mouse:button:1r", (140, 70), 2.0, 702)
     adapter.stop()
 
     assert monitor.stopped

@@ -25,18 +25,18 @@ class _Backend:
 def test_x11_monitor_emits_press_while_button_is_still_held():
     # Initial up, then press, then two held samples, then release.
     backend = _Backend([
-        (10, 20, 0),
-        (11, 21, 1 << 8),
-        (12, 22, 1 << 8),
-        (13, 23, 1 << 8),
-        (14, 24, 0),
+        (10, 20, 0, None),
+        (11, 21, 1 << 8, 1702),
+        (12, 22, 1 << 8, 1702),
+        (13, 23, 1 << 8, 1702),
+        (14, 24, 0, 1702),
     ])
     events = []
     press_seen = threading.Event()
     release_seen = threading.Event()
 
-    def observed(event_type, coordinates, timestamp):
-        events.append((event_type, coordinates, timestamp))
+    def observed(event_type, coordinates, timestamp, owner_pid):
+        events.append((event_type, coordinates, timestamp, owner_pid))
         if event_type.endswith("1p"):
             press_seen.set()
         if event_type.endswith("1r"):
@@ -54,6 +54,7 @@ def test_x11_monitor_emits_press_while_button_is_still_held():
     ]
     assert events[0][1] == (11, 21)
     assert events[1][1] == (14, 24)
+    assert [event[3] for event in events] == [1702, 1702]
     assert backend.closed
 
 
