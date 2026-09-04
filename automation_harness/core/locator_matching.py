@@ -232,10 +232,12 @@ def install() -> None:
     original_javafx_get_text = javafx_bridge.JavaFxBridgeDriver.get_text
     original_javafx_set_text = javafx_bridge.JavaFxBridgeDriver.set_text
 
-    def javafx_find_matches(self, identification=None):
+    def javafx_find_matches(self, identification=None, *, process_id=None):
         identity = dict(identification or {})
         if not _contains_regex(identity):
-            return original_javafx_find_matches(self, identification)
+            return original_javafx_find_matches(
+                self, identification, process_id=process_id,
+            )
 
         if "mandatory" in identity:
             mandatory = identity.get("mandatory") or {}
@@ -248,11 +250,15 @@ def install() -> None:
             }
             assistive = identity.get("assistive") or {}
         if not isinstance(mandatory, Mapping) or not isinstance(assistive, Mapping):
-            return original_javafx_find_matches(self, identification)
+            return original_javafx_find_matches(
+                self, identification, process_id=process_id,
+            )
 
         broad_mandatory = _exact_subset(mandatory)
         broad_identity = {"mandatory": broad_mandatory or {}}
-        candidates, _bridge_trace = original_javafx_find_matches(self, broad_identity)
+        candidates, _bridge_trace = original_javafx_find_matches(
+            self, broad_identity, process_id=process_id,
+        )
 
         matches = [
             (endpoint, node)

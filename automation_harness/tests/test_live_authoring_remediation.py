@@ -8,6 +8,7 @@ from automation_harness.authoring.project import AuthoringProject
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.core.locator_matching import _javafx_node_matches, _matches_value
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 
 
 def _component_document(locator_value):
@@ -157,3 +158,37 @@ def test_java_accessibility_driver_has_no_application_presence_gate():
     source = (Path(__file__).resolve().parents[1] / "drivers" / "java_accessibility.py").read_text(encoding="utf-8")
     assert "expected_application" not in source
     assert "application_present" not in source
+
+
+def test_installed_javafx_regex_wrapper_preserves_process_scope():
+    class Endpoint:
+        def __init__(self, pid):
+            self.pid = pid
+            self.calls = []
+
+        def request(self, operation, **payload):
+            self.calls.append((operation, payload))
+            return {
+                "matches": [{"ref": "node-%s" % self.pid, "id": "fileMenu"}],
+                "stages": [{
+                    "source": "mandatory",
+                    "criteria": payload["identification"].get("mandatory", {}),
+                    "matches": 1,
+                }],
+            }
+
+    covered = Endpoint(701)
+    owner = Endpoint(702)
+
+    class Driver(JavaFxBridgeDriver):
+        def endpoints(self):
+            return (covered, owner)
+
+    matches, _trace = Driver()._find_matches(
+        {"mandatory": {"id": {"match": "regex", "value": "file.*"}}},
+        process_id=702,
+    )
+
+    assert [endpoint.pid for endpoint, _node in matches] == [702]
+    assert covered.calls == []
+    assert owner.calls[0][0] == "find"
