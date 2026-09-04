@@ -7,6 +7,8 @@ from automation_harness.authoring.capture_context import (
     identity_descriptors,
     is_semantic_node,
     is_structural_context_node,
+    node_label,
+    suggested_name,
 )
 
 
@@ -140,7 +142,7 @@ def test_recording_context_omits_raw_accessibility_ancestry():
     context = build_recording_context((target,))
 
     assert [node.label for node in context.root.walk()] == [
-        "Recorded interaction scope", "Calculator", "digit-two",
+        "Recorded interaction scope", "Calculator", "2",
     ]
     assert context.root.children[0].children[0].is_target
 
@@ -164,6 +166,43 @@ def test_recording_context_deduplicates_repeated_semantic_target_observations():
 
     assert len(context.target_keys) == 1
     assert context.captured_component(context.target_key) is first
+
+
+def test_numeric_accessible_id_does_not_replace_semantic_display_name():
+    payload = {
+        "id": "2",
+        "accessible_text": "03",
+        "accessible_role": "push button",
+    }
+
+    assert node_label(payload) == "03"
+    assert suggested_name(payload) == "03"
+
+
+def test_descriptive_accessible_id_remains_preferred_authored_name():
+    payload = {
+        "id": "save-button",
+        "accessible_text": "Save",
+        "accessible_role": "push button",
+    }
+
+    assert node_label(payload) == "Save"
+    assert suggested_name(payload) == "save-button"
+
+
+def test_recording_peer_groups_do_not_mix_unrelated_semantic_roles():
+    button = CaptureContextNode(
+        "button", "Save", {"accessible_role": "push button"}, is_target=True,
+    )
+    entry = CaptureContextNode(
+        "entry", "Name", {"accessible_role": "text"}, is_target=True,
+    )
+    root = CaptureContextNode(
+        "window", "Dialog", {"window": "Dialog"}, [button, entry], is_window_root=True,
+    )
+    context = CaptureContext("atspi", root, "button")
+
+    assert context.selected_group("button") == [button]
 
 
 def test_common_peer_descriptors_identify_shared_group_properties():

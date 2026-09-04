@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from automation_harness.models.component import CapturedComponent, ComponentState
 from automation_harness.recording.adapters.atspi import (
@@ -15,9 +14,14 @@ class _Driver:
     def __init__(self, target):
         self.target = target
         self.points = []
+        self.sources = []
 
     def capture_scoped_at_point(self, x, y):
         self.points.append((x, y))
+        return self.target
+
+    def capture_event_source(self, source, *, settle_delay=0.08):
+        self.sources.append((source, settle_delay))
         return self.target
 
 
@@ -31,14 +35,119 @@ def _target():
 
 def test_pointer_event_is_re_hit_tested_at_desktop_coordinates():
     driver = _Driver(_target())
-    adapter = AtspiRecordingAdapter(driver)
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     emitted = []
     adapter._emit = emitted.append
     event = SimpleNamespace(type="mouse:button:1r", detail1=125, detail2=240, source=None)
+    adapter._pointer_worker.start()
     adapter._pointer(event)
+    adapter._pointer_worker.stop_and_drain()
     assert driver.points == [(125, 240)]
     assert emitted[0].target.name == "Save"
     assert emitted[0].coordinates == (125, 240)
+
+
+def test_pointer_release_uses_semantic_target_resolved_from_matching_press():
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    emitted = []
+    adapter._emit = emitted.append
+
+    adapter._pointer_worker.start()
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=126, detail2=241, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.sources == []
+    assert driver.points == [(125, 240)]
+    assert len(emitted) == 1
+    assert emitted[0].target.name == "Save"
+    assert emitted[0].phase == "released"
+    assert emitted[0].coordinates == (126, 241)
+
+
+def test_registry_pointer_callback_only_enqueues_resolution_work():
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    event = SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    )
+
+    assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 1.0) is False
+    adapter._pointer_worker.start()
+    adapter._pointer(event)
+
+    assert driver.sources == []
+    adapter._pointer_worker.stop_and_drain()
+    assert driver.points == [(125, 240)]
+    assert driver.sources == []
+    assert adapter._pointer_worker.state == "stopped"
+    assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 2.0) is False
+
+
+def test_pointer_press_coordinates_override_generic_shell_event_source():
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+
+    adapter._pointer_worker.start()
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=500, detail2=600, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.points == [(500, 600)]
+    assert driver.sources == []
+
+
+def test_resolved_target_is_acknowledged_before_next_interaction():
+    driver = _Driver(_target())
+    events = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: events.append(("highlight", target.name)),
+        acknowledgement_seconds=0,
+    )
+    adapter._emit = lambda observation: events.append(("emit", observation.target.name))
+    adapter._pointer_worker.start()
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert events == [("highlight", "Save"), ("emit", "Save")]
+
+
+def test_action_and_text_events_drain_against_last_resolved_target():
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    emitted = []
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._action(SimpleNamespace(
+        type="object:state-changed:checked", detail1=True, source=object(),
+    ))
+    adapter._text(SimpleNamespace(
+        type="object:text-changed:insert", any_data="updated", source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert [type(item).__name__ for item in emitted] == [
+        "PointerInteraction", "StateChanged", "ActionFired", "TextChanged",
+    ]
+    assert all(item.target.name == "Save" for item in emitted)
 
 
 def test_invalid_device_coordinates_are_not_used():
@@ -74,20 +183,10 @@ def test_coordinate_capture_rejects_structural_panels_and_authoring_chrome():
     assert not _is_recordable_target(harness)
 
 
-def test_source_events_use_the_same_semantic_resolver_as_capture():
+def test_source_events_use_driver_canonical_click_resolver():
     target = _target()
     driver = _Driver(target)
     adapter = AtspiRecordingAdapter(driver)
-    desktop = object()
-    adapter._pyatspi = SimpleNamespace(
-        Registry=SimpleNamespace(getDesktop=lambda _index: desktop),
-    )
     source = object()
-
-    with patch(
-        "automation_harness.recording.adapters.atspi._capture_semantic_accessible",
-        return_value=target,
-    ) as resolve:
-        assert adapter._target(SimpleNamespace(source=source)) is target
-
-    resolve.assert_called_once_with(source, desktop, adapter._pyatspi)
+    assert adapter._target(SimpleNamespace(source=source)) is target
+    assert driver.sources == [(source, 0.0)]

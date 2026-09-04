@@ -156,6 +156,38 @@ class AtspiDriver:
             )
         return _capture_semantic_accessible(target, desktop, pyatspi)
 
+    def capture_event_source(self, source: Any, *, settle_delay: float = 0.08) -> CapturedComponent:
+        """Resolve an AT-SPI pointer source through the canonical click pipeline.
+
+        Device coordinates are not a reliable identity source: compositors and
+        desktop chrome can be returned for the same point after focus or popup
+        state changes.  Both Next Click and recording instead scope resolution
+        to the event source's application and re-query the deepest live object
+        at the source bounds.
+        """
+        pyatspi = _pyatspi()
+        source_capture = _capture_accessible(source, pyatspi)
+        if source_capture.application is None or source_capture.bounds is None:
+            raise LookupError("clicked accessibility event has no application-scoped component bounds")
+        left, top, width, height = source_capture.bounds
+        if settle_delay > 0:
+            time.sleep(settle_delay)
+        desktop = pyatspi.Registry.getDesktop(0)
+        application = _live_application(desktop, source_capture.application)
+        if application is None:
+            raise LookupError(
+                f"clicked application {source_capture.application!r} is no longer live"
+            )
+        target = _deepest_at_point(
+            application,
+            x=left + width // 2,
+            y=top + height // 2,
+            pyatspi=pyatspi,
+        )
+        if target is None:
+            raise LookupError("no live component matched the clicked point within its application")
+        return _capture_semantic_accessible(target, desktop, pyatspi)
+
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
         """Wait for one desktop mouse press and capture its accessible source.
 
@@ -199,25 +231,7 @@ class AtspiDriver:
                 # Treat one click as a scoped operation. First determine its
                 # application source, then resolve the deepest *live* object
                 # at the source bounds within that application only.
-                source_capture = _capture_accessible(source, pyatspi)
-                if source_capture.application is None or source_capture.bounds is None:
-                    raise LookupError("clicked accessibility event has no application-scoped component bounds")
-                left, top, width, height = source_capture.bounds
-                time.sleep(0.08)
-                application = _live_application(
-                    pyatspi.Registry.getDesktop(0), source_capture.application,
-                )
-                if application is None:
-                    raise LookupError(f"clicked application {source_capture.application!r} is no longer live")
-                target = _deepest_at_point(
-                    application,
-                    x=left + width // 2,
-                    y=top + height // 2,
-                    pyatspi=pyatspi,
-                )
-                if target is None:
-                    raise LookupError("no live component matched the clicked point within its application")
-                captured = _capture_semantic_accessible(target, pyatspi.Registry.getDesktop(0), pyatspi)
+                captured = self.capture_event_source(source)
                 finish(captured, None)
             except BaseException as exc:
                 finish(None, exc)

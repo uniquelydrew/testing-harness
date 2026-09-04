@@ -67,6 +67,14 @@ class CaptureContext:
             peers = [child for child in parent.children if child.payload.get("class") == class_name]
             if peers:
                 return peers
+        role = node.payload.get("accessible_role")
+        if role:
+            peers = [
+                child for child in parent.children
+                if child.payload.get("accessible_role") == role
+            ]
+            if peers:
+                return peers
         return list(parent.children)
 
     def inherited_descriptors(self, key: str) -> dict[str, Any]:
@@ -242,6 +250,12 @@ def _recorded_capture_identity(captured):
 
 def _recorded_capture_payload(captured):
     properties = dict(getattr(captured, "backend_properties", {}) or {})
+    ordinal = None
+    strategy = getattr(captured, "authored_strategy", None)
+    if strategy is not None:
+        identification = dict(getattr(strategy, "options", {}) or {}).get("identification", {})
+        if isinstance(identification, Mapping):
+            ordinal = identification.get("ordinal")
     return {
         "ref": properties.get("node_ref") or properties.get("ref"),
         "window": getattr(captured, "window", None),
@@ -250,6 +264,7 @@ def _recorded_capture_payload(captured):
         "accessible_role": getattr(captured, "role", None),
         "accessible_text": getattr(captured, "name", None),
         "bounds": getattr(captured, "bounds", None),
+        "sibling_index": ordinal,
         "properties": properties,
     }
 
@@ -469,10 +484,16 @@ def stable_descriptor(node):
 
 
 def node_label(node):
-    for key in ("id", "accessible_text", "text"):
+    # Tree labels describe the semantic object to a human.  Accessibility IDs
+    # are locator evidence and are frequently opaque ordinals (for example the
+    # GNOME shell assigns "2" to a button whose visible name is "03").
+    for key in ("accessible_text", "text"):
         value = node.get(key)
         if value not in (None, ""):
             return str(value)
+    value = node.get("id")
+    if value not in (None, ""):
+        return str(value)
     simple = node.get("simple_class")
     if simple:
         label = str(simple)
@@ -485,11 +506,28 @@ def node_label(node):
 
 
 def suggested_name(node):
-    for key in ("id", "accessible_text", "text", "simple_class"):
-        value = node.get(key)
+    accessible_text = node.get("accessible_text")
+    node_id = node.get("id")
+    # Prefer the authored ID when it is descriptive.  Numeric/generated IDs
+    # are implementation details and must not replace the semantic label.
+    ordered = (
+        ("id", node_id), ("accessible_text", accessible_text),
+        ("text", node.get("text")), ("simple_class", node.get("simple_class")),
+    )
+    if node_id not in (None, "") and _is_opaque_id(str(node_id)) and accessible_text not in (None, ""):
+        ordered = (
+            ("accessible_text", accessible_text), ("text", node.get("text")),
+            ("id", node_id), ("simple_class", node.get("simple_class")),
+        )
+    for _key, value in ordered:
         if value not in (None, ""):
             return _identifier(str(value))
     return "object"
+
+
+def _is_opaque_id(value):
+    normalized = value.strip()
+    return not normalized or normalized.isdigit()
 
 
 def _identifier(value):

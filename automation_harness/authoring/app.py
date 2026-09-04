@@ -602,8 +602,13 @@ class AuthoringApp:
         provider = Gtk.CssProvider(); provider.load_from_data(b"* { background-color: #ff3b30; }")
         for x, y, width, height in _highlight_rectangles(bounds):
             edge = Gtk.Window(type=Gtk.WindowType.POPUP); edge.set_decorated(False); edge.set_keep_above(True); edge.set_opacity(0.88)
+            edge.set_accept_focus(False)
             edge.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-            edge.move(x, y); edge.resize(width, height); edge.show_all(); self._highlight_windows.append(edge)
+            edge.move(x, y); edge.resize(width, height); edge.show_all()
+            gdk_window = edge.get_window()
+            if gdk_window is not None and hasattr(gdk_window, "set_pass_through"):
+                gdk_window.set_pass_through(True)
+            self._highlight_windows.append(edge)
         if restore_editor:
             self._highlight_timeout = GLib.timeout_add(1600, self._restore_after_highlight, None)
 
@@ -987,7 +992,7 @@ class AuthoringApp:
             urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
             tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
             adapters = []
-            atspi = AtspiRecordingAdapter()
+            atspi = AtspiRecordingAdapter(on_resolved=self._acknowledge_recorded_target)
             if atspi.available:
                 adapters.append(atspi)
             adapters.extend(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
@@ -1004,6 +1009,25 @@ class AuthoringApp:
         self.stop_recording_button.set_sensitive(True)
         self._show_recording_stop_window()
         self._set_status("Recording… interact with the target application, then stop recording")
+
+    def _acknowledge_recorded_target(self, target, duration) -> None:
+        bounds = getattr(target, "bounds", None)
+        if not bounds:
+            return
+        GLib.idle_add(self._show_recording_highlight, tuple(bounds), float(duration))
+
+    def _show_recording_highlight(self, bounds, duration):
+        if self.recording_session is None or not self.recording_session.active:
+            return False
+        self._show_highlight(bounds, False)
+        self._highlight_timeout = GLib.timeout_add(
+            max(1, int(duration * 1000)), self._clear_recording_highlight,
+        )
+        return False
+
+    def _clear_recording_highlight(self):
+        self._clear_highlight()
+        return False
 
     def _show_recording_stop_window(self) -> None:
         self.window.hide()
