@@ -285,6 +285,27 @@ class JavaFxBridgeDriver:
         )
         return {"action": "set_text", "bridge_pid": endpoint.pid, "node": response.get("node")}
 
+    def select_menu_path(
+        self,
+        selectors: list[Mapping[str, Any]],
+        *,
+        identification: Mapping[str, Any] | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        if not selectors:
+            raise ValueError("JavaFX menu path must not be empty")
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "select_menu_path", timeout=5.0,
+            identification=dict(identification or {}),
+            selectors=[dict(selector) for selector in selectors],
+        )
+        return {
+            "action": "select_menu_item",
+            "bridge_pid": endpoint.pid,
+            "path": response.get("path", []),
+        }
+
     def count_matches(self, *, identification: Mapping[str, Any] | None = None) -> int:
         matches, _trace = self._find_matches(identification)
         return len(matches)
@@ -493,6 +514,7 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         authored_strategy=strategy,
         framework="javafx",
         native_class=native_class,
+        logical_subobjects=_javafx_menu_subobjects(node.get("menu_children")),
     )
 
 
@@ -691,6 +713,7 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     except ValueError:
         object_type = classify_accessibility(role, native_class)
     properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("text")), role=role,
         description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
@@ -698,9 +721,39 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
         actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
         state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
-        backend_properties={**dict(properties), **({"ref": node["ref"]} if node.get("ref") else {})},
+        backend_properties={
+            **dict(properties),
+            **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
+        },
         object_type=object_type, framework="javafx", native_class=native_class,
+        logical_subobjects=logical_subobjects,
     )
+
+
+def _javafx_menu_subobjects(values: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(values, (list, tuple)):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(values):
+        if not isinstance(raw, Mapping):
+            continue
+        name = _optional_str(raw.get("name") or raw.get("text"))
+        accessible_id = _optional_str(raw.get("accessible_id"))
+        role = _optional_str(raw.get("role")) or "menu item"
+        base = "".join(character.casefold() if character.isalnum() else "_" for character in (accessible_id or name or "item"))
+        base = "_".join(part for part in base.split("_") if part) or "item"
+        key = base
+        serial = 2
+        while key in result:
+            key = "%s_%d" % (base, serial); serial += 1
+        criteria = {"accessible_role": role}
+        if accessible_id: criteria["id"] = accessible_id
+        elif name: criteria["text"] = name
+        selector: dict[str, Any] = {"kind": role.replace(" ", "_"), "criteria": criteria, "ordinal": index}
+        children = _javafx_menu_subobjects(raw.get("menu_children"))
+        if children: selector["subobjects"] = children
+        result[key] = selector
+    return result
 
 
 def _monotonic():

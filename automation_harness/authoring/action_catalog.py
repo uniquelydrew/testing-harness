@@ -61,6 +61,7 @@ def _interaction(action: ActionType, name: str, description: str, *inputs: Actio
 
 _VALUE = ActionInput("value", "any", description="Value supplied to the object action.")
 _SELECTOR = ActionInput("selector", "object", description="Logical child/item selector.")
+_MENU_PATH = ActionInput("path", "menu_path", description="Nested menu path from the captured menu hierarchy.")
 
 INTERACTIONS: dict[ActionType, ActionDefinition] = {
     ActionType.CLICK: _interaction(ActionType.CLICK, "Click", "Click the selected object."),
@@ -72,6 +73,10 @@ INTERACTIONS: dict[ActionType, ActionDefinition] = {
     ActionType.SELECT_ITEM: _interaction(ActionType.SELECT_ITEM, "Select Item", "Select one logical child item.", _SELECTOR),
     ActionType.SELECT_ROW: _interaction(ActionType.SELECT_ROW, "Select Row", "Select a table row.", _SELECTOR),
     ActionType.SELECT_CELL: _interaction(ActionType.SELECT_CELL, "Select Cell", "Select a table cell.", _SELECTOR),
+    ActionType.SELECT_MENU_ITEM: _interaction(
+        ActionType.SELECT_MENU_ITEM, "Select Menu Item",
+        "Open a nested menu path and activate its terminal item as one uninterrupted operation.", _MENU_PATH,
+    ),
     ActionType.SET_VALUE: _interaction(ActionType.SET_VALUE, "Set Value", "Set the selected object's numeric value.", _VALUE),
 }
 

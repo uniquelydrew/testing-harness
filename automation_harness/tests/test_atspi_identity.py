@@ -8,6 +8,7 @@ import pytest
 from automation_harness.drivers.atspi_driver import (
     AtspiAmbiguousObject,
     AtspiObjectNotFound,
+    _semantic_accessible,
     _select_accessible,
 )
 from automation_harness.models.component import AtspiIdentification
@@ -66,6 +67,31 @@ def test_mandatory_conditions_are_conjunctive():
     assert len(trace) == 1
     assert trace[0].source == "mandatory"
     assert trace[0].matches == 1
+
+
+def test_presentation_leaf_promotes_to_actionable_parent():
+    label = FakeAccessible("2", "label")
+    button = FakeAccessible("Increase", "push button", "increase", children=[label])
+    assert _semantic_accessible(label) is button
+
+
+def test_noneditable_text_skin_promotes_to_actionable_parent():
+    text = FakeAccessible("2", "text")
+    button = FakeAccessible("Increase", "push button", "increase", children=[text])
+    assert _semantic_accessible(text) is button
+
+
+def test_editable_text_remains_the_semantic_target():
+    text = FakeAccessible("Search", "text")
+    text.queryEditableText = lambda: object()
+    field = FakeAccessible(None, "panel", children=[text])
+    assert _semantic_accessible(text) is text
+
+
+def test_actionable_leaf_is_not_promoted():
+    button = FakeAccessible("2", "push button", "digit-two")
+    window = FakeAccessible("Calculator", "frame", children=[button])
+    assert _semantic_accessible(button) is button
 
 
 def test_assistive_conditions_progressively_disambiguate():

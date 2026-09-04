@@ -21,7 +21,7 @@ class ObjectType(str, Enum):
 class ActionType(str, Enum):
     CLICK = "click"; DOUBLE_CLICK = "double_click"; RIGHT_CLICK = "right_click"; FOCUS = "focus"
     SET_TEXT = "set_text"; CLEAR_TEXT = "clear_text"; APPEND_TEXT = "append_text"
-    SELECT = "select"; DESELECT = "deselect"; SELECT_ITEM = "select_item"; SELECT_ITEMS = "select_items"; SELECT_ROW = "select_row"; SELECT_ROWS = "select_rows"; SELECT_CELL = "select_cell"; TOGGLE = "toggle"
+    SELECT = "select"; DESELECT = "deselect"; SELECT_ITEM = "select_item"; SELECT_ITEMS = "select_items"; SELECT_ROW = "select_row"; SELECT_ROWS = "select_rows"; SELECT_CELL = "select_cell"; SELECT_MENU_ITEM = "select_menu_item"; TOGGLE = "toggle"
     OPEN = "open"; CLOSE = "close"; EXPAND = "expand"; COLLAPSE = "collapse"; SCROLL = "scroll"; SCROLL_TO = "scroll_to"
     EDIT = "edit"; COMMIT_EDIT = "commit_edit"; CANCEL_EDIT = "cancel_edit"; INCREMENT = "increment"; DECREMENT = "decrement"; SET_VALUE = "set_value"; DRAG = "drag"; DROP = "drop"; SHOW_CONTEXT_MENU = "show_context_menu"; ACTIVATE = "activate"; SUBMIT = "submit"
 
@@ -145,7 +145,9 @@ DEFAULT_ACTIONS: dict[ObjectType, frozenset[ActionType]] = {
     ObjectType.LIST: frozenset({ActionType.CLICK, ActionType.FOCUS, ActionType.SELECT_ITEM, ActionType.SELECT_ITEMS, ActionType.SCROLL, ActionType.SCROLL_TO}),
     ObjectType.TREE: frozenset({ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.FOCUS, ActionType.SELECT_ITEM, ActionType.EXPAND, ActionType.COLLAPSE, ActionType.SCROLL, ActionType.SCROLL_TO}),
     ObjectType.TABLE: frozenset({ActionType.CLICK, ActionType.FOCUS, ActionType.SELECT_ROW, ActionType.SELECT_ROWS, ActionType.SELECT_CELL, ActionType.EDIT, ActionType.SCROLL, ActionType.SCROLL_TO}),
-    ObjectType.MENU: frozenset({ActionType.OPEN, ActionType.CLOSE, ActionType.CLICK}),
+    ObjectType.MENU_BAR: frozenset({ActionType.SELECT_MENU_ITEM}),
+    ObjectType.MENU: frozenset({ActionType.OPEN, ActionType.CLOSE, ActionType.CLICK, ActionType.SELECT_MENU_ITEM}),
+    ObjectType.CONTEXT_MENU: frozenset({ActionType.SELECT_MENU_ITEM}),
     ObjectType.MENU_ITEM: frozenset({ActionType.CLICK, ActionType.ACTIVATE}),
     ObjectType.SLIDER: frozenset({ActionType.FOCUS, ActionType.SET_VALUE, ActionType.INCREMENT, ActionType.DECREMENT}),
     ObjectType.SPINNER: frozenset({ActionType.FOCUS, ActionType.SET_VALUE, ActionType.INCREMENT, ActionType.DECREMENT}),
@@ -165,5 +167,5 @@ def default_actions(object_type: ObjectType) -> frozenset[ActionType]:
 
 def classify_accessibility(role: str | None, native_class: str | None = None) -> ObjectType:
     value = f"{role or ''} {native_class or ''}".casefold()
-    rules = (("checkbox", ObjectType.CHECK_BOX), ("check box", ObjectType.CHECK_BOX), ("radio", ObjectType.RADIO_BUTTON), ("toggle", ObjectType.TOGGLE_BUTTON), ("password", ObjectType.PASSWORD_FIELD), ("text area", ObjectType.TEXT_AREA), ("text", ObjectType.TEXT_FIELD), ("combo", ObjectType.COMBO_BOX), ("table", ObjectType.TABLE), ("tree", ObjectType.TREE), ("list", ObjectType.LIST), ("menu item", ObjectType.MENU_ITEM), ("menu", ObjectType.MENU), ("slider", ObjectType.SLIDER), ("spinner", ObjectType.SPINNER), ("progress", ObjectType.PROGRESS_INDICATOR), ("button", ObjectType.BUTTON), ("window", ObjectType.WINDOW), ("dialog", ObjectType.DIALOG), ("panel", ObjectType.PANEL), ("canvas", ObjectType.CANVAS), ("label", ObjectType.LABEL))
+    rules = (("check menu item", ObjectType.CHECK_MENU_ITEM), ("radio menu item", ObjectType.RADIO_MENU_ITEM), ("checkbox", ObjectType.CHECK_BOX), ("check box", ObjectType.CHECK_BOX), ("radio", ObjectType.RADIO_BUTTON), ("toggle", ObjectType.TOGGLE_BUTTON), ("password", ObjectType.PASSWORD_FIELD), ("text area", ObjectType.TEXT_AREA), ("text", ObjectType.TEXT_FIELD), ("combo", ObjectType.COMBO_BOX), ("table", ObjectType.TABLE), ("tree", ObjectType.TREE), ("list", ObjectType.LIST), ("menu bar", ObjectType.MENU_BAR), ("context menu", ObjectType.CONTEXT_MENU), ("menu item", ObjectType.MENU_ITEM), ("menu", ObjectType.MENU), ("slider", ObjectType.SLIDER), ("spinner", ObjectType.SPINNER), ("progress", ObjectType.PROGRESS_INDICATOR), ("button", ObjectType.BUTTON), ("window", ObjectType.WINDOW), ("dialog", ObjectType.DIALOG), ("panel", ObjectType.PANEL), ("canvas", ObjectType.CANVAS), ("label", ObjectType.LABEL))
     return next((kind for needle, kind in rules if needle in value), ObjectType.CUSTOM)

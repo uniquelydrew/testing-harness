@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from automation_harness.core.step_registry import default_step_registry
-from automation_harness.core.test_plan import derive_execution_state, load_plan, save_plan, validate_plan
+from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.test_plan import derive_execution_state, embed_plan_repository, load_plan, repository_from_plan, save_plan, validate_plan
 from automation_harness.models.plan import PlanVariableRef, StepCall, StepStatus, TestPlan
 
 
@@ -22,6 +23,7 @@ def test_plan_round_trip_and_dataflow_queue(tmp_path: Path):
                 node_id="follow",
                 step_id="track.follow",
                 inputs={"track_id": PlanVariableRef("active_track")},
+                group="Acquire and follow track",
             ),
         ),
     )
@@ -73,6 +75,23 @@ def test_plan_round_trip_preserves_inline_objects_and_step_definitions(tmp_path:
     path = tmp_path / "self-contained.yaml"
     save_plan(plan, path)
     assert load_plan(path) == plan
+
+
+def test_plan_embeds_only_its_literal_object_dependencies():
+    repository = ComponentRepository.from_document({
+        "version": 2,
+        "components": {
+            "submit": {"object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Submit"}}}]},
+            "unused": {"object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Unused"}}}]},
+        },
+    })
+    plan = TestPlan(name="embedded", steps=(StepCall(
+        node_id="submit", step_id="gui.object.action",
+        inputs={"component_id": "submit", "action": {"type": "click"}},
+    ),))
+    embedded = embed_plan_repository(plan, repository)
+    assert set(embedded.objects) == {"submit"}
+    assert repository_from_plan(embedded).contains("submit")
 
 
 def test_plan_validation_catches_unknown_step_and_output():

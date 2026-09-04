@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
+from automation_harness.models.gui import ActionType, ObjectType
 
 
 class HybridObjectCaptureService(ObjectCaptureService):
@@ -77,17 +78,28 @@ class HybridObjectCaptureService(ObjectCaptureService):
 
         errors = []
         deadline = time.monotonic() + timeout + 2.5
+        atspi_candidate = None
+        arbitration_deadline = None
         remaining = len(backends)
         while remaining:
-            wait = max(0.01, deadline - time.monotonic())
-            if wait <= 0:
+            now = time.monotonic()
+            effective_deadline = min(deadline, arbitration_deadline) if arbitration_deadline else deadline
+            if effective_deadline <= now:
                 break
+            wait = max(0.01, effective_deadline - now)
             try:
                 name, captured, error = results.get(timeout=wait)
             except queue.Empty:
                 break
             remaining -= 1
             if captured is not None:
+                if name == "atspi" and remaining:
+                    # Instrumented JavaFX is authoritative for its scene graph.
+                    # Give its event filter a bounded opportunity to resolve the
+                    # same click before accepting the generic desktop result.
+                    atspi_candidate = captured
+                    arbitration_deadline = min(deadline, time.monotonic() + 0.2)
+                    continue
                 self._log(
                     "hybrid_capture_next_click_succeeded",
                     backend=name,
@@ -102,6 +114,14 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 error=str(error),
             )
 
+        if atspi_candidate is not None:
+            self._log(
+                "hybrid_capture_next_click_succeeded",
+                backend="atspi",
+                capture=atspi_candidate.to_dict(),
+                arbitration="javafx-timeout",
+            )
+            return atspi_candidate
         message = "no capture backend resolved the selected object"
         if errors:
             message += "; " + "; ".join(errors)
@@ -179,6 +199,10 @@ class HybridObjectCaptureService(ObjectCaptureService):
             actions.add("activate")
         if "set_text" in action_names:
             actions.update({"set_text", "clear_text", "append_text"})
+        if captured.logical_subobjects and captured.semantic_type() in {
+            ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
+        }:
+            actions.add(ActionType.SELECT_MENU_ITEM.value)
 
         expected = {
             key: value

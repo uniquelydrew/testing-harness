@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import CapturedComponent, ComponentState
 from automation_harness.models.gui import ActionType, ObjectType
@@ -62,6 +64,29 @@ def test_direct_toggle_state_promotes_a_pointer_click_to_a_semantic_toggle():
     assert session.stop()[0].action.value == "toggle"
 
 
+def test_duplicate_cross_backend_pointer_observations_prefer_javafx_target():
+    atspi = CapturedComponent(
+        **{
+            **_capture("Open").__dict__,
+            "framework": "atspi",
+            "role": "button",
+            "application": "Demo",
+            "window": "Demo",
+        }
+    )
+    javafx = _capture("Open")
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(1.0, "atspi", atspi, phase="released"))
+    session.observe(PointerInteraction(1.05, "javafx", javafx, phase="released"))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].target.framework == "javafx"
+    assert interactions[0].evidence["correlated_sources"] == ["atspi", "javafx"]
+
+
 def test_modal_visibility_is_retained_as_contextual_effect_of_click():
     session = RecordingSession()
     session.start()
@@ -91,6 +116,66 @@ def test_stop_correlates_final_adapter_event_before_closing_session():
     session = RecordingSession((Adapter(),))
     session.start()
     assert [item.action.value for item in session.stop()] == ["click"]
+
+
+def test_observations_from_concurrent_adapters_are_serialized():
+    session = RecordingSession(diagnostics=True, diagnostic_limit=64)
+    barrier = threading.Barrier(3)
+
+    def emit(prefix):
+        barrier.wait()
+        for index in range(20):
+            session.observe(PointerInteraction(
+                float(index), prefix, _capture(f"{prefix}-{index}"), phase="released",
+            ))
+
+    session.start()
+    workers = [threading.Thread(target=emit, args=(source,)) for source in ("atspi", "javafx")]
+    for worker in workers:
+        worker.start()
+    barrier.wait()
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+    interactions = session.stop()
+    assert len(interactions) == 40
+    assert len({item.target.name for item in interactions}) == 40
+    assert len(session.observations()) == 40
+
+
+def test_concurrent_stop_calls_only_stop_adapters_once():
+    class Adapter:
+        def __init__(self):
+            self.stops = 0
+
+        def start(self, emit):
+            self.emit = emit
+
+        def stop(self):
+            self.stops += 1
+            self.emit(PointerInteraction(1.0, "javafx", _capture("Open"), phase="released"))
+
+    adapter = Adapter()
+    session = RecordingSession((adapter,))
+    session.start()
+    barrier = threading.Barrier(3)
+    results = []
+
+    def stop():
+        barrier.wait()
+        results.append(session.stop())
+
+    workers = [threading.Thread(target=stop) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    barrier.wait()
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+    assert adapter.stops == 1
+    assert all(len(result) == 1 for result in results)
 
 
 def test_evidence_policy_keeps_geometry_only_for_geometry_dependent_targets():

@@ -15,6 +15,7 @@ from automation_harness.authoring.object_identity_workbench import open_capture_
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.repository_merge import component_diff, definitions_equal
+from automation_harness.formats import REPOSITORY_SUFFIX
 
 
 def _install_capture_backend(app_module):
@@ -141,7 +142,7 @@ def _install_repository_workspace(app_module):
         return path
 
     def save_repository_as(self):
-        filename = self._choose_file(save=True, yaml=True)
+        filename = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save Object Repository")
         if not filename:
             return None
         path = Path(filename)
@@ -157,7 +158,7 @@ def _install_repository_workspace(app_module):
     def open_repository(self):
         if self.mode not in {"capture", "repository"}:
             return original_open_repository(self)
-        filename = self._choose_file(yaml=True)
+        filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Open Object Repository")
         if not filename:
             return
         path = Path(filename)
@@ -178,7 +179,7 @@ def _install_repository_workspace(app_module):
         self._set_status("Opened repository: " + str(path))
 
     def merge_repository(self):
-        filename = self._choose_file(yaml=True)
+        filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Merge Object Repository")
         if not filename:
             return
         path = Path(filename)

@@ -15,6 +15,23 @@ The JavaFX bridge resolves objects from semantic evidence first and structural e
 
 Literal hierarchy and JavaFX internal classes such as `com.sun.javafx.*` are diagnostic evidence, not preferred durable identity.
 
+## Semantic interaction boundaries
+
+Single-click capture and recording share one promotion policy. A physical text,
+label, or skin node is promoted to the nearest interaction boundary. Standard
+buttons, toggles, text inputs, selectors, menu controls/items, tabs, and cells
+are boundaries. An application-defined subclass of JavaFX `Control` is also a
+boundary; a generic toolkit `Control` superclass is not sufficient by itself.
+
+Applications can opt a custom non-Control node into the boundary policy with a
+truthy `automation.semanticBoundary` property or an explicit mouse-click
+handler. The resolver returns the original physical node when no meaningful
+boundary exists instead of selecting an arbitrary layout ancestor.
+
+The native bridge is authoritative when both it and AT-SPI observe the same
+JavaFX pointer interaction. The recording correlator merges those observations
+and retains the JavaFX identity.
+
 ## Source hooks
 
 ### Stable Node ID
@@ -115,3 +132,11 @@ assistive:
 ## Ordinals
 
 An ordinal is generated only when all selected semantic and structural conditions still match multiple objects. It is scoped to that already-filtered candidate set; it is not a global scene-graph index. Treat ordinal-based identity as a fallback and prefer adding application metadata when the underlying objects have distinct logical meaning.
+
+## Menus and transient descendants
+
+Standard menu bars and menus own nested logical `subobjects`. Each descendant
+stores a stable selector relative to its parent rather than a transient node
+reference. Runtime selection accepts a path of subobject IDs and performs every
+open/select operation atomically on the JavaFX application thread, preventing
+submenus from closing between independent test actions.

@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 final class JavaFxRecorder {
     private static final Set<Object> ATTACHED_SCENES = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final Set<Object> OBSERVED_TARGETS = Collections.newSetFromMap(new IdentityHashMap<>());
-    private static RecordingBuffer buffer;
+    private static volatile RecordingBuffer buffer;
     private static volatile CompletableFuture<Map<String, Object>> captureFuture;
 
     private JavaFxRecorder() { }
@@ -172,18 +172,44 @@ final class JavaFxRecorder {
         Object text = invoke(node, "getText");
         Object accessibleText = invoke(node, "getAccessibleText");
         if (id != null) result.put("accessible_id", String.valueOf(id));
-        if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
-        else if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
-        result.put("role", role(node)); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
+        else if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
+        String role = role(node);
+        result.put("role", role); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        if (role.equals("menu") || role.equals("menu bar") || role.equals("context menu")) {
+            Object children = invoke(node, "getItems");
+            if (!(children instanceof Iterable<?>)) children = invoke(node, "getMenus");
+            if (children instanceof Iterable<?> iterable) {
+                List<Map<String, Object>> snapshots = new java.util.ArrayList<>();
+                for (Object child : iterable) snapshots.add(snapshot(child));
+                result.put("menu_children", snapshots);
+            }
+        }
         return result;
     }
 
     private static String role(Object node) {
+        Object accessibleRole = invoke(node, "getAccessibleRole");
+        if (accessibleRole != null) {
+            return String.valueOf(accessibleRole).replace('_', ' ').toLowerCase(java.util.Locale.ROOT);
+        }
         String name = node.getClass().getSimpleName();
         return switch (name) {
-            case "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink" -> "button";
-            case "TextField", "PasswordField", "TextArea" -> "text";
+            case "Button" -> "button";
+            case "ToggleButton" -> "toggle button";
+            case "CheckBox" -> "check box";
+            case "RadioButton" -> "radio button";
+            case "Hyperlink" -> "hyperlink";
+            case "TextField" -> "text field";
+            case "PasswordField" -> "password field";
+            case "TextArea" -> "text area";
             case "ComboBox", "ChoiceBox" -> "combo box";
+            case "MenuBar" -> "menu bar";
+            case "Menu" -> "menu";
+            case "MenuItem", "CustomMenuItem" -> "menu item";
+            case "CheckMenuItem" -> "check menu item";
+            case "RadioMenuItem" -> "radio menu item";
+            case "ContextMenu" -> "context menu";
             case "Tab" -> "tab";
             case "Label", "Text" -> "label";
             default -> "custom";

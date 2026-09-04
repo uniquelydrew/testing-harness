@@ -60,6 +60,7 @@ def load_plan(path: Path) -> TestPlan:
                 outputs={str(k): str(v) for k, v in outputs.items()},
                 depends_on=tuple(str(value) for value in depends_on),
                 description=str(item.get("description", "")),
+                group=str(item.get("group", "")),
             )
         )
     return TestPlan(
@@ -75,6 +76,23 @@ def load_plan(path: Path) -> TestPlan:
 def save_plan(plan: TestPlan, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+def repository_from_plan(plan: TestPlan) -> ComponentRepository:
+    """Materialize the plan's self-contained object repository."""
+    return ComponentRepository.from_document({"version": 2, "components": dict(plan.objects)})
+
+
+def embed_plan_repository(plan: TestPlan, repository: ComponentRepository) -> TestPlan:
+    """Snapshot objects referenced by literal component IDs into a plan."""
+    referenced = {
+        call.inputs.get("component_id")
+        for call in plan.steps
+        if isinstance(call.inputs.get("component_id"), str)
+    }
+    objects = repository.to_document().get("components", {})
+    embedded = {component_id: objects[component_id] for component_id in sorted(referenced) if component_id in objects}
+    return replace(plan, objects=embedded)
 
 
 def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:

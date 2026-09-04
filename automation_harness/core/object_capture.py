@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
+from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.core.visual_baselines import VisualProfile, stage_visual_candidate
 
 
@@ -263,6 +264,10 @@ class ObjectCaptureService:
         action_names = {value.casefold() for value in captured.actions}
         if action_names & {"click", "press", "activate"}:
             actions.add("activate")
+        if captured.logical_subobjects and captured.semantic_type() in {
+            ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
+        }:
+            actions.add(ActionType.SELECT_MENU_ITEM.value)
         expected = {
             key: value
             for key, value in captured.state.to_dict().items()
@@ -330,9 +335,24 @@ class ObjectCaptureService:
         )
 
     def _best_identification(self, captured: CapturedComponent) -> AtspiIdentification:
-        identification = captured.candidate_identification()
-        assessments = self.assess(captured)
+        strategy = captured.candidate_strategy()
+        authored = strategy.options.get("identification") if strategy.type == "atspi" else None
+        if isinstance(authored, Mapping):
+            mandatory = authored.get("mandatory", {})
+            assistive = authored.get("assistive", {})
+            ordinal = authored.get("ordinal")
+            identification = AtspiIdentification(
+                mandatory=dict(mandatory) if isinstance(mandatory, Mapping) else {},
+                assistive=dict(assistive) if isinstance(assistive, Mapping) else {},
+                ordinal=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None,
+            )
+        else:
+            identification = captured.candidate_identification()
+        stages = self.driver.assess_identification(identification) if self.driver.available else ()
+        assessments = tuple(stages)
         if not assessments:
+            if not self.driver.available:
+                return identification
             raise ValueError("captured object exposes no durable AT-SPI identification criteria")
         final = assessments[-1]
         if final.matches == 0:

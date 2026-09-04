@@ -105,6 +105,13 @@ def test_native_atspi_capture_can_win_hybrid_race():
     assert captured.accessible_id == "follow"
 
 
+def test_instrumented_javafx_wins_bounded_arbitration_after_atspi_success():
+    service = HybridObjectCaptureService(driver=_AtspiSuccess(), javafx_driver=_JavaFxSuccess())
+    captured = service.capture_next_click(timeout=1.0)
+    assert captured.framework == "javafx"
+    assert captured.accessible_id == "cameraSelectorButton"
+
+
 def test_javafx_definition_preserves_native_identity_and_framework():
     service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
     definition = service.definition_from_capture("mvd.camera_selector", _capture("javafx"))

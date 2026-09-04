@@ -99,15 +99,16 @@ The setup step is ordinary plan behavior. It may produce values used by later st
 ```yaml
 version: 1
 name: Customer integration tests
-repository: components.yaml
+repository: objects.ahobjects
 runs_dir: runs
 script_steps:
-  - script_steps/environment_prepare.yaml
+  - script_steps/environment_prepare.ahstep
 ```
 
 Paths are relative to the project manifest. Loading the project registers those semantic step definitions before plans are validated or executed.
 
-For standalone live-desktop execution, manifests can also be registered with repeatable `--script-step` arguments.
+Project loading registers the listed manifests. Saving a self-contained plan
+embeds referenced step definitions for standalone execution.
 
 ## Execution scope
 

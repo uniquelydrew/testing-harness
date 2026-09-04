@@ -28,11 +28,39 @@ steps:
 Standalone execution can register the external implementation explicitly:
 
 ```bash
-automation-run plan run test.yaml \
+automation-run plan run test.ahplan \
   --backend live-desktop \
-  --components components.yaml \
-  --script-step ./script_steps/environment_prepare.yaml
+  --components objects.ahobjects
 ```
+
+Script-step manifests used by the authoring project are registered when the
+project is loaded. A self-contained saved plan embeds the object and step
+definitions it needs; `--components` is only an overlay.
+
+Self-contained plans can be executed directly. The longer
+`automation-run plan run` spelling remains supported:
+
+```bash
+automation-plan checkout.ahplan --backend live-desktop
+```
+
+## YAML-backed artifact file types
+
+New authoring saves use distinct compound extensions so a file's role is
+visible without opening it. Every artifact remains human-readable YAML, and
+legacy `.yaml` and `.yml` files remain loadable.
+
+| Artifact | Extension |
+| --- | --- |
+| Test project | `.ahproject` |
+| Test plan | `.ahplan` |
+| Object repository | `.ahobjects` |
+| Script-step manifest | `.ahstep` |
+
+New projects begin with an empty `objects.ahobjects`. Saving a test plan
+embeds the definitions for every literal `component_id` referenced by its
+steps. CLI execution uses these inline objects by default; `--components`
+overlays an external repository when an explicit override is needed.
 
 `live-desktop` represents only the current desktop session and available interaction facilities. It does not select an application.
 
@@ -43,6 +71,23 @@ Application names may be used as object-level locator properties where they impr
 Authoring project documents persist repository/run paths and optional `script_steps` manifests only. Environment preparation belongs in the plan.
 
 See `docs/script-backed-steps.md` for the script protocol and manifest contract.
+
+## Capture and recording consistency
+
+Capture Next Click and recording resolve the same semantic component boundary.
+For instrumented JavaFX applications the native bridge result wins bounded
+arbitration over the generic AT-SPI observation. For GTK and Swing, AT-SPI
+promotes presentation leaves to their nearest actionable owner.
+
+Use Capture Next Click for an isolated object. Use recording for interactions
+whose intermediate state must remain open, such as menu and submenu navigation.
+Standard menu descendants are persisted under their menu component and executed
+as one atomic `select_menu_item` path.
+
+Stopping a recording is asynchronous. When adapter shutdown completes, the
+Object Identity Workbench opens with all distinct interacted semantic targets
+checked. The workbench groups targets by window and omits raw panel/filler/text
+ancestry; repeated observations of one durable object remain one checked row.
 
 ## Exact and regular-expression matching
 

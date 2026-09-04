@@ -22,7 +22,8 @@ class SemanticTargetResolution:
             "physical_target": {
                 "class": self.physical_target.native_class,
                 "text": self.physical_target.name,
-                "ref": self.physical_target.backend_properties.get("ref"),
+                "ref": self.physical_target.backend_properties.get("ref")
+                or self.physical_target.backend_properties.get("node_ref"),
                 **dict(self.relationship),
             },
         })

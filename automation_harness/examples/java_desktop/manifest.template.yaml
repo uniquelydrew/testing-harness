@@ -2,10 +2,8 @@ name: java-desktop-visual-regression
 version: 1
 requires: [local-only, gui, components, java-accessibility, screen-capture, vision]
 backend:
-  kind: java-desktop
-  # Legacy bundle-mode fixture launcher. New declarative tests should launch
-  # application environments with contract-backed script steps instead.
-  command: [java, -jar, /absolute/path/to/application.jar]
-  startup_timeout: 20
+  kind: live-desktop
+  # Launch the application before this legacy Python bundle, or migrate the
+  # workflow to a declarative plan with a contract-backed setup step.
 tests: [tests/test_visual_workflow.py]
 components: components.yaml

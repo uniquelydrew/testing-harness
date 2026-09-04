@@ -50,6 +50,13 @@ pointer release and action events and focused property listeners for text,
 selection, and value state. It emits only compact semantic snapshots and
 filters movement, skin, layout, CSS, and pressed-state noise at the source.
 
+Pointer targets are promoted through the same semantic-boundary policy used by
+single-click capture. Standard controls, menus, menu buttons, menu items, tabs,
+and application-defined `Control` subclasses remain boundaries; rendered text
+and skin nodes collapse into their actionable owner. When AT-SPI reports the
+same physical interaction, the recording correlator retains one action and
+prefers this native JavaFX identity.
+
 The same endpoint also supports `capture_next_click` and `hit_test`; both
 return `physical_node`, `semantic_node`, and promotion evidence. The target
 resolution happens inside the JavaFX process before the response is serialized.

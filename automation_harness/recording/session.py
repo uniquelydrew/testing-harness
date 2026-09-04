@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from automation_harness.core.component_repository import ComponentRepository
@@ -77,75 +78,115 @@ class RecordingSession:
         self._active = False
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
+        # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
+        # Correlation is stateful, so every observation and lifecycle snapshot
+        # must be serialized as one transaction.
+        self._lock = threading.RLock()
+        self._lifecycle_lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        return self._active
+        with self._lock:
+            return self._active
 
     def start(self) -> None:
-        if self._active:
-            raise RuntimeError("recording session is already active")
-        self._active = True
-        try:
-            for adapter in self.adapters:
-                adapter.start(self.observe)
-        except Exception:
-            for adapter in reversed(self.adapters):
-                try:
-                    adapter.stop()
-                except Exception:
-                    pass
-            self._active = False
-            raise
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._active:
+                    raise RuntimeError("recording session is already active")
+                self._active = True
+            try:
+                for adapter in self.adapters:
+                    adapter.start(self.observe)
+            except Exception:
+                for adapter in reversed(self.adapters):
+                    try:
+                        adapter.stop()
+                    except Exception:
+                        pass
+                with self._lock:
+                    self._active = False
+                raise
 
     def stop(self) -> tuple[RecordedInteraction, ...]:
-        if not self._active:
-            return tuple(self._interactions)
-        try:
-            # Adapters may return their final source-filtered batch from stop;
-            # retain it for correlation before closing the session gate.
-            for adapter in reversed(self.adapters):
-                adapter.stop()
-        finally:
-            self._active = False
-            self._flush()
-        return tuple(self._interactions)
+        with self._lifecycle_lock:
+            with self._lock:
+                if not self._active:
+                    return tuple(self._interactions)
+            try:
+                # Adapters may return their final source-filtered batch from stop;
+                # retain it for correlation before closing the session gate.
+                for adapter in reversed(self.adapters):
+                    adapter.stop()
+            finally:
+                with self._lock:
+                    self._active = False
+                    self._flush()
+                    result = tuple(self._interactions)
+            return result
 
     def observations(self) -> tuple[Observation, ...]:
         """Diagnostics only; normal operation intentionally retains no raw stream."""
-        return tuple(self._diagnostics)
+        with self._lock:
+            return tuple(self._diagnostics)
 
     def interactions(self) -> tuple[RecordedInteraction, ...]:
-        return tuple(self._interactions) + ((self._pending,) if self._pending else ())
+        with self._lock:
+            return tuple(self._interactions) + ((self._pending,) if self._pending else ())
 
     def observe(self, observation: Observation) -> None:
-        if not self._active:
-            return
-        if self.diagnostics:
-            self._diagnostics.append(observation)
-        if isinstance(observation, PointerInteraction):
-            if observation.phase != "released" or observation.target is None:
+        with self._lock:
+            if not self._active:
                 return
-            action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
-            self._begin(action, observation, self._pointer_parameters(observation))
-        elif isinstance(observation, TextChanged):
-            if observation.target is not None and observation.after is not None:
-                self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
-        elif isinstance(observation, ActionFired):
-            if observation.target is None:
+            if self.diagnostics:
+                self._diagnostics.append(observation)
+            if isinstance(observation, PointerInteraction):
+                if observation.phase != "released" or observation.target is None:
+                    return
+                action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
+                self._begin(action, observation, self._pointer_parameters(observation))
+            elif isinstance(observation, TextChanged):
+                if observation.target is not None and observation.after is not None:
+                    self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
+            elif isinstance(observation, ActionFired):
+                if observation.target is None:
+                    return
+                if self._pending and _same_target(self._pending.target, observation.target):
+                    self._merge_action(observation)
+                else:
+                    self._begin(_action_type(observation.action), observation, {})
+            elif isinstance(observation, StateChanged):
+                if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
+                    self._add_delta(observation)
+            elif isinstance(observation, FocusChanged):
+                # Focus is correlation context only, never a standalone record.
                 return
-            if self._pending and _same_target(self._pending.target, observation.target):
-                self._merge_action(observation)
-            else:
-                self._begin(_action_type(observation.action), observation, {})
-        elif isinstance(observation, StateChanged):
-            if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
-                self._add_delta(observation)
-        elif isinstance(observation, FocusChanged):
-            # Focus is correlation context only, never a standalone record.
-            return
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
+        if (
+            self._pending
+            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK}
+            and self._pending.action == action
+            and abs(observation.timestamp - self._pending.completed_at) <= min(self.correlation_window, 0.2)
+            and _same_logical_target(self._pending.target, observation.target)
+        ):
+            target = _preferred_target(self._pending.target, observation.target)
+            self._pending = RecordedInteraction(
+                action, target, dict(parameters) if target is observation.target else self._pending.parameters,
+                self._pending.started_at, max(self._pending.completed_at, observation.timestamp),
+                self._pending.resulting_changes,
+                {
+                    **dict(self._pending.evidence),
+                    **dict(observation.evidence),
+                    "correlated_sources": sorted({
+                        str(self._pending.target.framework if self._pending.target else ""),
+                        str(observation.target.framework if observation.target else ""),
+                    }),
+                },
+                max(self._pending.confidence, 1.0 if target else 0.4),
+                self._match(target),
+            )
+            return
         if self._pending and (
             observation.timestamp - self._pending.completed_at > self.correlation_window
             or not _same_target(self._pending.target, observation.target)
@@ -243,6 +284,30 @@ def _same_target(left: CapturedComponent | None, right: CapturedComponent | None
     if left is None or right is None:
         return left is right
     return (left.framework, left.accessible_id, left.name, left.role, left.window) == (right.framework, right.accessible_id, right.name, right.role, right.window)
+
+
+def _same_logical_target(left: CapturedComponent | None, right: CapturedComponent | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    left_scope = (left.window or left.application or "").casefold()
+    right_scope = (right.window or right.application or "").casefold()
+    shared_identity = (
+        bool(left.accessible_id and right.accessible_id and left.accessible_id == right.accessible_id)
+        or bool(left.name and right.name and left.name.casefold() == right.name.casefold())
+    )
+    return (
+        shared_identity
+        and (not left.accessible_id or not right.accessible_id or left.accessible_id == right.accessible_id)
+        and (left.name or "").casefold() == (right.name or "").casefold()
+        and left.semantic_type() == right.semantic_type()
+        and (not left_scope or not right_scope or left_scope == right_scope)
+    )
+
+
+def _preferred_target(left: CapturedComponent | None, right: CapturedComponent | None) -> CapturedComponent | None:
+    if right is not None and right.framework == "javafx":
+        return right
+    return left if left is not None else right
 
 
 def _action_type(value: str) -> ActionType:

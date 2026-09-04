@@ -171,6 +171,10 @@ public final class AutomationHarnessJavaFxAgent {
         if ("set_text".equals(op)) {
             return ok(FxRuntime.setText(mapValue(request.get("identification")), stringValue(request.get("value"))));
         }
+        if ("select_menu_path".equals(op)) {
+            return ok(FxRuntime.selectMenuPath(
+                    mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors"))));
+        }
         return error("unsupported op: " + op);
     }
 
@@ -316,6 +320,12 @@ public final class AutomationHarnessJavaFxAgent {
         private static final String MOUSE_EVENT = "javafx.scene.input.MouseEvent";
         private static final String EVENT_HANDLER = "javafx.event.EventHandler";
         private static final Set<String> INSTALLED_SCENES = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        private static final Set<String> INTERACTION_BOUNDARIES = Collections.unmodifiableSet(
+                new java.util.HashSet<String>(java.util.Arrays.asList(
+                        "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
+                        "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
+                        "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
+                        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab")));
 
         private FxRuntime() {
         }
@@ -593,6 +603,118 @@ public final class AutomationHarnessJavaFxAgent {
             });
         }
 
+        static Map<String, Object> selectMenuPath(
+                final Map<String, Object> identification,
+                final List<Object> selectors) throws Exception {
+            return onFx(() -> {
+                if (selectors.isEmpty()) {
+                    throw new IllegalArgumentException("menu path must not be empty");
+                }
+                NodeMatch root = unique(resolve(identification, true), identification);
+                Object current = root.node;
+                List<Object> traversed = new ArrayList<Object>();
+                for (int index = 0; index < selectors.size(); index++) {
+                    if (!(selectors.get(index) instanceof Map)) {
+                        throw new IllegalArgumentException("menu path selector must be an object");
+                    }
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> selector = (Map<String, Object>) selectors.get(index);
+                    Object child = menuChild(current, selector);
+                    boolean terminal = index == selectors.size() - 1;
+                    Method operation = findMethod(child.getClass(), terminal ? "fire" : "show");
+                    if (operation == null || operation.getParameterCount() != 0) {
+                        throw new UnsupportedOperationException(
+                                "JavaFX menu segment has no " + (terminal ? "fire()" : "show()")
+                                        + ": " + child.getClass().getName());
+                    }
+                    operation.invoke(child);
+                    traversed.add(menuSnapshot(child));
+                    current = child;
+                }
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "select_menu_item");
+                result.put("path", traversed);
+                return result;
+            });
+        }
+
+        private static Object menuChild(Object parent, Map<String, Object> selector) throws Exception {
+            List<Object> children = menuChildren(parent);
+            Map<String, Object> criteria = mapValueOrEmpty(selector.get("criteria"));
+            Integer ordinal = selector.get("ordinal") instanceof Number
+                    ? ((Number) selector.get("ordinal")).intValue() : null;
+            if (ordinal != null && ordinal >= 0 && ordinal < children.size()
+                    && payloadMatches(menuSnapshot(children.get(ordinal)), criteria)) {
+                return children.get(ordinal);
+            }
+            List<Object> matches = new ArrayList<Object>();
+            for (Object child : children) {
+                if (payloadMatches(menuSnapshot(child), criteria)) {
+                    matches.add(child);
+                }
+            }
+            if (matches.size() != 1) {
+                throw new IllegalArgumentException(
+                        "JavaFX menu selector matched " + matches.size() + " children: " + criteria);
+            }
+            return matches.get(0);
+        }
+
+        private static List<Object> menuChildren(Object parent) throws Exception {
+            Method method = findMethod(parent.getClass(), "getMenus");
+            if (method == null || method.getParameterCount() != 0) {
+                method = findMethod(parent.getClass(), "getItems");
+            }
+            if (method == null || method.getParameterCount() != 0) {
+                throw new UnsupportedOperationException(
+                        "JavaFX object is not a MenuBar, Menu, or ContextMenu: " + parent.getClass().getName());
+            }
+            return listValue(method.invoke(parent));
+        }
+
+        private static Map<String, Object> menuSnapshot(Object item) throws Exception {
+            Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            payload.put("class", item.getClass().getName());
+            payload.put("simple_class", item.getClass().getSimpleName());
+            payload.put("id", stringOrNull(call(item, "getId")));
+            payload.put("accessible_id", stringOrNull(call(item, "getId")));
+            payload.put("text", optionalNoArgString(item, "getText"));
+            payload.put("name", optionalNoArgString(item, "getText"));
+            String simple = item.getClass().getSimpleName();
+            String role = "Menu".equals(simple) ? "menu"
+                    : "CheckMenuItem".equals(simple) ? "check menu item"
+                    : "RadioMenuItem".equals(simple) ? "radio menu item" : "menu item";
+            payload.put("role", role);
+            payload.put("accessible_role", role);
+            List<Object> children = menuChildrenIfPresent(item);
+            if (!children.isEmpty()) {
+                List<Object> snapshots = new ArrayList<Object>();
+                for (Object child : children) snapshots.add(menuSnapshot(child));
+                payload.put("menu_children", snapshots);
+            }
+            return payload;
+        }
+
+        private static List<Object> menuChildrenIfPresent(Object parent) throws Exception {
+            if (!isInstance("javafx.scene.control.MenuBar", parent)
+                    && !isInstance("javafx.scene.control.Menu", parent)
+                    && !isInstance("javafx.scene.control.ContextMenu", parent)) {
+                return Collections.emptyList();
+            }
+            Method method = findMethod(parent.getClass(), "getMenus");
+            if (method == null || method.getParameterCount() != 0) method = findMethod(parent.getClass(), "getItems");
+            return method == null || method.getParameterCount() != 0
+                    ? Collections.emptyList() : listValue(method.invoke(parent));
+        }
+
+        private static boolean isInstance(String className, Object value) {
+            try {
+                return value != null && Class.forName(className).isInstance(value);
+            } catch (ClassNotFoundException ignored) {
+                return false;
+            }
+        }
+
         private static NodeMatch unique(Resolution resolution, Map<String, Object> identification) {
             if (resolution.matches.isEmpty()) {
                 throw new IllegalArgumentException("JavaFX component not found: " + identification);
@@ -820,6 +942,12 @@ public final class AutomationHarnessJavaFxAgent {
             Object parent = call(node, "getParent");
             if (parent != null) {
                 payload.put("parent", briefPayload(parent));
+            }
+            List<Object> menuChildren = menuChildrenIfPresent(node);
+            if (!menuChildren.isEmpty()) {
+                List<Object> snapshots = new ArrayList<Object>();
+                for (Object child : menuChildren) snapshots.add(menuSnapshot(child));
+                payload.put("menu_children", snapshots);
             }
             return payload;
         }
@@ -1053,23 +1181,33 @@ public final class AutomationHarnessJavaFxAgent {
         private static Object semanticNode(Object node) throws Exception {
             Object current = node;
             Object fallback = node;
-            for (int depth = 0; current != null && depth < 12; depth++) {
-                String id = stringOrNull(call(current, "getId"));
-                String accessibleText = stringOrNull(call(current, "getAccessibleText"));
-                String role = enumName(call(current, "getAccessibleRole"));
-                String className = current.getClass().getName();
-                if ((id != null && !id.isEmpty())
-                        || (accessibleText != null && !accessibleText.isEmpty())
-                        || hasSemanticProperty(current)
-                        || isApplicationClass(className)
-                        || (role != null && !"PARENT".equals(role) && !"NODE".equals(role))
-                        || className.startsWith("javafx.scene.control.")) {
+            for (int depth = 0; current != null && depth < 64; depth++) {
+                if (isInteractionBoundary(current)) {
                     return current;
                 }
-                fallback = current;
                 current = call(current, "getParent");
             }
             return fallback;
+        }
+
+        private static boolean isInteractionBoundary(Object node) {
+            Class<?> type = node.getClass();
+            boolean controlSubclass = false;
+            while (type != null) {
+                if (INTERACTION_BOUNDARIES.contains(type.getSimpleName())) return true;
+                if ("Control".equals(type.getSimpleName())) controlSubclass = true;
+                type = type.getSuperclass();
+            }
+            if (controlSubclass && isApplicationClass(node.getClass().getName())) return true;
+            if (hasSemanticProperty(node)) return true;
+            Method handler = findMethod(node.getClass(), "getOnMouseClicked");
+            if (handler != null && handler.getParameterCount() == 0) {
+                try {
+                    return handler.invoke(node) != null;
+                } catch (Throwable ignored) {
+                }
+            }
+            return false;
         }
 
         private static List<Object> windows() throws Exception {
