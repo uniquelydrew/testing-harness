@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 from automation_harness.models.component import CapturedComponent, ComponentState
+from automation_harness.drivers.atspi_driver import AtspiDriver, _deepest_at_point
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
     _event_coordinates,
@@ -149,6 +150,87 @@ def test_desktop_frame_event_source_falls_through_to_clicked_component():
     assert driver.point_snapshots == [(125, 240)]
     assert events == [_target()]
     assert not _is_recordable_target(desktop_frame)
+
+
+def test_point_hit_testing_excludes_highlight_overlay_application_subtree():
+    class Accessible:
+        def __init__(self, name, role, bounds=None, children=()):
+            self.name = name
+            self.role = role
+            self.bounds = bounds
+            self.children = list(children)
+
+        @property
+        def childCount(self):
+            return len(self.children)
+
+        def getChildAtIndex(self, index):
+            return self.children[index]
+
+        def getRoleName(self):
+            return self.role
+
+        def queryComponent(self):
+            return self
+
+        def getExtents(self, coordinate_type):
+            if self.bounds is None:
+                raise RuntimeError("structural node has no component geometry")
+            return SimpleNamespace(
+                x=self.bounds[0], y=self.bounds[1],
+                width=self.bounds[2], height=self.bounds[3],
+            )
+
+    button = Accessible("Open", "push button", (10, 20, 30, 40))
+    target_app = Accessible("Target", "application", children=(button,))
+    red_edge = Accessible("", "window", (9, 19, 32, 42))
+    harness_app = Accessible("Automation Harness Author", "application", children=(red_edge,))
+    desktop = Accessible("Desktop", "desktop", children=(target_app, harness_app))
+
+    resolved = _deepest_at_point(
+        desktop,
+        x=12,
+        y=22,
+        pyatspi=SimpleNamespace(DESKTOP_COORDS=0),
+        excluded_application_prefixes=("Automation Harness",),
+    )
+
+    assert resolved is button
+
+
+def test_recording_and_next_click_use_the_same_canonical_click_snapshot():
+    desktop_frame = replace(
+        _target(), name="main", role="desktop frame", accessible_id="-1",
+        application="Application Window", actions=(), bounds=(0, 0, 1024, 768),
+    )
+
+    class CanonicalDriver(AtspiDriver):
+        available = True
+
+        def capture_event_source_snapshot(self, source):
+            return desktop_frame
+
+        def capture_at_point_snapshot(self, x, y, *, excluded_application_prefixes=()):
+            return _target()
+
+    driver = CanonicalDriver()
+    expected = driver.capture_click_snapshot(
+        object(), (125, 240),
+        excluded_application_prefixes=("Automation Harness",),
+    )
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert highlighted == [expected]
 
 
 def test_resolved_target_is_acknowledged_before_next_interaction():

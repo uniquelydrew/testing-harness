@@ -366,6 +366,16 @@ class AtspiRecordingAdapter:
 
     def _resolve_pointer_event(self, event, coordinates):
         source = getattr(event, "source", None)
+        canonical = getattr(self.driver, "capture_click_snapshot", None)
+        if canonical is not None:
+            try:
+                return canonical(
+                    source,
+                    coordinates,
+                    excluded_application_prefixes=("Automation Harness",),
+                )
+            except Exception:
+                return None
         if source is not None:
             try:
                 snapshot = getattr(self.driver, "capture_event_source_snapshot", None)
