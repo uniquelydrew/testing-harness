@@ -69,6 +69,9 @@ class AuthoringApp:
         self.recording_session_factory = recording_session_factory
         self.recording_session: RecordingSession | None = None
         self.recording_stop_window = None
+        self.recording_stop_button = None
+        self._recording_stop_active = False
+        self._recorded_object_save_active = False
         self.recorded_interactions: list[RecordedInteraction] = []
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
@@ -951,31 +954,58 @@ class AuthoringApp:
         stop.set_position(Gtk.WindowPosition.CENTER)
         stop.show_all()
         self.recording_stop_window = stop
+        self.recording_stop_button = button
 
     def _restore_after_recording(self) -> None:
         if self.recording_stop_window is not None:
             self.recording_stop_window.destroy()
             self.recording_stop_window = None
+        self.recording_stop_button = None
         self.window.show_all()
         self.window.present()
 
     def stop_recording(self) -> None:
-        if self.recording_session is None:
+        if self.recording_session is None or self._recording_stop_active:
             return
-        try:
-            self.recorded_interactions = list(self.recording_session.stop())
-        except Exception as exc:
-            self._error("Recording", "%s: %s" % (type(exc).__name__, exc))
-            return
-        finally:
-            self.start_recording_button.set_sensitive(True)
-            self.stop_recording_button.set_sensitive(False)
-            self._restore_after_recording()
+        self._recording_stop_active = True
+        self.stop_recording_button.set_sensitive(False)
+        if self.recording_stop_button is not None:
+            self.recording_stop_button.set_sensitive(False)
+            self.recording_stop_button.set_label("Stopping…")
+        self._set_status("Stopping recording…")
+        # Restore the main window before waiting on accessibility transports.
+        # Keeping GTK's main loop live also lets AT-SPI finish any callback
+        # already resolving the floating stop control.
+        self._restore_after_recording()
+        session = self.recording_session
+
+        def worker():
+            try:
+                interactions = list(session.stop())
+            except Exception as exc:
+                GLib.idle_add(self._finish_recording_stop, None, exc)
+            else:
+                GLib.idle_add(self._finish_recording_stop, interactions, None)
+
+        threading.Thread(target=worker, name="automation-recording-stop", daemon=True).start()
+
+    def _finish_recording_stop(self, interactions=None, error=None):
+        self._recording_stop_active = False
+        self.recording_session = None
+        self.start_recording_button.set_sensitive(True)
+        self.stop_recording_button.set_sensitive(False)
+        self._restore_after_recording()
+        if error is not None:
+            self._set_status("Recording failed to stop cleanly")
+            self._error("Recording", "%s: %s" % (type(error).__name__, error))
+            return False
+        self.recorded_interactions = list(interactions or ())
         self.refresh_recorded_interactions()
         new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
         self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
         if new_count:
             self._save_recorded_objects_dialog()
+        return False
 
     def refresh_recorded_interactions(self) -> None:
         self.recording_store.clear()
@@ -985,6 +1015,8 @@ class AuthoringApp:
             self.recording_store.append((str(index), interaction.action.value, target_name, json.dumps(dict(interaction.parameters), separators=(",", ":")), match.component_id or match.status.replace("_", " "), "%.0f%%" % (interaction.confidence * 100)))
 
     def _save_recorded_objects_dialog(self) -> None:
+        if self._recorded_object_save_active:
+            return
         dialog = Gtk.Dialog(title="Save recorded objects", transient_for=self.window, modal=True)
         dialog.add_buttons(
             "Later", Gtk.ResponseType.CANCEL,
@@ -999,30 +1031,45 @@ class AuthoringApp:
         if response == Gtk.ResponseType.CANCEL:
             return
         destination = self.repository_path
-        if response == 1 and destination is None:
+        mode = "current"
+        if response == 1:
+            mode = "existing"
+        elif response == 3:
+            mode = "new"
+        elif response == 2:
+            destination = None
+            mode = "plan"
+        if mode == "existing":
             filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Select Existing Object Repository")
             if not filename: return
             destination = Path(filename)
-            try: self.repository = ComponentRepository.load([destination])
-            except Exception as exc: return self._error("Object Repository", "%s: %s" % (type(exc).__name__, exc))
-            self.repository_path = destination
-        elif response == 3:
+        elif mode == "new":
             filename = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save New Object Repository")
             if not filename: return
             destination = Path(filename)
-            self.repository = ComponentRepository({})
-            self.repository_path = destination
-        elif response == 2:
-            destination = None
-        try:
-            self._persist_recorded_objects(destination)
-        except Exception as exc:
-            return self._error("Save recorded objects", "%s: %s" % (type(exc).__name__, exc))
+        self._recorded_object_save_active = True
+        self._set_status("Saving recorded objects…")
+        interactions = tuple(self.recorded_interactions)
 
-    def _persist_recorded_objects(self, destination) -> None:
-        repository = self.repository
-        updated = list(self.recorded_interactions)
-        saved = 0
+        def worker():
+            try:
+                repository = (
+                    ComponentRepository.load([destination]) if mode == "existing"
+                    else ComponentRepository({}) if mode == "new"
+                    else self.repository
+                )
+                result = self._build_recorded_objects(repository, interactions)
+                if destination is not None:
+                    result[0].save(Path(destination))
+            except Exception as exc:
+                GLib.idle_add(self._finish_recorded_object_save, None, destination, mode, exc)
+            else:
+                GLib.idle_add(self._finish_recorded_object_save, result, destination, mode, None)
+
+        threading.Thread(target=worker, name="automation-recorded-object-save", daemon=True).start()
+
+    def _build_recorded_objects(self, repository, interactions):
+        updated = list(interactions)
         saved_ids = []
         for index, interaction in enumerate(updated):
             if interaction.repository_match.status != "new_candidate" or interaction.target is None:
@@ -1031,20 +1078,29 @@ class AuthoringApp:
             definition = self.capture.definition_from_capture(component_id, interaction.target)
             repository = repository.with_component(definition)
             updated[index] = replace(interaction, repository_match=RepositoryMatch("known_unique", (component_id,)))
-            saved += 1
             saved_ids.append(component_id)
+        return repository, updated, saved_ids
+
+    def _finish_recorded_object_save(self, result, destination, mode, error):
+        self._recorded_object_save_active = False
+        if error is not None:
+            self._set_status("Recorded objects were not saved")
+            self._error("Save recorded objects", "%s: %s" % (type(error).__name__, error))
+            return False
+        repository, updated, saved_ids = result
         self.repository = repository
         self.recorded_interactions = updated
-        if destination is not None:
-            repository.save(Path(destination))
-        else:
+        if mode == "plan":
             document = repository.to_document()["components"]
             inline = dict(self.plan.objects)
             inline.update({component_id: document[component_id] for component_id in saved_ids})
             self.plan = replace(self.plan, objects=inline)
+        elif destination is not None:
+            self.repository_path = Path(destination)
         self.refresh_objects(); self.refresh_recorded_interactions()
         location = "current test plan" if destination is None else str(destination)
-        self._set_status("Saved %d recorded object(s) to %s" % (saved, location))
+        self._set_status("Saved %d recorded object(s) to %s" % (len(saved_ids), location))
+        return False
 
     def keep_recorded_interaction(self) -> None:
         if self._selected(self.recording_tree) is not None:

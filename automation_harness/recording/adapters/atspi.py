@@ -1,34 +1,30 @@
 """AT-SPI event adapter for recording native GTK and Swing interactions."""
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any, Callable
 
-from automation_harness.drivers.atspi_driver import _capture_accessible, _pyatspi
+from automation_harness.drivers.atspi_driver import AtspiDriver, _capture_accessible, _pyatspi
+from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
 
 
 class AtspiRecordingAdapter:
     """Translate bounded AT-SPI events into the framework-neutral observation stream."""
 
-    def __init__(self) -> None:
+    def __init__(self, driver=None) -> None:
+        self.driver = driver or AtspiDriver()
         self._emit: Callable[[Observation], None] | None = None
-        self._thread: threading.Thread | None = None
+        self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
         self._listeners: list[tuple[Callable[[Any], None], str]] = []
-        self._started = threading.Event()
 
     @property
     def available(self) -> bool:
-        try:
-            _pyatspi()
-        except Exception:
-            return False
-        return True
+        return bool(self.driver.available)
 
     def start(self, emit: Callable[[Observation], None]) -> None:
-        if self._thread is not None:
+        if self._lease is not None:
             raise RuntimeError("AT-SPI recording adapter is already active")
         self._emit = emit
         self._pyatspi = _pyatspi()
@@ -39,36 +35,53 @@ class AtspiRecordingAdapter:
             (self._action, "object:state-changed:selected"),
             (self._text, "object:text-changed"),
         ]
-        for callback, event_type in self._listeners:
-            self._pyatspi.Registry.registerEventListener(callback, event_type)
-        self._thread = threading.Thread(target=self._run, name="atspi-recording", daemon=True)
-        self._thread.start()
-        self._started.wait(timeout=1.0)
+        try:
+            for callback, event_type in self._listeners:
+                self._pyatspi.Registry.registerEventListener(callback, event_type)
+            self._lease = acquire_atspi_registry(self._pyatspi)
+        except Exception:
+            for callback, event_type in self._listeners:
+                try:
+                    self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+                except Exception:
+                    pass
+            self._listeners = []
+            self._emit = None
+            raise
 
     def stop(self) -> None:
-        if self._thread is None:
+        if self._lease is None:
             return
+        lease = self._lease
+        self._lease = None
         try:
             for callback, event_type in self._listeners:
                 self._pyatspi.Registry.deregisterEventListener(callback, event_type)
-            self._pyatspi.Registry.stop()
         finally:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+            lease.close()
             self._listeners = []
             self._emit = None
 
-    def _run(self) -> None:
-        self._started.set()
-        self._pyatspi.Registry.start()
-
-    def _target(self, event: Any):
+    def _target(self, event: Any, coordinates=None):
+        if coordinates is not None:
+            try:
+                return self.driver.capture_scoped_at_point(*coordinates)
+            except Exception:
+                # Some AT-SPI implementations omit useful device coordinates.
+                # Fall back only when the event source is itself a semantic
+                # component rather than an application/window container.
+                pass
         source = getattr(event, "source", None)
         if source is None:
             return None
         try:
             captured = _capture_accessible(source, self._pyatspi)
-            if (captured.application or "").startswith("Automation Harness") or captured.name == "Stop Recording":
+            structural_roles = {"application", "desktop", "frame", "window", "root pane"}
+            if (
+                (captured.application or "").startswith("Automation Harness")
+                or captured.name == "Stop Recording"
+                or (captured.role or "").replace("_", " ").casefold() in structural_roles
+            ):
                 return None
             return captured
         except Exception:
@@ -78,12 +91,13 @@ class AtspiRecordingAdapter:
         event_type = str(getattr(event, "type", "")).casefold()
         if not event_type.endswith(("1r", "3r")):
             return
-        target = self._target(event)
+        coordinates = _event_coordinates(event)
+        target = self._target(event, coordinates)
         if target is None:
             return
         self._publish(PointerInteraction(
-            time.monotonic(), "atspi", target, {"event_type": event_type},
-            "secondary" if event_type.endswith("3r") else "primary", "released", None,
+            time.monotonic(), "atspi", target, {"event_type": event_type, "coordinates": coordinates},
+            "secondary" if event_type.endswith("3r") else "primary", "released", coordinates,
         ))
 
     def _action(self, event: Any) -> None:
@@ -121,3 +135,14 @@ class AtspiRecordingAdapter:
     def _publish(self, observation: Observation) -> None:
         if self._emit is not None:
             self._emit(observation)
+
+
+def _event_coordinates(event: Any):
+    """Return AT-SPI device-event desktop coordinates when supplied."""
+    x = getattr(event, "detail1", None)
+    y = getattr(event, "detail2", None)
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (x, y)):
+        return None
+    if x < 0 or y < 0:
+        return None
+    return (int(x), int(y))

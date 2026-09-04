@@ -3,12 +3,14 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Mapping
 
+from automation_harness.drivers.atspi_registry import acquire_atspi_registry
 from automation_harness.models.component import (
     AtspiIdentification,
     CapturedComponent,
+    ComponentStrategy,
     ComponentState,
     ResolvedComponent,
 )
@@ -127,7 +129,7 @@ class AtspiDriver:
         match = _deepest_at_point(desktop, x=x, y=y, pyatspi=pyatspi)
         if match is None:
             raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
-        return _capture_accessible(match, pyatspi)
+        return _capture_semantic_accessible(match, desktop, pyatspi)
 
     def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
         """Identify the application under a point, then resolve within it.
@@ -152,7 +154,7 @@ class AtspiDriver:
                 f"no live component matched desktop point ({x}, {y}) "
                 f"within application {application_name!r}"
             )
-        return _capture_accessible(target, pyatspi)
+        return _capture_semantic_accessible(target, desktop, pyatspi)
 
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
         """Wait for one desktop mouse press and capture its accessible source.
@@ -171,16 +173,14 @@ class AtspiDriver:
         baseline_signature = _accessible_signature(baseline_focus, pyatspi) if baseline_focus is not None else None
         outcome: queue.Queue[tuple[CapturedComponent | None, BaseException | None]] = queue.Queue(maxsize=1)
         completed = threading.Event()
+        finish_lock = threading.Lock()
 
         def finish(captured: CapturedComponent | None, error: BaseException | None) -> None:
-            if completed.is_set():
-                return
-            completed.set()
-            outcome.put((captured, error))
-            try:
-                pyatspi.Registry.stop()
-            except Exception:
-                pass
+            with finish_lock:
+                if completed.is_set():
+                    return
+                outcome.put((captured, error))
+                completed.set()
 
         def on_target_event(event: Any) -> None:
             event_type = str(getattr(event, "type", ""))
@@ -217,7 +217,7 @@ class AtspiDriver:
                 )
                 if target is None:
                     raise LookupError("no live component matched the clicked point within its application")
-                captured = _capture_accessible(target, pyatspi)
+                captured = _capture_semantic_accessible(target, pyatspi.Registry.getDesktop(0), pyatspi)
                 finish(captured, None)
             except BaseException as exc:
                 finish(None, exc)
@@ -225,13 +225,14 @@ class AtspiDriver:
         event_types = ("mouse:button:1p", "object:state-changed:focused")
         for event_type in event_types:
             pyatspi.Registry.registerEventListener(on_target_event, event_type)
-        timer = threading.Timer(timeout, lambda: finish(None, TimeoutError("no object was clicked before capture timed out")))
-        timer.daemon = True
-        timer.start()
         try:
-            pyatspi.Registry.start()
+            lease = acquire_atspi_registry(pyatspi)
+            try:
+                if not completed.wait(timeout):
+                    finish(None, TimeoutError("no object was clicked before capture timed out"))
+            finally:
+                lease.close()
         finally:
-            timer.cancel()
             try:
                 for event_type in event_types:
                     pyatspi.Registry.deregisterEventListener(on_target_event, event_type)
@@ -641,6 +642,69 @@ def _deepest_at_point(node: Any, *, x: int, y: int, pyatspi: Any) -> Any | None:
         if left <= x < left + width and top <= y < top + height:
             return node
     return None
+
+
+_SEMANTIC_ROLES = frozenset({
+    "push button", "button", "toggle button", "check box", "radio button",
+    "combo box", "entry", "text", "password text", "spin button", "slider",
+    "list item", "table cell", "tree item", "menu", "menu item",
+    "check menu item", "radio menu item", "page tab", "link",
+})
+_PRESENTATION_ROLES = frozenset({
+    "label", "static", "paragraph", "icon", "image", "section", "panel",
+    "filler", "unknown",
+})
+
+
+def _semantic_accessible(node: Any) -> Any:
+    """Promote a presentation leaf to the nearest actionable semantic owner."""
+    current = node
+    role = (_role_name(current) or "").replace("_", " ").casefold()
+    if role in _SEMANTIC_ROLES or _actions(current):
+        return current
+    if role not in _PRESENTATION_ROLES:
+        return current
+    parent = _parent(current)
+    while parent is not None:
+        parent_role = (_role_name(parent) or "").replace("_", " ").casefold()
+        if parent_role in _SEMANTIC_ROLES or _actions(parent):
+            return parent
+        if parent_role in {"application", "desktop", "frame", "window"}:
+            break
+        parent = _parent(parent)
+    return current
+
+
+def _capture_semantic_accessible(node: Any, search_root: Any, pyatspi: Any) -> CapturedComponent:
+    semantic = _semantic_accessible(node)
+    captured = _capture_accessible(semantic, pyatspi)
+    try:
+        identity = captured.candidate_identification()
+        candidates, _stages = _progressive_candidates(search_root, identity)
+    except Exception:
+        return captured
+    if len(candidates) <= 1:
+        return captured
+    ordinal = next(
+        (index for index, candidate in enumerate(candidates) if candidate is semantic or candidate == semantic),
+        None,
+    )
+    if ordinal is None:
+        return captured
+    explicit = AtspiIdentification(identity.mandatory, identity.assistive, ordinal)
+    return replace(
+        captured,
+        authored_strategy=ComponentStrategy("atspi", {"identification": explicit.to_dict()}),
+        backend_properties={
+            **dict(captured.backend_properties),
+            "capture_promotion": {
+                "promoted": semantic is not node,
+                "physical_role": _role_name(node),
+                "semantic_role": _role_name(semantic),
+                "explicit_ordinal": ordinal,
+            },
+        },
+    )
 
 
 def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:

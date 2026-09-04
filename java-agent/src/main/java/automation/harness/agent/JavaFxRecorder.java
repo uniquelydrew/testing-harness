@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 final class JavaFxRecorder {
     private static final Set<Object> ATTACHED_SCENES = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final Set<Object> OBSERVED_TARGETS = Collections.newSetFromMap(new IdentityHashMap<>());
-    private static RecordingBuffer buffer;
+    private static volatile RecordingBuffer buffer;
     private static volatile CompletableFuture<Map<String, Object>> captureFuture;
 
     private JavaFxRecorder() { }

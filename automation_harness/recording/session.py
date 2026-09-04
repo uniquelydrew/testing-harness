@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from automation_harness.core.component_repository import ComponentRepository
@@ -77,73 +78,89 @@ class RecordingSession:
         self._active = False
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
+        # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
+        # Correlation is stateful, so every observation and lifecycle snapshot
+        # must be serialized as one transaction.
+        self._lock = threading.RLock()
+        self._lifecycle_lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        return self._active
+        with self._lock:
+            return self._active
 
     def start(self) -> None:
-        if self._active:
-            raise RuntimeError("recording session is already active")
-        self._active = True
-        try:
-            for adapter in self.adapters:
-                adapter.start(self.observe)
-        except Exception:
-            for adapter in reversed(self.adapters):
-                try:
-                    adapter.stop()
-                except Exception:
-                    pass
-            self._active = False
-            raise
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._active:
+                    raise RuntimeError("recording session is already active")
+                self._active = True
+            try:
+                for adapter in self.adapters:
+                    adapter.start(self.observe)
+            except Exception:
+                for adapter in reversed(self.adapters):
+                    try:
+                        adapter.stop()
+                    except Exception:
+                        pass
+                with self._lock:
+                    self._active = False
+                raise
 
     def stop(self) -> tuple[RecordedInteraction, ...]:
-        if not self._active:
-            return tuple(self._interactions)
-        try:
-            # Adapters may return their final source-filtered batch from stop;
-            # retain it for correlation before closing the session gate.
-            for adapter in reversed(self.adapters):
-                adapter.stop()
-        finally:
-            self._active = False
-            self._flush()
-        return tuple(self._interactions)
+        with self._lifecycle_lock:
+            with self._lock:
+                if not self._active:
+                    return tuple(self._interactions)
+            try:
+                # Adapters may return their final source-filtered batch from stop;
+                # retain it for correlation before closing the session gate.
+                for adapter in reversed(self.adapters):
+                    adapter.stop()
+            finally:
+                with self._lock:
+                    self._active = False
+                    self._flush()
+                    result = tuple(self._interactions)
+            return result
 
     def observations(self) -> tuple[Observation, ...]:
         """Diagnostics only; normal operation intentionally retains no raw stream."""
-        return tuple(self._diagnostics)
+        with self._lock:
+            return tuple(self._diagnostics)
 
     def interactions(self) -> tuple[RecordedInteraction, ...]:
-        return tuple(self._interactions) + ((self._pending,) if self._pending else ())
+        with self._lock:
+            return tuple(self._interactions) + ((self._pending,) if self._pending else ())
 
     def observe(self, observation: Observation) -> None:
-        if not self._active:
-            return
-        if self.diagnostics:
-            self._diagnostics.append(observation)
-        if isinstance(observation, PointerInteraction):
-            if observation.phase != "released" or observation.target is None:
+        with self._lock:
+            if not self._active:
                 return
-            action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
-            self._begin(action, observation, self._pointer_parameters(observation))
-        elif isinstance(observation, TextChanged):
-            if observation.target is not None and observation.after is not None:
-                self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
-        elif isinstance(observation, ActionFired):
-            if observation.target is None:
+            if self.diagnostics:
+                self._diagnostics.append(observation)
+            if isinstance(observation, PointerInteraction):
+                if observation.phase != "released" or observation.target is None:
+                    return
+                action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
+                self._begin(action, observation, self._pointer_parameters(observation))
+            elif isinstance(observation, TextChanged):
+                if observation.target is not None and observation.after is not None:
+                    self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
+            elif isinstance(observation, ActionFired):
+                if observation.target is None:
+                    return
+                if self._pending and _same_target(self._pending.target, observation.target):
+                    self._merge_action(observation)
+                else:
+                    self._begin(_action_type(observation.action), observation, {})
+            elif isinstance(observation, StateChanged):
+                if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
+                    self._add_delta(observation)
+            elif isinstance(observation, FocusChanged):
+                # Focus is correlation context only, never a standalone record.
                 return
-            if self._pending and _same_target(self._pending.target, observation.target):
-                self._merge_action(observation)
-            else:
-                self._begin(_action_type(observation.action), observation, {})
-        elif isinstance(observation, StateChanged):
-            if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
-                self._add_delta(observation)
-        elif isinstance(observation, FocusChanged):
-            # Focus is correlation context only, never a standalone record.
-            return
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
         if self._pending and (

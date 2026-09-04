@@ -330,9 +330,24 @@ class ObjectCaptureService:
         )
 
     def _best_identification(self, captured: CapturedComponent) -> AtspiIdentification:
-        identification = captured.candidate_identification()
-        assessments = self.assess(captured)
+        strategy = captured.candidate_strategy()
+        authored = strategy.options.get("identification") if strategy.type == "atspi" else None
+        if isinstance(authored, Mapping):
+            mandatory = authored.get("mandatory", {})
+            assistive = authored.get("assistive", {})
+            ordinal = authored.get("ordinal")
+            identification = AtspiIdentification(
+                mandatory=dict(mandatory) if isinstance(mandatory, Mapping) else {},
+                assistive=dict(assistive) if isinstance(assistive, Mapping) else {},
+                ordinal=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None,
+            )
+        else:
+            identification = captured.candidate_identification()
+        stages = self.driver.assess_identification(identification) if self.driver.available else ()
+        assessments = tuple(stages)
         if not assessments:
+            if not self.driver.available:
+                return identification
             raise ValueError("captured object exposes no durable AT-SPI identification criteria")
         final = assessments[-1]
         if final.matches == 0:

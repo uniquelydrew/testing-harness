@@ -27,7 +27,7 @@ final class AgentServer {
         server.createContext("/record_stop", this::handle);
         server.createContext("/capture_next_click", this::handle);
         server.createContext("/hit_test", this::handle);
-        server.setExecutor(Executors.newSingleThreadExecutor(runnable -> {
+        server.setExecutor(Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "automation-harness-agent");
             thread.setDaemon(true);
             return thread;
@@ -54,7 +54,9 @@ final class AgentServer {
             JavaFxRecorder.start(recording);
             result.put("observations", recording.drain());
         } else if (path.equals("/record_read")) {
-            result.put("observations", recording.drain());
+            result.put("observations", recording.awaitAndDrain(
+                (long) (number(request, "timeout", 0.25) * 1000)
+            ));
         } else if (path.equals("/record_stop")) {
             JavaFxRecorder.stop();
             result.put("observations", recording.stop());
