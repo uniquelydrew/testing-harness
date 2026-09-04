@@ -16,6 +16,7 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.repository_merge import component_diff, definitions_equal
 from automation_harness.formats import REPOSITORY_SUFFIX
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeUnavailable
 
 
 def _install_capture_backend(app_module):
@@ -321,9 +322,18 @@ def _install_javafx_authoring(app_module):
                             identification=strategy.options.get("identification")
                         )
                     elif strategy.type == "javafx":
-                        captured = self.capture.javafx_driver.inspect(
-                            identification=strategy.options.get("identification")
-                        )
+                        process_id = definition.properties.get("bridge_pid")
+                        try:
+                            captured = self.capture.javafx_driver.inspect(
+                                identification=strategy.options.get("identification"),
+                                process_id=process_id,
+                            )
+                        except JavaFxBridgeUnavailable:
+                            # PID is session metadata. If the application was
+                            # restarted, retry its durable identity globally.
+                            captured = self.capture.javafx_driver.inspect(
+                                identification=strategy.options.get("identification"),
+                            )
                     else:
                         continue
                     GLib.idle_add(self._finish_repository_highlight, captured, None)

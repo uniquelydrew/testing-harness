@@ -135,7 +135,10 @@ class HybridObjectCaptureService(ObjectCaptureService):
         identification = strategy.options.get("identification")
         if not isinstance(identification, Mapping):
             raise ValueError("captured JavaFX object has no identification mapping")
-        stages = self.javafx_driver.assess_identification(identification)
+        stages = self.javafx_driver.assess_identification(
+            identification,
+            process_id=_capture_process_id(captured),
+        )
         return tuple(
             LocatorAssessment(
                 source=stage.source,
@@ -177,7 +180,10 @@ class HybridObjectCaptureService(ObjectCaptureService):
             raise ValueError("captured JavaFX object requires at least one mandatory identification condition")
 
         if validate_live and self._javafx_available():
-            stages = self.javafx_driver.assess_identification(identity)
+            stages = self.javafx_driver.assess_identification(
+                identity,
+                process_id=_capture_process_id(captured),
+            )
             if not stages or stages[-1].matches == 0:
                 raise ValueError("authored JavaFX identity does not resolve the captured object")
             remaining = stages[-1].matches
@@ -281,6 +287,14 @@ def _normalize_javafx_identity(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("JavaFX identification ordinal must be a non-negative integer")
         result["ordinal"] = ordinal
     return result
+
+
+def _capture_process_id(captured):
+    try:
+        value = int(dict(captured.backend_properties or {}).get("bridge_pid"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _javafx_criteria_stability(criteria: Mapping[str, Any]) -> dict[str, Any]:

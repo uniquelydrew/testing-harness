@@ -19,6 +19,7 @@ from automation_harness.authoring.capture_property_policy import (
     property_policy,
 )
 from automation_harness.authoring.identity_editor import _known_classes
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeUnavailable
 
 
 class ObjectIdentityWorkbench:
@@ -37,6 +38,7 @@ class ObjectIdentityWorkbench:
         self.name_entry = None
         self.selected_key = None
         self._loading = True
+        self._highlight_generation = 0
 
         self.window = Gtk.Window(title="Object Identity Workbench")
         self.window.set_transient_for(app.window)
@@ -425,17 +427,58 @@ class ObjectIdentityWorkbench:
 
     def highlight_selected(self):
         node = self._selected_node()
-        if node is None:
+        if node is None or not node.is_semantic:
             return
-        bounds = node.payload.get("bounds")
-        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
-            return self.app._info("Highlight", "The selected object has no screen bounds.")
-        rect = tuple(int(round(float(value))) for value in bounds)
         try:
-            self.app._show_highlight(rect, False)
-            GLib.timeout_add(1400, self._clear_highlight)
+            identity = self.current_identity()
+            original = self._captured_for_node(node)
         except Exception as exc:
-            self.app._error("Highlight failed", "%s: %s" % (type(exc).__name__, exc))
+            return self.app._error("Highlight failed", "%s: %s" % (type(exc).__name__, exc))
+        self._highlight_generation += 1
+        generation = self._highlight_generation
+        self._set_status("Resolving %s for highlight…" % node.label)
+
+        def worker():
+            try:
+                if str(getattr(original, "framework", "") or "") == "javafx":
+                    properties = dict(getattr(original, "backend_properties", {}) or {})
+                    process_id = properties.get("bridge_pid")
+                    try:
+                        resolved = self.app.capture.javafx_driver.inspect(
+                            identification=identity, process_id=process_id,
+                        )
+                    except JavaFxBridgeUnavailable:
+                        resolved = self.app.capture.javafx_driver.inspect(identification=identity)
+                else:
+                    resolved = self.app.capture.capture_by_locator(identification=identity)
+                if resolved.bounds is None:
+                    raise LookupError("resolved object has no screen bounds")
+            except Exception as exc:
+                GLib.idle_add(self._highlight_resolution_failed, generation, exc)
+            else:
+                GLib.idle_add(self._highlight_resolution_ready, generation, resolved)
+
+        threading.Thread(
+            target=worker,
+            name="workbench-highlight-resolver",
+            daemon=True,
+        ).start()
+
+    def _highlight_resolution_ready(self, generation, captured):
+        if generation != self._highlight_generation:
+            return False
+        rect = tuple(int(round(float(value))) for value in captured.bounds)
+        self.app._show_highlight(rect, False)
+        GLib.timeout_add(1400, self._clear_highlight)
+        self._set_status("Highlighted resolved object")
+        return False
+
+    def _highlight_resolution_failed(self, generation, error):
+        if generation != self._highlight_generation:
+            return False
+        self._set_status("Highlight resolution failed")
+        self.app._error("Highlight failed", "%s: %s" % (type(error).__name__, error))
+        return False
 
     def _clear_highlight(self):
         self.app._clear_highlight()

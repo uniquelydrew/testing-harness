@@ -218,8 +218,14 @@ class JavaFxBridgeDriver:
             )
         )
 
-    def inspect(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> CapturedComponent:
-        endpoint, node, _trace = self._find_unique(identification)
+    def inspect(
+        self,
+        *,
+        identification: Mapping[str, Any] | None = None,
+        process_id: int | None = None,
+        **_kwargs: Any,
+    ) -> CapturedComponent:
+        endpoint, node, _trace = self._find_unique(identification, process_id=process_id)
         return _captured(endpoint, node)
 
     def resolve(
@@ -312,12 +318,22 @@ class JavaFxBridgeDriver:
             "path": response.get("path", []),
         }
 
-    def count_matches(self, *, identification: Mapping[str, Any] | None = None) -> int:
-        matches, _trace = self._find_matches(identification)
+    def count_matches(
+        self,
+        *,
+        identification: Mapping[str, Any] | None = None,
+        process_id: int | None = None,
+    ) -> int:
+        matches, _trace = self._find_matches(identification, process_id=process_id)
         return len(matches)
 
-    def assess_identification(self, identification: Mapping[str, Any]) -> tuple[JavaFxResolutionStage, ...]:
-        _matches, trace = self._find_matches(identification)
+    def assess_identification(
+        self,
+        identification: Mapping[str, Any],
+        *,
+        process_id: int | None = None,
+    ) -> tuple[JavaFxResolutionStage, ...]:
+        _matches, trace = self._find_matches(identification, process_id=process_id)
         return trace
 
     def _captured_for_capture(
@@ -365,8 +381,10 @@ class JavaFxBridgeDriver:
     def _find_unique(
         self,
         identification: Mapping[str, Any] | None,
+        *,
+        process_id: int | None = None,
     ) -> tuple[JavaFxBridgeEndpoint, Mapping[str, Any], tuple[JavaFxResolutionStage, ...]]:
-        matches, trace = self._find_matches(identification)
+        matches, trace = self._find_matches(identification, process_id=process_id)
         raw = dict(identification or {})
         ordinal = raw.get("ordinal")
         if len(matches) > 1 and isinstance(ordinal, int) and not isinstance(ordinal, bool):
@@ -383,10 +401,16 @@ class JavaFxBridgeDriver:
     def _find_matches(
         self,
         identification: Mapping[str, Any] | None,
+        *,
+        process_id: int | None = None,
     ) -> tuple[list[tuple[JavaFxBridgeEndpoint, Mapping[str, Any]]], tuple[JavaFxResolutionStage, ...]]:
-        endpoints = self.endpoints()
+        endpoints = tuple(
+            endpoint for endpoint in self.endpoints()
+            if process_id is None or endpoint.pid == process_id
+        )
         if not endpoints:
-            raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered")
+            suffix = " for pid %s" % process_id if process_id is not None else ""
+            raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered" + suffix)
         identity = dict(identification or {})
         matches = []
         stage_totals = []

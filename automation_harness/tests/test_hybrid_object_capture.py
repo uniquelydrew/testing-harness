@@ -76,7 +76,7 @@ class _JavaFxSuccess:
         time.sleep(0.02)
         return _capture("javafx")
 
-    def assess_identification(self, identification):
+    def assess_identification(self, identification, *, process_id=None):
         return (_Stage("mandatory", dict(identification["mandatory"]), 1),)
 
 
@@ -124,9 +124,37 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert "activate" in definition.actions
 
 
+def test_javafx_definition_validation_is_scoped_to_captured_process():
+    class ProcessAware(_JavaFxSuccess):
+        process_ids = []
+
+        def assess_identification(self, identification, *, process_id=None):
+            self.process_ids.append(process_id)
+            return super().assess_identification(
+                identification, process_id=process_id,
+            )
+
+    driver = ProcessAware()
+    service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=driver)
+    captured = _capture("javafx")
+    captured = CapturedComponent(
+        **{
+            **captured.__dict__,
+            "backend_properties": {
+                **dict(captured.backend_properties),
+                "bridge_pid": 12001,
+            },
+        }
+    )
+
+    service.definition_from_capture("mvd.camera_selector", captured)
+
+    assert driver.process_ids == [12001]
+
+
 def test_recorded_javafx_definition_does_not_require_closed_transient_to_reappear():
     class ClosedTransient(_JavaFxSuccess):
-        def assess_identification(self, identification):
+        def assess_identification(self, identification, *, process_id=None):
             raise AssertionError("closed transient must not be queried during persistence")
 
     service = HybridObjectCaptureService(
@@ -144,7 +172,7 @@ def test_recorded_javafx_definition_does_not_require_closed_transient_to_reappea
 
 def test_javafx_definition_rejects_ambiguous_identity():
     class Ambiguous(_JavaFxSuccess):
-        def assess_identification(self, identification):
+        def assess_identification(self, identification, *, process_id=None):
             return (_Stage("mandatory", dict(identification["mandatory"]), 2),)
 
     service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=Ambiguous())
