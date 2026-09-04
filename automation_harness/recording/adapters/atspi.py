@@ -26,8 +26,7 @@ class _PointerRecordingWorker:
     STOPPED = "stopped"
     _STOP = object()
 
-    def __init__(self, resolve, publish, acknowledge=None, acknowledgement_seconds=0.3):
-        self._resolve = resolve
+    def __init__(self, publish, acknowledge=None, acknowledgement_seconds=0.3):
         self._publish = publish
         self._acknowledge = acknowledge
         self._acknowledgement_seconds = max(0.0, float(acknowledgement_seconds))
@@ -72,8 +71,8 @@ class _PointerRecordingWorker:
             self._queue.put(command)
             return True
 
-    def accept_pointer(self, event_type, coordinates, timestamp):
-        return self._accept(("pointer", event_type, coordinates, timestamp))
+    def accept_pointer(self, event_type, coordinates, timestamp, target=None):
+        return self._accept(("pointer", event_type, coordinates, timestamp, target))
 
     def accept_action(self, property_name, selected, event_type, timestamp):
         return self._accept(("action", property_name, selected, event_type, timestamp))
@@ -141,11 +140,11 @@ class _PointerRecordingWorker:
                     {"event_type": event_type}, None, str(after),
                 ))
             return
-        _kind, event_type, coordinates, timestamp = item
+        _kind, event_type, coordinates, timestamp, resolved_target = item
         button = "secondary" if event_type.endswith(("3p", "3r")) else "primary"
         if event_type.endswith(("1p", "3p")):
             self._set_state(self.RESOLVING)
-            target = self._resolve(coordinates)
+            target = resolved_target
             if target is not None:
                 self._pressed[button] = target
                 self._last_target = target
@@ -158,8 +157,7 @@ class _PointerRecordingWorker:
             return
         target = self._pressed.pop(button, None)
         if target is None:
-            self._set_state(self.RESOLVING)
-            target = self._resolve(coordinates)
+            target = resolved_target
         if target is not None:
             self._publish(PointerInteraction(
                 timestamp, "atspi", target,
@@ -195,8 +193,10 @@ class AtspiRecordingAdapter:
         self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
         self._listeners: list[tuple[Callable[[Any], None], str]] = []
+        self._callback_condition = threading.Condition()
+        self._callbacks_accepting = False
+        self._active_callbacks = 0
         self._pointer_worker = _PointerRecordingWorker(
-            self._resolve_pointer_target,
             self._publish,
             acknowledge=on_resolved,
             acknowledgement_seconds=acknowledgement_seconds,
@@ -212,6 +212,8 @@ class AtspiRecordingAdapter:
         self._emit = emit
         self._pyatspi = _pyatspi()
         self._pointer_worker.start()
+        with self._callback_condition:
+            self._callbacks_accepting = True
         self._listeners = [
             (self._pointer, "mouse:button:1p"),
             (self._pointer, "mouse:button:1r"),
@@ -226,6 +228,8 @@ class AtspiRecordingAdapter:
                 self._pyatspi.Registry.registerEventListener(callback, event_type)
             self._lease = acquire_atspi_registry(self._pyatspi)
         except Exception:
+            with self._callback_condition:
+                self._callbacks_accepting = False
             for callback, event_type in self._listeners:
                 try:
                     self._pyatspi.Registry.deregisterEventListener(callback, event_type)
@@ -241,9 +245,14 @@ class AtspiRecordingAdapter:
             return
         lease = self._lease
         self._lease = None
+        with self._callback_condition:
+            self._callbacks_accepting = False
         try:
             for callback, event_type in self._listeners:
                 self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            with self._callback_condition:
+                while self._active_callbacks:
+                    self._callback_condition.wait()
         finally:
             self._pointer_worker.stop_and_drain()
             lease.close()
@@ -283,14 +292,44 @@ class AtspiRecordingAdapter:
             return None
 
     def _pointer(self, event: Any) -> None:
+        if not self._begin_callback():
+            return
+        try:
+            self._handle_pointer(event)
+        finally:
+            self._end_callback()
+
+    def _handle_pointer(self, event: Any) -> None:
         event_type = str(getattr(event, "type", "")).casefold()
         if not event_type.endswith(("1p", "1r", "3p", "3r")):
             return
+        coordinates = _event_coordinates(event)
+        target = None
+        # AT-SPI accessibility proxies are bound to the Registry dispatch
+        # context. Resolve the press here, then pass only the immutable capture
+        # to the correlation worker. Resolving on the worker blocks until the
+        # registry is stopped, which delays acknowledgement until shutdown.
+        if event_type.endswith(("1p", "3p")):
+            target = self._resolve_pointer_target(coordinates)
         self._pointer_worker.accept_pointer(
             event_type,
-            _event_coordinates(event),
+            coordinates,
             time.monotonic(),
+            target,
         )
+
+    def _begin_callback(self):
+        with self._callback_condition:
+            if not self._callbacks_accepting:
+                return False
+            self._active_callbacks += 1
+            return True
+
+    def _end_callback(self):
+        with self._callback_condition:
+            self._active_callbacks -= 1
+            if not self._active_callbacks:
+                self._callback_condition.notify_all()
 
     def _resolve_pointer_target(self, coordinates):
         if coordinates is None:
