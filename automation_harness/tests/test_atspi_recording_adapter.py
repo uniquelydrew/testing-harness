@@ -374,6 +374,72 @@ def test_physical_press_resolves_and_highlights_before_release_arrives():
     assert emitted[0].timestamp == 2.0
 
 
+def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
+    javafx_target = replace(
+        _target(), name="File", accessible_id="fileMenu", role="menu",
+        application="ERSA test.build.0", framework="javafx",
+        native_class="com.sun.javafx.scene.control.MenuBarButton",
+    )
+
+    class JavaFxDriver:
+        def __init__(self):
+            self.points = []
+
+        def capture_at_point(self, x, y):
+            self.points.append((x, y))
+            return javafx_target
+
+    atspi = _Driver(_target())
+    atspi.target = replace(
+        atspi.target, name="main", role="desktop frame", accessible_id="-1",
+        application="Application Window", actions=(),
+    )
+    javafx = JavaFxDriver()
+    highlighted = []
+    emitted = []
+    adapter = AtspiRecordingAdapter(
+        atspi,
+        javafx_driver=javafx,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    adapter._physical_pointer("mouse:button:1p", (140, 70), 1.0)
+    adapter._physical_pointer("mouse:button:1r", (140, 70), 2.0)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert javafx.points == [(140, 70)]
+    assert atspi.point_snapshots == [(140, 70)]
+    assert highlighted == [javafx_target]
+    assert len(emitted) == 1
+    assert emitted[0].target is javafx_target
+    assert emitted[0].source == "javafx"
+
+
+def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
+    harness = replace(
+        _target(), application="Automation Harness Author",
+        name="Stop Recording",
+    )
+
+    class JavaFxDriver:
+        called = False
+
+        def capture_at_point(self, x, y):
+            self.called = True
+            return replace(_target(), framework="javafx")
+
+    javafx = JavaFxDriver()
+    adapter = AtspiRecordingAdapter(_Driver(harness), javafx_driver=javafx)
+
+    assert adapter._resolve_physical_pointer_target((140, 70)) is None
+    assert not javafx.called
+
+
 def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
     highlighted = []
     adapter = AtspiRecordingAdapter(

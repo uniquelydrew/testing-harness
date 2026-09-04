@@ -13,6 +13,7 @@ from automation_harness.drivers.atspi_driver import (
     _pyatspi,
 )
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
 from automation_harness.recording.x11_pointer import X11PointerMonitor
 
@@ -170,8 +171,9 @@ class _PointerRecordingWorker:
         if target is None:
             target = resolved_target
         if target is not None:
+            source = "javafx" if getattr(target, "framework", None) == "javafx" else "atspi"
             self._publish(PointerInteraction(
-                timestamp, "atspi", target,
+                timestamp, source, target,
                 {"event_type": event_type, "coordinates": coordinates},
                 button, "released", coordinates,
             ))
@@ -211,6 +213,7 @@ class AtspiRecordingAdapter:
         hold_resolution_timeout=2.0,
         hold_retry_interval=0.04,
         pointer_monitor=None,
+        javafx_driver=None,
     ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
@@ -218,6 +221,10 @@ class AtspiRecordingAdapter:
         self.hold_resolution_timeout = max(0.0, float(hold_resolution_timeout))
         self.hold_retry_interval = max(0.005, float(hold_retry_interval))
         self._pointer_monitor = pointer_monitor or X11PointerMonitor()
+        # Capture Next Click uses this native bridge. Physical recording presses
+        # must query the same bridge before falling back to AT-SPI; OpenJFX does
+        # not reliably expose its scene graph through Linux AT-SPI.
+        self._javafx_driver = javafx_driver or JavaFxBridgeDriver()
         self._using_x11_pointer = False
         self._emit: Callable[[Observation], None] | None = None
         self._lease: AtspiRegistryLease | None = None
@@ -385,14 +392,39 @@ class AtspiRecordingAdapter:
         try:
             target = None
             if event_type.endswith(("1p", "3p")):
-                target = self._resolve_pointer_event(
-                    SimplePointerEvent(event_type, coordinates), coordinates,
-                )
+                target = self._resolve_physical_pointer_target(coordinates)
             self._pointer_worker.accept_pointer(
                 event_type, coordinates, timestamp, target,
             )
         finally:
             self._end_callback()
+
+    def _resolve_physical_pointer_target(self, coordinates):
+        # Establish the actual topmost desktop surface before asking an
+        # in-process JavaFX bridge to hit-test. Otherwise a JavaFX window below
+        # the GTK recording controls can incorrectly win by geometry alone.
+        atspi_candidate = None
+        try:
+            snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
+            if snapshot is not None:
+                atspi_candidate = snapshot(*coordinates)
+                if _is_authoring_chrome(atspi_candidate):
+                    return None
+                if _is_recordable_target(atspi_candidate):
+                    return atspi_candidate
+        except Exception:
+            pass
+        try:
+            captured = self._javafx_driver.capture_at_point(*coordinates)
+            if _is_recordable_target(captured):
+                return captured
+        except Exception:
+            pass
+        if atspi_candidate is not None and _is_recordable_target(atspi_candidate):
+            return atspi_candidate
+        return self._resolve_pointer_event(
+            SimplePointerEvent("mouse:button:1p", coordinates), coordinates,
+        )
 
     def _begin_callback(self):
         with self._callback_condition:

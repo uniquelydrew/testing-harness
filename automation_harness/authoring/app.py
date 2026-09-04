@@ -992,7 +992,10 @@ class AuthoringApp:
             urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
             tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
             adapters = []
-            atspi = AtspiRecordingAdapter(on_resolved=self._acknowledge_recorded_target)
+            atspi = AtspiRecordingAdapter(
+                on_resolved=self._acknowledge_recorded_target,
+                javafx_driver=getattr(self.capture, "javafx_driver", None),
+            )
             if atspi.available:
                 adapters.append(atspi)
             adapters.extend(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
