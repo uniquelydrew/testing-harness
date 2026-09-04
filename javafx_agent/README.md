@@ -116,16 +116,19 @@ Protocol `automation-harness-javafx/1` currently supports:
 - `hit_test`
 - `find`
 - `state`
+- `activate_window`
+- `focus`
 - `activate` (`fire()` where the JavaFX control exposes it)
 - `get_text`
 - `set_text`
+- `select_menu_path`
 
 Object identity is based on JavaFX properties such as Node `id`, accessible
 role/text, control text, native class, parent identity, and window title.
 Transient Node references are returned for diagnostics only and are not used as
 persisted object identity.
 
-The initial traversal covers JavaFX `Node` / `Parent` scene-graph objects.
-Logical objects that are not Nodes (notably `MenuItem` and `Tab`) are the next
-bridge extension and are not yet guaranteed to appear as first-class capture
-targets.
+The physical traversal covers JavaFX `Node` / `Parent` scene-graph objects.
+Standard menu descendants are also serialized as logical subobjects of their
+menu bar/menu owner. `select_menu_path` resolves and activates an entire nested
+menu path without returning control between transient submenu transitions.

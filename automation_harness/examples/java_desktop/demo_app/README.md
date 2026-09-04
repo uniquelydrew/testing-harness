@@ -20,8 +20,9 @@ on a test API inside the application.
 For Ubuntu's Java ATK wrapper, add both
 `-Xbootclasspath/a:/usr/share/java/java-atk-wrapper.jar` and
 `-Djavax.accessibility.assistive_technologies=org.GNOME.Accessibility.AtkWrapper`
-to the Java command. The managed `java-desktop` backend now applies these
-settings automatically.
+to the Java command. The removed managed `java-desktop` backend no longer
+applies these settings. Launch Swing externally with these options, or perform
+that launch in a contract-backed setup step before `live-desktop` actions run.
 
 `DesktopDemo` offers semantic capture for its Swing button, checkbox, and the
 `JavaFX visual region` host panel. Its JavaFX controls and canvas are real

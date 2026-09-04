@@ -8,9 +8,16 @@ Automation Harness is a local-first Linux GUI and systems automation framework b
 
 The framework includes an isolated synthetic reference application so object capture, test composition, state handling, dataflow, and execution can be developed and exercised without access to the eventual target environment.
 
-Version **0.5.2** includes the local authoring GUI, Object Capture/Object Spy support, progressive multi-property AT-SPI object identity, reusable registered-step I/O, test-global variables, declarative TestPlans, and the managed execution queue.
+The current RHEL 8 backport includes the GTK authoring GUI, semantic object
+capture, AT-SPI and native JavaFX recording, the Object Identity Workbench,
+optional property-level regular expressions, inline plan dependencies,
+script-backed steps, declarative TestPlans, and managed execution.
 
-The `protected` backend is intentionally disabled. The current supported execution target is the synthetic `reference` backend.
+`live-desktop` is the normal execution backend. It operates on the current
+desktop session and does not own or select an application; object definitions
+carry their own application/window lineage. The synthetic `reference` and
+version-pinned `gtk-demo` backends are qualification fixtures. The `protected`
+backend remains intentionally disabled.
 
 ---
 
@@ -27,6 +34,8 @@ The `protected` backend is intentionally disabled. The current supported executi
 - [Referencing objects from tests](#referencing-objects-from-tests)
 - [Object state and properties](#object-state-and-properties)
 - [Object Capture / Object Spy](#object-capture--object-spy)
+- [Object Identity Workbench](#object-identity-workbench)
+- [End-to-end recording](#end-to-end-recording)
 - [Using the authoring GUI](#using-the-authoring-gui)
 - [Managed execution state](#managed-execution-state)
 - [Validation and execution](#validation-and-execution)
@@ -54,7 +63,7 @@ Object Repository                 Registered Step Catalog
               Managed Execution Queue
                       │
                       ▼
-                 Reference Backend
+              Selected Execution Backend
                       │
                       ▼
              Evidence / Execution State
@@ -91,13 +100,17 @@ The TestPlan does not know whether the object is found by AT-SPI, another future
 
 ## Python
 
-Python **3.11+** is required.
+This branch targets the stock **Python 3.6.x** runtime on RHEL 8. The package
+metadata intentionally requires `>=3.6,<3.7`.
 
 Python package dependencies are:
 
-- PyYAML
-- pytest
-- Pillow
+- PyYAML 3.12–5.x
+- `dataclasses==0.8`
+- `typing_extensions==4.1.1`
+
+Pillow is an optional vision dependency. pytest is required only for
+development and qualification tests.
 
 Install the wheel into the environment where the harness will run:
 
@@ -111,6 +124,10 @@ After installation, these commands are available:
 automation-run
 automation-reference
 automation-author
+automation-plan
+automation-capture
+automation-repository
+automation-javafx
 ```
 
 ## Linux GUI requirements
@@ -121,11 +138,9 @@ Virtual-display execution uses Xvfb. This is the default for the built-in GUI re
 
 AT-SPI object capture and real accessibility interaction require the host system's `pyatspi` binding. It is intentionally not bundled inside the Python wheel.
 
-On Ubuntu 24.04, install the qualification dependencies with:
-
-```bash
-sudo apt-get install -y xvfb xauth python3-pyatspi python3-gi python3-cairo python3-gi-cairo gir1.2-gtk-3.0 at-spi2-core dbus-x11
-```
+On RHEL 8, use `bash bootstrap.sh`; it installs the available native RPMs and
+qualifies the complete Python/GTK/AT-SPI combination. See
+[`docs/rhel8-deployment.md`](docs/rhel8-deployment.md) for exact behavior.
 
 You can verify the installation with:
 
@@ -144,21 +159,27 @@ When it is launched outside a desktop session, the harness creates an isolated D
 
 ## Java Swing and JavaFX targets
 
-Use `target.kind: java-desktop` for a managed, black-box Java GUI run. The manifest supplies the command that starts the application; the harness records its logs, waits for an accessible application window, and terminates it after the test run.
+Java applications are external to the backend lifecycle. Launch them before a
+test, or launch them from a contract-backed script step in the plan. Swing uses
+the Java accessibility bridge through AT-SPI on Linux. JavaFX should be
+launched with the native bridge agent so capture, recording, resolution, and
+actions use its semantic scene graph.
 
-```yaml
-target:
-  kind: java-desktop
-  command: [java, -jar, /opt/example/application.jar]
-  expected_application: Example Java Application
-  startup_timeout: 20
-```
-
-On Windows, enable the x64 Java Access Bridge provided with the JDK. On Ubuntu/X11 install `libatk-wrapper-java` and `libatk-wrapper-java-jni` in addition to the GUI requirements above. The Linux backend enables the Java ATK wrapper at launch; custom Swing components and JavaFX nodes must still expose a meaningful accessible name and role. Some Linux JavaFX runtimes expose an embedded `JFXPanel` as one accessible panel rather than exposing its child controls. Object Capture handles that case with a read-only `anchored_visual` strategy: it segments the clicked visual region and stores normalized bounds relative to the durable accessible panel anchor.
+On Windows, enable the x64 Java Access Bridge provided with the JDK. On
+Linux/X11, install the Java ATK wrapper and enable it in the external Swing
+launch command. Custom Swing components and JavaFX nodes must still expose a
+meaningful accessible name and role. Some Linux JavaFX runtimes expose an
+embedded `JFXPanel` as one accessible panel rather than exposing its child
+controls. Object Capture handles that case with a read-only `anchored_visual`
+strategy: it segments the clicked visual region and stores normalized bounds
+relative to the durable accessible panel anchor.
 
 Use `java_accessibility` component strategies for application controls. They use Java Access Bridge on Windows and AT-SPI through the Java ATK wrapper on Linux. For visuals, resolve a stable canvas/panel, then use `ctx.component("logical.id").assert_visual()` for an approved component-bound gold, or `vision.wait_for_color` for a lightweight color check. Approved PNGs and optional grayscale masks live under the repository's `visual/` directory; the exact host visual profile selects the variant. Stage and review a new candidate with `automation-run visual stage`, then promote it explicitly with `automation-run visual approve`. Baseline comparison stores expected, actual, and diff images; a black pixel in an optional grayscale mask ignores volatile regions.
 
-The packaged `automation_harness/examples/java_desktop` directory is a template, not a runnable fixture: copy it, provide the application command, and approve its baseline images for each supported platform.
+The packaged `automation_harness/examples/java_desktop` directory is retained
+as a legacy visual-bundle template. Current declarative authoring uses a
+self-contained `.ahplan` and `live-desktop`; application startup belongs in a
+script-backed plan step when required.
 
 ---
 
@@ -168,7 +189,7 @@ A typical authoring workflow is:
 
 ```text
 1. Create or open an authoring project.
-2. Configure the managed target application.
+2. Launch the target application, or add a script-backed setup step.
 3. Capture a control and save its stable logical identity.
 4. Select that object to see only actions it supports.
 5. Configure an action through typed fields and add it to Test Flow.
@@ -187,58 +208,44 @@ automation-author
 Or open an existing authoring project directly:
 
 ```bash
-automation-author --project ./project.yaml
+automation-author --project ./project.ahproject
 ```
 
-An authoring project connects capture and execution to one target:
+An authoring project connects its object repository, run artifacts, and
+optional script-step implementations:
 
 ```yaml
 version: 1
 name: Login workflow
-repository: components.yaml
+repository: objects.ahobjects
 runs_dir: runs
-environment_script: prepare-environment.sh
-target:
-  kind: java-desktop
-  command: [java, -jar, /opt/application/application.jar]
-  working_directory: /opt/application
-  expected_application: Example Application
-  startup_timeout: 20
-  display: native
+script_steps:
+  - script_steps/prepare-environment.ahstep
 ```
 
-Inside the GUI, use **Launch Target**, capture an object, select it in
-**Object Repository**, choose one of its supported **Actions**, and click
-**Add Action to Test**. The object binding is preserved automatically. Add
-**Wait for State** and **Assert State** the same way, then use **Run Test**.
-If the target remains launched, the run attaches to that managed instance
-instead of starting a separate application.
+Inside the GUI, capture an object, select it in **Object Repository**, choose
+one of its supported **Actions**, and click **Add Action to Test**. The object
+binding is preserved automatically. Add **Wait for State** and **Assert State**
+the same way, then use **Run Test**.
 
-For the normal authoring workflow, the application may already be running.
-New projects therefore start with `target.kind: attached-desktop`. Capturing the
-first object records its AT-SPI application identity as `expected_application`;
-Run Test then controls that live application without launching or terminating
-it. Capturing an object from a different application requires an explicit target
-switch so a test cannot silently act on the wrong process.
+The application may already be running, or the first plan step may launch it.
+There is no test-level application selector: a plan can interact with multiple
+applications because each object owns its own locator lineage.
 
-The same attached plan can be executed from the CLI:
+The same plan can be executed from the CLI:
 
 ```bash
-automation-run plan run ./test.yaml \
-  --components ./components.yaml \
-  --backend attached-desktop \
-  --application "Example Application"
+automation-plan ./test.ahplan --backend live-desktop
 ```
 
-The synthetic reference application remains available only when a project
-explicitly configures `target.kind: reference`; it is no longer the new-project
-default or an implicit authoring fallback.
+When a plan intentionally uses the synthetic qualification fixture, select it
+explicitly with `--backend reference`.
 
 The older repository-only entry point remains available for migration and
 low-level repository editing:
 
 ```bash
-automation-author --repository ./components.yaml
+automation-author --repository ./objects.ahobjects
 ```
 
 Or launch it without one and choose a repository when saving the first captured object:
@@ -262,20 +269,20 @@ automation-run steps describe navigation.component.activate
 Validate a declarative plan:
 
 ```bash
-automation-run plan validate ./test.yaml --components ./components.yaml
+automation-run plan validate ./test.ahplan --components ./objects.ahobjects
 ```
 
 Inspect its initial queue state:
 
 ```bash
-automation-run plan status ./test.yaml
+automation-run plan status ./test.ahplan
 ```
 
 Run it against the reference target:
 
 ```bash
-automation-run plan run ./test.yaml \
-  --components ./components.yaml \
+automation-run plan run ./test.ahplan \
+  --components ./objects.ahobjects \
   --backend reference
 ```
 
@@ -625,7 +632,7 @@ steps:
 A plan default can be initialized or overridden when running:
 
 ```bash
-automation-run plan run test.yaml \
+automation-run plan run test.ahplan \
   --backend reference \
   --var requested_track='"bravo"' \
   --var retry_count=3
@@ -783,7 +790,10 @@ open until the terminal item is activated.
 
 `strategies` contains ordered mechanisms for locating/observing the object.
 
-Current repository work is centered on AT-SPI for normal Linux desktop controls. The synthetic reference repository also uses `reference_inspection` for read-only reference-only state surfaces; that strategy exists for harness qualification and is not a replacement for real UI interaction.
+Current desktop identity uses AT-SPI for GTK/Swing controls and the native
+JavaFX bridge for instrumented JavaFX applications. The synthetic reference
+repository also uses `reference_inspection` for read-only qualification state;
+that strategy is not a replacement for real UI interaction.
 
 ---
 
@@ -970,8 +980,8 @@ Activation resolves the component through its configured strategy and performs o
 When a plan contains a literal component ID, validate it against the same repository that will be supplied at runtime:
 
 ```bash
-automation-run plan validate ./test.yaml \
-  --components ./components.yaml
+automation-run plan validate ./test.ahplan \
+  --components ./objects.ahobjects
 ```
 
 Unknown literal IDs are reported before the reference backend is started, including close-match suggestions when available.
@@ -1125,8 +1135,8 @@ The capture service is available through the local authoring GUI.
 For focused tools, launch Object Capture or the Object Repository editor independently:
 
 ```bash
-automation-capture --repository ./components.yaml
-automation-repository --repository ./components.yaml
+automation-capture --repository ./objects.ahobjects
+automation-repository --repository ./objects.ahobjects
 ```
 
 The repository launcher lets you inspect and edit the selected component as JSON; it validates the definition before saving it back to the supplied YAML repository.
@@ -1134,7 +1144,7 @@ The repository launcher lets you inspect and edit the selected component as JSON
 ## Launch with an editable repository
 
 ```bash
-automation-author --repository ./components.yaml
+automation-author --repository ./objects.ahobjects
 ```
 
 The Object Repository panel shows the current logical objects. The capture tools inspect live AT-SPI objects and can save them into the selected repository.
@@ -1164,6 +1174,12 @@ visual region under the click and authors a read-only `anchored_visual`
 strategy. It resolves the accessible container at runtime, scales the stored
 relative bounds to its current size, and supports the same capture and
 repository highlight checks.
+
+Capture Next Click resolves one uninterrupted click only. For menu bars and
+other interactions that require a sequence of transient UI states, use
+recording or capture the menu bar itself. Standard menu descendants are queried
+while visible and stored as logical `subobjects`; **Select Menu Item** then
+executes the complete menu/submenu/item path atomically.
 
 ### 2. Capture by pointer
 
@@ -1356,6 +1372,55 @@ geometry          observation only, not durable identity
 
 Do not blindly include every property. Avoid transient text, changing counts, timestamps, current values, selection state, enabled state, and screen coordinates as identity unless the application specifically guarantees them as durable identifiers.
 
+## Object Identity Workbench
+
+Every capture opens the Object Identity Workbench before persistence. The
+workbench applies the same semantic-boundary resolver used by recording:
+
+- implementation-only JavaFX skins, labels, and layout nodes are collapsed
+  under the nearest actionable control;
+- stable application-authored controls remain eligible semantic boundaries;
+- standard menus expose nested logical subobjects;
+- structural ancestry can contribute identity without becoming saveable;
+- selected identity properties can use Exact or Regex matching; and
+- ambiguous AT-SPI identities must be refined or assigned an explicit ordinal.
+
+Saving to an existing repository updates the selected logical object and
+increments its revision. Saving to a new repository creates a normal
+`.ahobjects` document.
+
+## End-to-end recording
+
+Use **Start Recording**, interact with any live applications, and then use the
+floating **Stop Recording** control. Stop processing runs off the GTK thread;
+the authoring window is restored while adapters finish and the recording is
+correlated.
+
+Recording and Capture Next Click use the same semantic target policy. Repeated
+pointer observations from AT-SPI and the JavaFX bridge are correlated into one
+interaction, preferring the native JavaFX target when both describe the same
+control. Passive labels, generic panels, authoring chrome, focus transitions,
+and other presentation noise are not emitted as test actions.
+
+After recording stops, the Object Identity Workbench opens automatically with
+every distinct interacted object checked. Its review tree is intentionally
+compact:
+
+```text
+Recorded interaction scope
+  Window A
+    checked semantic object
+    checked semantic object
+  Window B
+    checked semantic object
+```
+
+Raw accessibility ancestry is retained in capture evidence but is not rendered
+as saveable object rows. Repeated interactions with one durable object produce
+one checked target. Review and save those objects before adding recorded
+interactions to Test Flow; an interaction must have a unique repository match
+before it can become a plan step.
+
 ---
 
 # Using the authoring GUI
@@ -1363,7 +1428,7 @@ Do not blindly include every property. Avoid transient text, changing counts, ti
 Launch:
 
 ```bash
-automation-author --repository ./components.yaml
+automation-author --repository ./objects.ahobjects
 ```
 
 The GUI currently exposes the same underlying repositories, Step Registry, and TestPlan model used by the CLI.
@@ -1374,7 +1439,7 @@ It does **not** have a separate execution implementation.
 
 Use the Object Repository view to:
 
-- open a YAML repository
+- open an `.ahobjects` repository (legacy `.yaml`/`.yml` remains readable)
 - browse captured logical IDs
 - inspect definitions
 - capture an object
@@ -1406,6 +1471,12 @@ presented as user-authored reusable content.
 ## Test Flow
 
 Each TestPlan row corresponds to one registered step call.
+
+The recording table is a staging area, not a second plan representation. Use
+**Keep** or **Delete** to curate observations, save/refine new targets in the
+Object Identity Workbench, then use **Add Selected as Step**. Recorded actions
+are added to the currently selected step group, preserving the same conceptual
+grouping used by manually composed actions.
 
 New actions use schema-generated input fields. The advanced plan editor still
 accepts JSON for migration and low-level editing. Variable references use:
@@ -1563,21 +1634,21 @@ That allows queue readiness to be recomputed after each successful output transa
 ## Validate a plan
 
 ```bash
-automation-run plan validate ./test.yaml
+automation-run plan validate ./test.ahplan
 ```
 
 With an external object repository:
 
 ```bash
-automation-run plan validate ./test.yaml \
-  --components ./components.yaml
+automation-run plan validate ./test.ahplan \
+  --components ./objects.ahobjects
 ```
 
 Reference-backend-specific preflight can also be requested:
 
 ```bash
-automation-run plan validate ./test.yaml \
-  --components ./components.yaml \
+automation-run plan validate ./test.ahplan \
+  --components ./objects.ahobjects \
   --backend reference
 ```
 
@@ -1601,13 +1672,13 @@ Validation checks include, where statically knowable:
 ## Inspect initial status
 
 ```bash
-automation-run plan status ./test.yaml
+automation-run plan status ./test.ahplan
 ```
 
 Machine-readable form:
 
 ```bash
-automation-run plan status ./test.yaml --json
+automation-run plan status ./test.ahplan --json
 ```
 
 Example output:
@@ -1621,9 +1692,9 @@ follow-track       track.follow                       blocked  waiting=active_tr
 ## Execute
 
 ```bash
-automation-run plan run ./test.yaml \
+automation-run plan run ./test.ahplan \
   --backend reference \
-  --components ./components.yaml \
+  --components ./objects.ahobjects \
   --runs-dir ./runs
 ```
 
@@ -1632,7 +1703,7 @@ Reference GUI mode is the default.
 Use the isolated virtual display explicitly:
 
 ```bash
-automation-run plan run ./test.yaml \
+automation-run plan run ./test.ahplan \
   --backend reference \
   --reference-mode gui \
   --reference-display virtual
@@ -1641,7 +1712,7 @@ automation-run plan run ./test.yaml \
 For service-only reference scenarios:
 
 ```bash
-automation-run plan run ./test.yaml \
+automation-run plan run ./test.ahplan \
   --backend reference \
   --reference-mode headless
 ```
@@ -1868,21 +1939,21 @@ automation-run steps describe track.follow --json
 ## Declarative plans
 
 ```bash
-automation-run plan validate ./test.yaml
+automation-run plan validate ./test.ahplan
 
-automation-run plan validate ./test.yaml --components ./components.yaml
+automation-run plan validate ./test.ahplan --components ./objects.ahobjects
 
-automation-run plan validate ./test.yaml --backend reference
+automation-run plan validate ./test.ahplan --backend reference
 
-automation-run plan status ./test.yaml
+automation-run plan status ./test.ahplan
 
-automation-run plan status ./test.yaml --json
+automation-run plan status ./test.ahplan --json
 
-automation-run plan run ./test.yaml --backend reference
+automation-run plan run ./test.ahplan --backend reference
 
-automation-run plan run ./test.yaml --backend reference --components ./components.yaml
+automation-run plan run ./test.ahplan --backend reference --components ./objects.ahobjects
 
-automation-run plan run ./test.yaml --backend reference --var track_id='"alpha"'
+automation-run plan run ./test.ahplan --backend reference --var track_id='"alpha"'
 ```
 
 ## Python bundles
@@ -1900,7 +1971,7 @@ automation-run run ./bundle --backend reference
 ```bash
 automation-author
 
-automation-author --repository ./components.yaml
+automation-author --repository ./objects.ahobjects
 ```
 
 GUI construction smoke test:
@@ -1927,9 +1998,12 @@ Key source areas:
 automation_harness/
   authoring/
     app.py                    local Object Capture / Actions / Test Flow GUI
+    capture_context.py        semantic workbench trees and recording review scope
+    object_identity_workbench.py identity-property review and persistence
 
   backends/
     base.py                   execution-backend contract
+    live_desktop.py           current desktop execution facility
     reference.py              synthetic reference backend
     protected.py              intentionally disabled placeholder boundary
 
@@ -1945,12 +2019,17 @@ automation_harness/
 
   drivers/
     atspi_driver.py           Linux accessibility discovery/interaction/capture
+    javafx_bridge.py          native JavaFX bridge discovery and protocol client
     tracking_driver.py        tracking-facing driver abstraction
     vision_driver.py          framebuffer/vision primitives
 
   models/
     component.py              component, state, capture, identity models
     plan.py                   TestPlan and ExecutionState models
+
+  recording/
+    adapters/                 AT-SPI and JavaFX event sources
+    session.py                correlation, repository matching, plan conversion
 
   reference/
     gui.py                    synthetic desktop reference application
@@ -1959,6 +2038,7 @@ automation_harness/
 
   runner/
     cli.py                    automation-run command
+    plan_cli.py               direct automation-plan entry point
     execution.py              Python bundle execution
     plan_execution.py         declarative TestPlan execution
     validator.py              bundle validation

@@ -1,5 +1,10 @@
 # Object-Action Authoring Workflow
 
+> Historical change record. Managed `java-desktop` and `attached-desktop`
+> targets described below were subsequently removed. Current authoring uses
+> `live-desktop`, self-contained `.ahplan` files, and script-backed setup steps;
+> see `docs/live-environment-authoring.md`.
+
 This branch replaces the misleading global Step Library authoring surface with
 an object-scoped workflow.
 
