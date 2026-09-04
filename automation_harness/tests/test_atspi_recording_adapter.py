@@ -420,6 +420,25 @@ def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
     assert emitted[0].source == "javafx"
 
 
+def test_physical_press_prefers_javafx_semantic_target_over_recordable_atspi_proxy():
+    coarse = replace(
+        _target(), name="File", role="menu", accessible_id=None,
+        application="ERSA test.build.0", bounds=(0, 0, 1024, 768),
+    )
+    exact = replace(
+        coarse, accessible_id="fileMenu", framework="javafx",
+        native_class="javafx.scene.control.Menu", bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y):
+            return exact
+
+    adapter = AtspiRecordingAdapter(_Driver(coarse), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30)) is exact
+
+
 def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
     harness = replace(
         _target(), application="Automation Harness Author",

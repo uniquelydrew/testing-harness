@@ -427,10 +427,11 @@ class AtspiRecordingAdapter:
                 atspi_candidate = snapshot(*coordinates)
                 if _is_authoring_chrome(atspi_candidate):
                     return None
-                if _is_recordable_target(atspi_candidate):
-                    return atspi_candidate
         except Exception:
             pass
+        # The in-process bridge is authoritative for instrumented JavaFX.  Its
+        # point resolver is the same one used by Capture Next Click and can see
+        # semantic controls which AT-SPI exposes only as a window or skin node.
         try:
             captured = self._javafx_driver.capture_at_point(*coordinates)
             if _is_recordable_target(captured):

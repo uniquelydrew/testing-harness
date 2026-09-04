@@ -9,6 +9,7 @@ from automation_harness.authoring.capture_context import (
     is_structural_context_node,
     node_label,
     suggested_name,
+    build_capture_context,
 )
 
 
@@ -27,6 +28,52 @@ def _node(ref, class_name, **values):
     }
     payload.update(values)
     return payload
+
+
+def _javafx_capture():
+    from automation_harness.models.component import CapturedComponent, ComponentState
+
+    return CapturedComponent(
+        name="File", role="menu", description=None, accessible_id="fileMenu",
+        application="Demo", window="Main", hierarchy=("Main", "MenuBar", "File"),
+        actions=("activate",), bounds=(10, 20, 80, 24),
+        state=ComponentState(present=True), framework="javafx",
+        native_class="javafx.scene.control.Menu",
+        backend_properties={
+            "node_ref": "node-7", "bridge_pid": 123, "bridge_port": 4567,
+            "style_classes": ["menu"],
+        },
+    )
+
+
+def test_javafx_capture_remains_usable_when_bridge_endpoint_disappears():
+    class MissingDriver:
+        def endpoints(self):
+            return ()
+
+    captured = _javafx_capture()
+    context = build_capture_context(captured, MissingDriver())
+
+    assert context.find(context.target_key).payload["node_ref"] == "node-7"
+    assert context.captured_component(context.target_key) is captured
+
+
+def test_javafx_capture_remains_usable_when_live_node_disappears():
+    class Endpoint:
+        pid = 123
+        port = 4567
+
+        def request(self, *args, **kwargs):
+            return {"windows": []}
+
+    class Driver:
+        def endpoints(self):
+            return (Endpoint(),)
+
+    captured = _javafx_capture()
+    context = build_capture_context(captured, Driver())
+
+    assert context.captured_component(context.target_key) is captured
 
 
 def test_semantic_tree_collapses_redundant_javafx_containers():

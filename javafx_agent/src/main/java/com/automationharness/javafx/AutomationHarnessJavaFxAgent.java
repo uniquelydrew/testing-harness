@@ -490,7 +490,11 @@ public final class AutomationHarnessJavaFxAgent {
                         }
                     }
                 }
-                return best == null ? null : nodePayload(best, bestWindow);
+                if (best == null) {
+                    return null;
+                }
+                Object semantic = semanticNode(best);
+                return nodePayload(semantic == null ? best : semantic, bestWindow);
             });
         }
 

@@ -274,18 +274,33 @@ def _build_javafx_context(captured, driver, max_depth=64):
     target_ref = properties.get("node_ref")
     bridge_pid = properties.get("bridge_pid")
     if not target_ref:
-        raise LookupError("captured JavaFX object has no live node reference")
+        return _build_fallback_context(captured)
 
     endpoint = None
-    for candidate in driver.endpoints():
-        if bridge_pid is None or candidate.pid == bridge_pid:
-            endpoint = candidate
-            if bridge_pid is not None:
-                break
+    bridge_port = properties.get("bridge_port")
+    try:
+        endpoints = tuple(driver.endpoints())
+    except Exception:
+        endpoints = ()
+    if bridge_pid is not None:
+        endpoint = next(
+            (candidate for candidate in endpoints if getattr(candidate, "pid", None) == bridge_pid),
+            None,
+        )
+    if endpoint is None and bridge_port is not None:
+        endpoint = next(
+            (candidate for candidate in endpoints if getattr(candidate, "port", None) == bridge_port),
+            None,
+        )
+    if endpoint is None and bridge_pid is None and bridge_port is None and endpoints:
+        endpoint = endpoints[0]
     if endpoint is None:
-        raise LookupError("captured JavaFX bridge endpoint is no longer available")
+        return _build_fallback_context(captured)
 
-    response = endpoint.request("tree", timeout=4.0, max_depth=max_depth)
+    try:
+        response = endpoint.request("tree", timeout=4.0, max_depth=max_depth)
+    except Exception:
+        return _build_fallback_context(captured)
     for index, window in enumerate(response.get("windows", [])):
         if not isinstance(window, Mapping) or not isinstance(window.get("root"), Mapping):
             continue
@@ -313,7 +328,7 @@ def _build_javafx_context(captured, driver, max_depth=64):
             if target is not None:
                 root.children.append(_context_node(dict(target), target_ref))
         return context
-    raise LookupError("captured JavaFX node is no longer present in its window tree")
+    return _build_fallback_context(captured)
 
 
 def _build_fallback_context(captured):
@@ -337,14 +352,15 @@ def _build_fallback_context(captured):
         )
         current.children.append(child)
         current = child
-    target_payload = {
+    target_payload = dict(getattr(captured, "backend_properties", {}) or {})
+    target_payload.update({
         "window": window,
         "class": getattr(captured, "native_class", None),
         "id": getattr(captured, "accessible_id", None),
         "accessible_role": getattr(captured, "role", None),
         "accessible_text": getattr(captured, "name", None),
         "bounds": getattr(captured, "bounds", None),
-    }
+    })
     current.children.append(CaptureContextNode(
         key=target_key,
         label=str(getattr(captured, "name", None) or (hierarchy[-1] if hierarchy else "Captured Object")),
@@ -352,7 +368,12 @@ def _build_fallback_context(captured):
         is_target=True,
         is_semantic=True,
     ))
-    return CaptureContext(str(getattr(captured, "framework", "") or "desktop"), root, target_key)
+    return CaptureContext(
+        str(getattr(captured, "framework", "") or "desktop"),
+        root,
+        target_key,
+        captured_by_key={target_key: captured},
+    )
 
 
 def _semantic_children(raw, target_ref):
