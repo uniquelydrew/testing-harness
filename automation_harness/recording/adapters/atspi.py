@@ -14,6 +14,7 @@ from automation_harness.drivers.atspi_driver import (
 )
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
+from automation_harness.recording.x11_pointer import X11PointerMonitor
 
 
 _STRUCTURAL_ROLES = frozenset({
@@ -209,12 +210,15 @@ class AtspiRecordingAdapter:
         acknowledgement_seconds=0.3,
         hold_resolution_timeout=2.0,
         hold_retry_interval=0.04,
+        pointer_monitor=None,
     ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
         self.acknowledgement_seconds = acknowledgement_seconds
         self.hold_resolution_timeout = max(0.0, float(hold_resolution_timeout))
         self.hold_retry_interval = max(0.005, float(hold_retry_interval))
+        self._pointer_monitor = pointer_monitor or X11PointerMonitor()
+        self._using_x11_pointer = False
         self._emit: Callable[[Observation], None] | None = None
         self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
@@ -243,15 +247,23 @@ class AtspiRecordingAdapter:
         with self._callback_condition:
             self._callbacks_accepting = True
         self._listeners = [
-            (self._pointer, "mouse:button:1p"),
-            (self._pointer, "mouse:button:1r"),
-            (self._pointer, "mouse:button:3p"),
-            (self._pointer, "mouse:button:3r"),
             (self._action, "object:state-changed:checked"),
             (self._action, "object:state-changed:selected"),
             (self._text, "object:text-changed"),
         ]
         try:
+            try:
+                self._pointer_monitor.start(self._physical_pointer)
+                self._using_x11_pointer = True
+            except Exception:
+                # Non-X11 sessions retain the legacy AT-SPI device-event path.
+                self._using_x11_pointer = False
+                self._listeners[0:0] = [
+                    (self._pointer, "mouse:button:1p"),
+                    (self._pointer, "mouse:button:1r"),
+                    (self._pointer, "mouse:button:3p"),
+                    (self._pointer, "mouse:button:3r"),
+                ]
             for callback, event_type in self._listeners:
                 self._pyatspi.Registry.registerEventListener(callback, event_type)
             self._lease = acquire_atspi_registry(self._pyatspi)
@@ -264,6 +276,9 @@ class AtspiRecordingAdapter:
                 except Exception:
                     pass
             self._listeners = []
+            if self._using_x11_pointer:
+                self._pointer_monitor.stop()
+                self._using_x11_pointer = False
             self._pointer_worker.stop_and_drain()
             self._emit = None
             raise
@@ -276,6 +291,9 @@ class AtspiRecordingAdapter:
         self._stop_requested.set()
         with self._callback_condition:
             self._callbacks_accepting = False
+        if self._using_x11_pointer:
+            self._pointer_monitor.stop()
+            self._using_x11_pointer = False
         deferred_release = False
         try:
             for callback, event_type in self._listeners:
@@ -359,6 +377,22 @@ class AtspiRecordingAdapter:
             time.monotonic(),
             target,
         )
+
+    def _physical_pointer(self, event_type, coordinates, timestamp) -> None:
+        """Handle an X11 transition without waiting for AT-SPI device events."""
+        if not self._begin_callback():
+            return
+        try:
+            target = None
+            if event_type.endswith(("1p", "3p")):
+                target = self._resolve_pointer_event(
+                    SimplePointerEvent(event_type, coordinates), coordinates,
+                )
+            self._pointer_worker.accept_pointer(
+                event_type, coordinates, timestamp, target,
+            )
+        finally:
+            self._end_callback()
 
     def _begin_callback(self):
         with self._callback_condition:
@@ -455,3 +489,13 @@ def _event_coordinates(event: Any):
     if x < 0 or y < 0:
         return None
     return (int(x), int(y))
+
+
+class SimplePointerEvent:
+    """Coordinate-only event used by the raw X11 press clock."""
+
+    def __init__(self, event_type, coordinates):
+        self.type = event_type
+        self.detail1 = coordinates[0]
+        self.detail2 = coordinates[1]
+        self.source = None

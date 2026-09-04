@@ -349,6 +349,31 @@ def test_resolved_target_is_acknowledged_before_next_interaction():
     assert events == [("highlight", "Save"), ("emit", "Save")]
 
 
+def test_physical_press_resolves_and_highlights_before_release_arrives():
+    highlighted = threading.Event()
+    emitted = []
+    adapter = AtspiRecordingAdapter(
+        _Driver(_target()),
+        on_resolved=lambda target, duration: highlighted.set(),
+        acknowledgement_seconds=0,
+    )
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    adapter._physical_pointer("mouse:button:1p", (10, 20), 1.0)
+
+    assert highlighted.wait(0.1)
+    assert emitted == []
+    adapter._physical_pointer("mouse:button:1r", (10, 20), 2.0)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert len(emitted) == 1
+    assert emitted[0].target.name == "Save"
+    assert emitted[0].timestamp == 2.0
+
+
 def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
     highlighted = []
     adapter = AtspiRecordingAdapter(
