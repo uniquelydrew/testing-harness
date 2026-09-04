@@ -4,7 +4,11 @@ import time
 from types import SimpleNamespace
 
 from automation_harness.models.component import CapturedComponent, ComponentState
-from automation_harness.drivers.atspi_driver import AtspiDriver, _deepest_at_point
+from automation_harness.drivers.atspi_driver import (
+    AtspiDriver,
+    AtspiExcludedClickSource,
+    _deepest_at_point,
+)
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
     _event_coordinates,
@@ -231,6 +235,90 @@ def test_recording_and_next_click_use_the_same_canonical_click_snapshot():
     adapter._pointer_worker.stop_and_drain()
 
     assert highlighted == [expected]
+
+
+def test_press_hold_retries_until_transient_target_becomes_accessible():
+    class SettlingDriver(_Driver):
+        def __init__(self):
+            super().__init__(_target())
+            self.attempts = 0
+
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise LookupError("transient menu item is not exposed yet")
+            return self.target
+
+    driver = SettlingDriver()
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+        hold_resolution_timeout=0.2,
+        hold_retry_interval=0.001,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.attempts == 3
+    assert highlighted == [_target()]
+
+
+def test_press_hold_does_not_retry_authoring_controls():
+    class ExcludedDriver(_Driver):
+        def __init__(self):
+            super().__init__(_target())
+            self.attempts = 0
+
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            self.attempts += 1
+            raise AtspiExcludedClickSource("authoring control")
+
+    driver = ExcludedDriver()
+    adapter = AtspiRecordingAdapter(
+        driver,
+        hold_resolution_timeout=1.0,
+        hold_retry_interval=0.1,
+    )
+    adapter._pointer_worker.start()
+    started = time.monotonic()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    elapsed = time.monotonic() - started
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.attempts == 1
+    assert elapsed < 0.05
+
+
+def test_stop_request_cancels_an_unresolved_hold_retry():
+    entered = threading.Event()
+
+    class UnresolvedDriver(_Driver):
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            entered.set()
+            raise LookupError("not exposed")
+
+    adapter = AtspiRecordingAdapter(
+        UnresolvedDriver(_target()),
+        hold_resolution_timeout=2.0,
+        hold_retry_interval=0.01,
+    )
+    resolving = threading.Thread(
+        target=adapter._resolve_pointer_event,
+        args=(SimpleNamespace(source=object()), (125, 240)),
+    )
+    resolving.start()
+    assert entered.wait(1)
+    adapter._stop_requested.set()
+    resolving.join(0.1)
+
+    assert not resolving.is_alive()
 
 
 def test_resolved_target_is_acknowledged_before_next_interaction():

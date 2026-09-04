@@ -6,7 +6,12 @@ import threading
 import time
 from typing import Any, Callable
 
-from automation_harness.drivers.atspi_driver import AtspiDriver, _capture_semantic_accessible, _pyatspi
+from automation_harness.drivers.atspi_driver import (
+    AtspiDriver,
+    AtspiExcludedClickSource,
+    _capture_semantic_accessible,
+    _pyatspi,
+)
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
 
@@ -196,10 +201,20 @@ def _is_authoring_chrome(captured) -> bool:
 class AtspiRecordingAdapter:
     """Translate bounded AT-SPI events into the framework-neutral observation stream."""
 
-    def __init__(self, driver=None, *, on_resolved=None, acknowledgement_seconds=0.3) -> None:
+    def __init__(
+        self,
+        driver=None,
+        *,
+        on_resolved=None,
+        acknowledgement_seconds=0.3,
+        hold_resolution_timeout=2.0,
+        hold_retry_interval=0.04,
+    ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
         self.acknowledgement_seconds = acknowledgement_seconds
+        self.hold_resolution_timeout = max(0.0, float(hold_resolution_timeout))
+        self.hold_retry_interval = max(0.005, float(hold_retry_interval))
         self._emit: Callable[[Observation], None] | None = None
         self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
@@ -207,6 +222,7 @@ class AtspiRecordingAdapter:
         self._callback_condition = threading.Condition()
         self._callbacks_accepting = False
         self._active_callbacks = 0
+        self._stop_requested = threading.Event()
         self._pointer_worker = _PointerRecordingWorker(
             self._publish,
             acknowledge=on_resolved,
@@ -222,6 +238,7 @@ class AtspiRecordingAdapter:
             raise RuntimeError("AT-SPI recording adapter is already active")
         self._emit = emit
         self._pyatspi = _pyatspi()
+        self._stop_requested.clear()
         self._pointer_worker.start()
         with self._callback_condition:
             self._callbacks_accepting = True
@@ -256,6 +273,7 @@ class AtspiRecordingAdapter:
             return
         lease = self._lease
         self._lease = None
+        self._stop_requested.set()
         with self._callback_condition:
             self._callbacks_accepting = False
         deferred_release = False
@@ -368,14 +386,20 @@ class AtspiRecordingAdapter:
         source = getattr(event, "source", None)
         canonical = getattr(self.driver, "capture_click_snapshot", None)
         if canonical is not None:
-            try:
-                return canonical(
-                    source,
-                    coordinates,
-                    excluded_application_prefixes=("Automation Harness",),
-                )
-            except Exception:
-                return None
+            deadline = time.monotonic() + self.hold_resolution_timeout
+            while True:
+                try:
+                    return canonical(
+                        source,
+                        coordinates,
+                        excluded_application_prefixes=("Automation Harness",),
+                    )
+                except AtspiExcludedClickSource:
+                    return None
+                except Exception:
+                    if self._stop_requested.is_set() or time.monotonic() >= deadline:
+                        return None
+                    time.sleep(self.hold_retry_interval)
         if source is not None:
             try:
                 snapshot = getattr(self.driver, "capture_event_source_snapshot", None)

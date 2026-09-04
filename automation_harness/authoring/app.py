@@ -1008,7 +1008,9 @@ class AuthoringApp:
         self.start_recording_button.set_sensitive(False)
         self.stop_recording_button.set_sensitive(True)
         self._show_recording_stop_window()
-        self._set_status("Recording… interact with the target application, then stop recording")
+        self._set_status(
+            "Recording… press and hold each target until it highlights, then release"
+        )
 
     def _acknowledge_recorded_target(self, target, duration) -> None:
         bounds = getattr(target, "bounds", None)

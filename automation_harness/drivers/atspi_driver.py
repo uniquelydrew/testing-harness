@@ -32,6 +32,12 @@ class AtspiAmbiguousObject(AtspiResolutionError):
     pass
 
 
+class AtspiExcludedClickSource(AtspiResolutionError):
+    """The click originated from authoring chrome excluded from capture."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class AtspiResolutionStage:
     source: str
@@ -172,11 +178,20 @@ class AtspiDriver:
         if source is not None:
             try:
                 captured = self.capture_event_source_snapshot(source)
+                if _snapshot_is_excluded_application(
+                    captured,
+                    excluded_application_prefixes=excluded_application_prefixes,
+                ):
+                    raise AtspiExcludedClickSource(
+                        "click originated from an excluded application"
+                    )
                 if _snapshot_is_interaction_target(
                     captured,
                     excluded_application_prefixes=excluded_application_prefixes,
                 ):
                     return captured
+            except AtspiExcludedClickSource:
+                raise
             except Exception:
                 pass
         if coordinates is None:
@@ -811,6 +826,15 @@ def _snapshot_is_interaction_target(
     if role in _PRESENTATION_ROLES and not captured.actions and not captured.state.editable:
         return False
     return True
+
+
+def _snapshot_is_excluded_application(
+    captured: CapturedComponent,
+    *,
+    excluded_application_prefixes: tuple[str, ...] = (),
+) -> bool:
+    application = str(captured.application or "")
+    return any(application.startswith(prefix) for prefix in excluded_application_prefixes)
 
 
 def _device_event_coordinates(event: Any) -> tuple[int, int] | None:
