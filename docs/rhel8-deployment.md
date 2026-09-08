@@ -22,11 +22,11 @@ The bootstrap performs the following work automatically:
 3. Installs available GTK 3, AT-SPI, X11/Xvfb, D-Bus, Java ATK wrapper, and Python binding RPMs with `dnf`.
 4. Creates or repairs `.venv` with system site packages enabled.
 5. Pins the last supported Python-3.6 packaging toolchain and compatibility dependencies.
-6. Installs Automation Harness from the source tree in development mode.
-7. Enables Pillow-backed vision when the RHEL package is available; core semantic automation remains usable without it.
+6. Requires Pillow-backed framebuffer capture. It first uses the RHEL `python3-pillow` package when available, then falls back to the pinned Python-3.6-compatible Pillow release in the application virtual environment.
+7. Installs Automation Harness from the source tree in development mode.
 8. Builds the native JavaFX bridge agent when `javac` and `jar` are available.
 9. Locates the Java ATK wrapper without assuming one exact RPM layout.
-10. Qualifies CLI import, GTK authoring, AT-SPI, the JavaFX agent, and the available display mode.
+10. Qualifies CLI import, required Python bindings, Pillow screen capture, GTK authoring, AT-SPI, the JavaFX agent, and the available display mode.
 11. Writes `.automation-harness-env` with the resulting runtime paths.
 
 After a successful bootstrap:
@@ -42,7 +42,7 @@ The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER
 
 Native RPM installation requires root privileges. The bootstrap uses the current process when already running as root; otherwise it uses `sudo`.
 
-The RHEL host must have access to whatever organizational or Red Hat repositories are required to retrieve the RPMs. The bootstrap cannot bypass repository, subscription, proxy, or network policy.
+The RHEL host must have access to whatever organizational or Red Hat repositories are required to retrieve the RPMs. The bootstrap cannot bypass repository, subscription, proxy, or network policy. If `python3-pillow` is unavailable from those repositories, the virtual environment must be able to obtain the configured Pillow release through pip.
 
 ## Python isolation
 
@@ -63,6 +63,8 @@ and can be relocated with:
 AUTOMATION_HARNESS_VENV=/opt/automation-harness/venv bash bootstrap.sh
 ```
 
+The Pillow pip fallback defaults to `Pillow==8.4.0`, the final Pillow release that supports Python 3.6. An explicit deployment mirror or validated replacement version can be selected with `AUTOMATION_HARNESS_PILLOW_VERSION`.
+
 ## AT-SPI and PyGObject
 
 The virtual environment is created with `--system-site-packages` so the RHEL
@@ -74,6 +76,14 @@ automation-run selftest --require-atspi
 ```
 
 A failure at that gate means the machine is not fully qualified for accessibility-backed GUI automation.
+
+## Required screenshot capability
+
+Pillow is now a required bootstrap capability rather than an optional vision extension. A successful bootstrap guarantees that `PIL.Image`, `PIL.ImageChops`, and `PIL.ImageGrab` import and that `ImageGrab.grab()` can capture a real framebuffer.
+
+When `DISPLAY` is already set, bootstrap probes that display directly. On a headless shell, bootstrap starts a temporary Xvfb display and performs the same capture probe there. If neither an active display nor Xvfb is available, or if Pillow cannot capture the selected framebuffer, bootstrap exits nonzero.
+
+This gate exists because component-bounds screenshots are runtime assertion evidence; an import-only Pillow check is insufficient.
 
 ## Java Swing and JavaFX
 
@@ -104,15 +114,15 @@ export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=/absolute/path/to/java-atk-wrapper.ja
 
 Accessibility-backed runs require a D-Bus session. Virtual-display mode additionally requires `Xvfb`.
 
-The bootstrap installs and qualifies both `dbus-run-session` and `Xvfb`. A native display run still requires an active `DISPLAY` supplied by the desktop session.
+The bootstrap installs and qualifies both `dbus-run-session` and `Xvfb`. A native display run still requires an active `DISPLAY` supplied by the desktop session. For bootstrap screenshot qualification, either that native `DISPLAY` or Xvfb must be available.
 
 ## Qualification failure policy
 
 Bootstrap exits nonzero when the RHEL/Python version is unsupported, required
-Python dependencies cannot install, or GTK/AT-SPI bindings are not importable
-inside the virtual environment. Missing Pillow, JDK tooling, Java ATK wrapper,
-display service, or an incomplete reference/AT-SPI self-test is reported as a
-warning because those capabilities can be added and requalified independently.
+Python dependencies cannot install, GTK/AT-SPI/Pillow bindings are not importable
+inside the virtual environment, or Pillow cannot capture a native or virtual framebuffer.
+JDK tooling, the Java ATK wrapper, and an incomplete reference/AT-SPI self-test remain
+separately reported capabilities because they can be added and requalified independently.
 
 There is no `AUTOMATION_HARNESS_ALLOW_PARTIAL` switch. Read the qualification
 output and verify every capability required by the intended test workload.
@@ -128,6 +138,7 @@ The initial target remains:
 - AT-SPI2
 - PyGObject/PyCairo compatible with the application Python
 - `pyatspi` importable by that same Python runtime
+- Pillow with working `ImageGrab` framebuffer capture
 - Java ATK wrapper for Swing/JavaFX accessibility
 
 The bootstrap preserves the RHEL system runtime and never replaces

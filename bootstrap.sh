@@ -6,6 +6,7 @@ VENV_DIR="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
 SYSTEM_PYTHON="${AUTOMATION_HARNESS_PYTHON:-/usr/bin/python3}"
 DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-20}"
 PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
+PILLOW_VERSION="${AUTOMATION_HARNESS_PILLOW_VERSION:-8.4.0}"
 JAVAFX_AGENT_JAR="$ROOT_DIR/javafx_agent/build/automation-harness-javafx-agent.jar"
 
 log() { printf '[bootstrap] %s\n' "$*" >&2; }
@@ -20,8 +21,8 @@ load_host() {
     HOST_ID="${ID:-unknown}"
     HOST_VERSION="${VERSION_ID:-unknown}"
     log "Detected ${PRETTY_NAME:-$HOST_ID $HOST_VERSION}"
-    [[ "$HOST_ID" == "rhel" ]] || die "this branch is qualified specifically for Red Hat Enterprise Linux 8"
-    [[ "${HOST_VERSION%%.*}" == "8" ]] || die "this branch is qualified specifically for RHEL 8.x"
+    [[ "$HOST_ID" == "rhel" ]] || die "this deployment bootstrap requires Red Hat Enterprise Linux 8"
+    [[ "${HOST_VERSION%%.*}" == "8" ]] || die "this deployment bootstrap requires RHEL 8.x"
 }
 
 as_root() {
@@ -126,32 +127,45 @@ create_venv() {
     fi
 }
 
-install_optional_pillow() {
+pillow_available() {
+    "$VENV_DIR/bin/python" - <<'PY' >/dev/null 2>&1
+import PIL
+from PIL import Image, ImageChops, ImageGrab
+PY
+}
+
+install_required_pillow() {
     local py="$VENV_DIR/bin/python"
-    if "$py" -c 'import PIL; from PIL import Image; print(PIL.__version__)' >/dev/null 2>&1; then
-        log "Pillow vision capability is already available"
+    if pillow_available; then
+        log "Required Pillow vision capability is already available: $($py -c 'import PIL; print(PIL.__version__)')"
         return 0
     fi
 
     if rpm -q python3-pillow >/dev/null 2>&1; then
-        log "RHEL python3-pillow RPM is installed"
+        log "RHEL python3-pillow RPM is installed; rechecking the virtual environment"
     elif command -v dnf >/dev/null 2>&1; then
-        log "Checking RHEL repository for optional vision package: python3-pillow"
+        log "Checking RHEL repository for required vision package: python3-pillow"
         if dnf_query list --available python3-pillow >/dev/null 2>&1; then
-            log "Installing optional RHEL vision package: python3-pillow"
-            dnf_install python3-pillow || warn "Could not install python3-pillow"
+            log "Installing required RHEL vision package: python3-pillow"
+            if ! dnf_install python3-pillow; then
+                warn "RHEL python3-pillow installation failed; falling back to pip"
+            fi
         else
-            warn "python3-pillow is unavailable from the enabled repositories"
+            warn "python3-pillow is unavailable from the enabled repositories; falling back to pip"
         fi
     fi
 
-    if "$py" -c 'import PIL; from PIL import Image; print(PIL.__version__)' >/dev/null 2>&1; then
-        log "Pillow vision capability is available through the RHEL Python stack"
+    if pillow_available; then
+        log "Required Pillow vision capability is available through the RHEL Python stack: $($py -c 'import PIL; print(PIL.__version__)')"
         return 0
     fi
 
-    warn "Pillow is unavailable. Core GTK/AT-SPI Object Capture remains supported, but screenshots, visual baselines, masks, and image-based matching are disabled."
-    return 1
+    log "Installing required Pillow==$PILLOW_VERSION into the application virtual environment"
+    "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install "Pillow==$PILLOW_VERSION" || \
+        die "required Pillow vision dependency could not be installed from either RHEL repositories or pip"
+
+    pillow_available || die "Pillow installed but required Image/ImageChops/ImageGrab modules are not importable"
+    log "Required Pillow vision capability installed: $($py -c 'import PIL; print(PIL.__version__)')"
 }
 
 install_python_dependencies() {
@@ -166,7 +180,7 @@ install_python_dependencies() {
         'dataclasses==0.8' \
         'typing_extensions==4.1.1' || die "Python runtime dependencies could not be installed"
 
-    install_optional_pillow || true
+    install_required_pillow
 
     log "Installing Automation Harness from the extracted source tree"
     (cd "$ROOT_DIR" && "$py" setup.py develop) || die "Automation Harness installation failed"
@@ -207,12 +221,81 @@ except Exception as exc:
     print("[bootstrap] GTK binding FAIL: %s: %s" % (type(exc).__name__, exc))
 try:
     import PIL
-    print("[bootstrap] Optional Pillow binding OK: %s (%s)" % (getattr(PIL, "__version__", "unknown"), getattr(PIL, "__file__", "built-in")))
+    from PIL import Image, ImageChops, ImageGrab
+    print("[bootstrap] Required Pillow binding OK: %s (%s)" % (getattr(PIL, "__version__", "unknown"), getattr(PIL, "__file__", "built-in")))
 except Exception as exc:
-    print("[bootstrap] Optional Pillow binding unavailable: %s: %s" % (type(exc).__name__, exc))
+    failed.append(("Pillow", exc))
+    print("[bootstrap] Required Pillow binding FAIL: %s: %s" % (type(exc).__name__, exc))
 if failed:
     raise SystemExit(1)
 PY
+}
+
+probe_pillow_capture() {
+    local display="$1"
+    DISPLAY="$display" "$VENV_DIR/bin/python" - <<'PY'
+from PIL import ImageGrab
+image = ImageGrab.grab()
+if image.width <= 0 or image.height <= 0:
+    raise SystemExit("captured framebuffer has invalid dimensions: %sx%s" % (image.width, image.height))
+print("[bootstrap] Pillow screen capture OK: %sx%s" % (image.width, image.height))
+PY
+}
+
+verify_pillow_screen_capture() {
+    if [[ -n "${DISPLAY:-}" ]]; then
+        log "Qualifying Pillow framebuffer capture on native display $DISPLAY"
+        probe_pillow_capture "$DISPLAY" || die "Pillow is importable but cannot capture the active display $DISPLAY"
+        return 0
+    fi
+
+    command -v Xvfb >/dev/null 2>&1 || \
+        die "Pillow screenshot qualification requires an active DISPLAY or Xvfb"
+
+    local display_number="" number
+    for number in $(seq 200 249); do
+        if [[ ! -e "/tmp/.X11-unix/X$number" ]]; then
+            display_number="$number"
+            break
+        fi
+    done
+    [[ -n "$display_number" ]] || die "no free X11 display was available for Pillow screenshot qualification"
+
+    local display=":$display_number"
+    local socket="/tmp/.X11-unix/X$display_number"
+    local xvfb_log="/tmp/automation-harness-bootstrap-xvfb.$$.log"
+    log "Qualifying Pillow framebuffer capture on temporary Xvfb display $display"
+    Xvfb "$display" -screen 0 1280x800x24 -nolisten tcp -ac >"$xvfb_log" 2>&1 &
+    local xvfb_pid=$!
+    local ready=0 attempt
+    for attempt in $(seq 1 50); do
+        if [[ -S "$socket" ]]; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$xvfb_pid" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    local status=0
+    if [[ "$ready" -eq 1 ]]; then
+        probe_pillow_capture "$display" || status=$?
+    else
+        status=1
+    fi
+
+    kill "$xvfb_pid" >/dev/null 2>&1 || true
+    wait "$xvfb_pid" >/dev/null 2>&1 || true
+    if [[ "$status" -ne 0 ]]; then
+        if [[ -s "$xvfb_log" ]]; then
+            warn "Temporary Xvfb output: $(tr '\n' ' ' < "$xvfb_log")"
+        fi
+        rm -f "$xvfb_log"
+        die "Pillow is importable but framebuffer capture failed on the bootstrap qualification display"
+    fi
+    rm -f "$xvfb_log"
 }
 
 find_java_atk_wrapper() {
@@ -244,6 +327,8 @@ qualify() {
     local run="$VENV_DIR/bin/automation-run"
     log "Checking CLI import and registered-step catalog"
     "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.6"
+
+    verify_pillow_screen_capture
 
     if [[ -n "${DISPLAY:-}" ]]; then
         log "Smoke-testing GTK Object Capture on native display $DISPLAY"
@@ -288,7 +373,7 @@ main() {
     create_venv
     install_python_dependencies
     build_javafx_agent
-    verify_native_python_bindings || die "required RHEL GTK/AT-SPI bindings are not visible inside the virtual environment"
+    verify_native_python_bindings || die "required RHEL GTK/AT-SPI/Pillow bindings are not visible inside the virtual environment"
     write_environment
     qualify
     log "Bootstrap complete"

@@ -92,6 +92,11 @@ OBSERVATIONS = (
         ), defaults={"timeout": 5.0, "interval": 0.1}, category="Synchronization",
     ),
     ActionDefinition(
+        "assert_exists", "Assert Exists",
+        "Assert that the object resolves and retain a component screenshot as actual evidence.",
+        "gui.object.exists.assert", category="Assertion",
+    ),
+    ActionDefinition(
         "assert_state", "Assert State", "Assert an object state or property.",
         "gui.object.state.assert", inputs=(
             ActionInput("state_name", "string", description="State/property name."),
