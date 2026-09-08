@@ -74,6 +74,7 @@ class AuthoringApp:
         self._recording_stop_active = False
         self._recorded_object_save_active = False
         self.recorded_interactions: list[RecordedInteraction] = []
+        self._recorded_plan_indices = set()
         self._build()
         self.window.connect("key-press-event", self._on_key_press)
         self.refresh_all()
@@ -394,7 +395,7 @@ class AuthoringApp:
         components = dict(self.repository.components)
         components.pop(component_id, None)
         self.repository = ComponentRepository(components)
-        if self.mode in {"capture", "repository"} and hasattr(self, "_mark_repository_dirty"):
+        if hasattr(self, "_mark_repository_dirty"):
             self._mark_repository_dirty(True)
         elif self.repository_path is not None:
             self.repository.save(self.repository_path)
@@ -424,8 +425,6 @@ class AuthoringApp:
         component_id = self._selected(self.object_tree)
         if not component_id:
             return self._info("Object Repository", "Select a component to edit.")
-        if self.repository_path is None:
-            return self._error("Object Repository", "Open or create an editable repository first.")
         definition = self.repository.get(component_id)
         document = ComponentRepository({component_id: definition}).to_document()["components"][component_id]
         raw = self._ask_text("Edit component", "Component definition JSON:", json.dumps(document, indent=2), multiline=True)
@@ -434,9 +433,11 @@ class AuthoringApp:
         try:
             value = json.loads(raw)
             parsed = ComponentRepository.from_document({"version": 1, "components": {component_id: value}}, source="editor")
-            editable = ComponentRepository.load([self.repository_path]) if self.repository_path.exists() else ComponentRepository({})
-            editable.with_component(parsed.get(component_id)).save(self.repository_path)
-            self.repository = self._load_repository(); self.refresh_objects(); self._set_status("Saved " + component_id)
+            self.repository = self.repository.with_component(parsed.get(component_id))
+            if hasattr(self, "_mark_repository_dirty"):
+                self._mark_repository_dirty(True)
+            self.refresh_objects()
+            self._set_status("Updated %s — repository has unsaved changes" % component_id)
         except Exception as exc:
             self._error("Object Repository", "%s: %s" % (type(exc).__name__, exc))
 
@@ -992,7 +993,10 @@ class AuthoringApp:
             urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
             tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
             adapters = []
-            atspi = AtspiRecordingAdapter(on_resolved=self._acknowledge_recorded_target)
+            atspi = AtspiRecordingAdapter(
+                on_resolved=self._acknowledge_recorded_target,
+                javafx_driver=getattr(self.capture, "javafx_driver", None),
+            )
             if atspi.available:
                 adapters.append(atspi)
             adapters.extend(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
@@ -1008,7 +1012,9 @@ class AuthoringApp:
         self.start_recording_button.set_sensitive(False)
         self.stop_recording_button.set_sensitive(True)
         self._show_recording_stop_window()
-        self._set_status("Recording… interact with the target application, then stop recording")
+        self._set_status(
+            "Recording… press and hold each target until it highlights, then release"
+        )
 
     def _acknowledge_recorded_target(self, target, duration) -> None:
         bounds = getattr(target, "bounds", None)
@@ -1090,7 +1096,9 @@ class AuthoringApp:
             self._error("Recording", "%s: %s" % (type(error).__name__, error))
             return False
         self.recorded_interactions = list(interactions or ())
+        self._recorded_plan_indices = set()
         self.refresh_recorded_interactions()
+        self._append_resolved_recorded_steps()
         new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
         self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
         interacted = tuple(
@@ -1102,6 +1110,38 @@ class AuthoringApp:
                 self, interacted[0], recorded_captures=interacted,
             )
         return False
+
+    def recorded_capture_saved(self, captured, component_id) -> None:
+        """Bind reviewed captures and materialize their recorded actions."""
+        updated = []
+        for interaction in self.recorded_interactions:
+            if interaction.target == captured:
+                interaction = replace(
+                    interaction,
+                    repository_match=RepositoryMatch("known_unique", (component_id,)),
+                )
+            updated.append(interaction)
+        self.recorded_interactions = updated
+        self.refresh_recorded_interactions()
+        self._append_resolved_recorded_steps()
+
+    def _append_resolved_recorded_steps(self) -> None:
+        changed = False
+        for index, interaction in enumerate(self.recorded_interactions):
+            if index in self._recorded_plan_indices:
+                continue
+            if interaction.repository_match.component_id is None:
+                continue
+            call = interactions_to_steps(
+                (interaction,), start_index=len(self.plan.steps) + 1,
+            )[0]
+            call = replace(call, group="Recorded session")
+            self.plan = replace(self.plan, steps=(*self.plan.steps, call))
+            self._recorded_plan_indices.add(index)
+            changed = True
+        if changed:
+            self.refresh_plan()
+            self.refresh_state()
 
     def refresh_recorded_interactions(self) -> None:
         self.recording_store.clear()
@@ -1193,6 +1233,8 @@ class AuthoringApp:
             self.plan = replace(self.plan, objects=inline)
         elif destination is not None:
             self.repository_path = Path(destination)
+            if hasattr(self, "_mark_repository_dirty"):
+                self._mark_repository_dirty(False)
         self.refresh_objects(); self.refresh_recorded_interactions()
         location = "current test plan" if destination is None else str(destination)
         self._set_status("Saved %d recorded object(s) to %s" % (len(saved_ids), location))
@@ -1247,6 +1289,11 @@ class AuthoringApp:
         self._error("Plan validation", "\n".join(issues)) if issues else self._info("Plan validation", "Plan is structurally valid against the current registered-step catalog.")
 
     def open_plan_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Opening a plan may replace the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(yaml=True, artifact_suffix=PLAN_SUFFIX, title="Open Test Plan")
         if not path: return
         try:
@@ -1256,6 +1303,8 @@ class AuthoringApp:
             if inline.components:
                 self.repository = inline
                 self.repository_path = None
+                if hasattr(self, "_mark_repository_dirty"):
+                    self._mark_repository_dirty(False)
                 self.refresh_objects()
             self.plan_name.set_text(self.plan.name); self.refresh_plan(); self.refresh_variables(); self.refresh_state(); self._set_status("Opened plan: " + path)
         except Exception as exc: self._error("Plan error", "%s: %s" % (type(exc).__name__, exc))
@@ -1277,6 +1326,11 @@ class AuthoringApp:
             self.plan_path = previous
 
     def new_project_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Creating a project replaces the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(save=True, yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Create Test Project")
         if not path:
             return
@@ -1290,9 +1344,16 @@ class AuthoringApp:
             self.repository = self._load_repository()
         except Exception as exc:
             return self._error("New project", "%s: %s" % (type(exc).__name__, exc))
+        if hasattr(self, "_mark_repository_dirty"):
+            self._mark_repository_dirty(False)
         self.refresh_all(); self._set_status("Created project — capture an object or add a registered script step")
 
     def open_project_dialog(self) -> None:
+        if getattr(self, "_repository_dirty", False) and not self._confirm(
+            "Replace unsaved repository?",
+            "Opening a project replaces the current in-memory repository. Continue?",
+        ):
+            return
         path = self._choose_file(yaml=True, artifact_suffix=PROJECT_SUFFIX, title="Open Test Project")
         if not path:
             return
@@ -1302,6 +1363,8 @@ class AuthoringApp:
             self.repository_path = project.repository; self.repository = self._load_repository()
         except Exception as exc:
             return self._error("Open project", "%s: %s" % (type(exc).__name__, exc))
+        if hasattr(self, "_mark_repository_dirty"):
+            self._mark_repository_dirty(False)
         self.refresh_all(); self._set_status("Opened project: " + project.name)
 
     def save_reusable_step(self) -> None:

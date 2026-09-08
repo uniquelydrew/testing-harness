@@ -32,6 +32,12 @@ class AtspiAmbiguousObject(AtspiResolutionError):
     pass
 
 
+class AtspiExcludedClickSource(AtspiResolutionError):
+    """The click originated from authoring chrome excluded from capture."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class AtspiResolutionStage:
     source: str
@@ -130,6 +136,76 @@ class AtspiDriver:
         if match is None:
             raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
         return _capture_semantic_accessible(match, desktop, pyatspi)
+
+    def capture_at_point_snapshot(
+        self,
+        x: int,
+        y: int,
+        *,
+        excluded_application_prefixes: tuple[str, ...] = (),
+    ) -> CapturedComponent:
+        """Capture a semantic point target without a desktop uniqueness scan."""
+        pyatspi = _pyatspi()
+        desktop = pyatspi.Registry.getDesktop(0)
+        match = _deepest_at_point(
+            desktop,
+            x=x,
+            y=y,
+            pyatspi=pyatspi,
+            excluded_application_prefixes=excluded_application_prefixes,
+        )
+        if match is None:
+            raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
+        return _capture_accessible(_semantic_accessible(match), pyatspi)
+
+    def capture_event_source_snapshot(self, source: Any) -> CapturedComponent:
+        """Snapshot an event source at its nearest semantic boundary.
+
+        Recording runs this inside AT-SPI dispatch. It deliberately omits the
+        settling, re-hit-testing, and repository-wide uniqueness work used by
+        interactive authoring; the workbench performs that refinement later.
+        """
+        return _capture_accessible(_semantic_accessible(source), _pyatspi())
+
+    def capture_click_snapshot(
+        self,
+        source: Any,
+        coordinates: tuple[int, int] | None,
+        *,
+        excluded_application_prefixes: tuple[str, ...] = (),
+    ) -> CapturedComponent:
+        """Resolve click evidence through the canonical live semantic pipeline."""
+        if source is not None:
+            try:
+                captured = self.capture_event_source_snapshot(source)
+                if _snapshot_is_excluded_application(
+                    captured,
+                    excluded_application_prefixes=excluded_application_prefixes,
+                ):
+                    raise AtspiExcludedClickSource(
+                        "click originated from an excluded application"
+                    )
+                if _snapshot_is_interaction_target(
+                    captured,
+                    excluded_application_prefixes=excluded_application_prefixes,
+                ):
+                    return captured
+            except AtspiExcludedClickSource:
+                raise
+            except Exception:
+                pass
+        if coordinates is None:
+            raise LookupError("click event supplied no resolvable source or desktop coordinates")
+        captured = self.capture_at_point_snapshot(
+            *coordinates,
+            excluded_application_prefixes=excluded_application_prefixes,
+        )
+        if not _snapshot_is_interaction_target(
+            captured,
+            excluded_application_prefixes=excluded_application_prefixes,
+        ):
+            raise LookupError("click resolved only to a structural or presentation object")
+        return captured
 
     def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
         """Identify the application under a point, then resolve within it.
@@ -231,7 +307,12 @@ class AtspiDriver:
                 # Treat one click as a scoped operation. First determine its
                 # application source, then resolve the deepest *live* object
                 # at the source bounds within that application only.
-                captured = self.capture_event_source(source)
+                coordinates = _device_event_coordinates(event)
+                captured = self.capture_click_snapshot(
+                    source,
+                    coordinates,
+                    excluded_application_prefixes=("Automation Harness",),
+                )
                 finish(captured, None)
             except BaseException as exc:
                 finish(None, exc)
@@ -650,23 +731,47 @@ def _matches_condition(node: Any, key: str, expected: Any) -> bool:
     raise ValueError(f"unsupported AT-SPI locator property {key!r}")
 
 
-def _deepest_at_point(node: Any, *, x: int, y: int, pyatspi: Any) -> Any | None:
+def _deepest_at_point(
+    node: Any,
+    *,
+    x: int,
+    y: int,
+    pyatspi: Any,
+    excluded_application_prefixes: tuple[str, ...] = (),
+) -> Any | None:
     # Desktop and application nodes commonly expose no Component interface
     # (and therefore no bounds). They are structural containers, not proof
     # that their descendants cannot contain the point. Traverse them while
     # retaining reverse child order as the best available stacking order.
+    role = (_role_name(node) or "").replace("_", " ").casefold()
+    if role == "application":
+        application_name = str(getattr(node, "name", None) or "")
+        if any(application_name.startswith(prefix) for prefix in excluded_application_prefixes):
+            return None
     matches: list[Any] = []
     for child in reversed(_children(node)):
         bounds = _bounds(child, pyatspi)
         if bounds is None:
-            deeper = _deepest_at_point(child, x=x, y=y, pyatspi=pyatspi)
+            deeper = _deepest_at_point(
+                child,
+                x=x,
+                y=y,
+                pyatspi=pyatspi,
+                excluded_application_prefixes=excluded_application_prefixes,
+            )
             if deeper is not None:
                 matches.append(deeper)
             continue
         left, top, width, height = bounds
         if not (left <= x < left + width and top <= y < top + height):
             continue
-        deeper = _deepest_at_point(child, x=x, y=y, pyatspi=pyatspi)
+        deeper = _deepest_at_point(
+            child,
+            x=x,
+            y=y,
+            pyatspi=pyatspi,
+            excluded_application_prefixes=excluded_application_prefixes,
+        )
         if deeper is not None:
             matches.append(deeper)
         else:
@@ -701,6 +806,46 @@ _PRESENTATION_ROLES = frozenset({
     "filler", "unknown",
 })
 
+_STRUCTURAL_ROLES = frozenset({
+    "application", "application window", "desktop", "desktop frame", "frame",
+    "window", "root pane", "dialog", "alert", "file chooser",
+})
+
+
+def _snapshot_is_interaction_target(
+    captured: CapturedComponent,
+    *,
+    excluded_application_prefixes: tuple[str, ...] = (),
+) -> bool:
+    application = str(captured.application or "")
+    if any(application.startswith(prefix) for prefix in excluded_application_prefixes):
+        return False
+    role = " ".join(str(captured.role or "").replace("_", " ").replace("-", " ").casefold().split())
+    if role in _STRUCTURAL_ROLES:
+        return False
+    if role in _PRESENTATION_ROLES and not captured.actions and not captured.state.editable:
+        return False
+    return True
+
+
+def _snapshot_is_excluded_application(
+    captured: CapturedComponent,
+    *,
+    excluded_application_prefixes: tuple[str, ...] = (),
+) -> bool:
+    application = str(captured.application or "")
+    return any(application.startswith(prefix) for prefix in excluded_application_prefixes)
+
+
+def _device_event_coordinates(event: Any) -> tuple[int, int] | None:
+    x = getattr(event, "detail1", None)
+    y = getattr(event, "detail2", None)
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (x, y)):
+        return None
+    if x < 0 or y < 0:
+        return None
+    return int(x), int(y)
+
 
 def _semantic_accessible(node: Any) -> Any:
     """Promote a presentation leaf to the nearest actionable semantic owner."""
@@ -715,7 +860,10 @@ def _semantic_accessible(node: Any) -> Any:
         parent_role = (_role_name(parent) or "").replace("_", " ").casefold()
         if parent_role in _SEMANTIC_ROLES or _actions(parent):
             return parent
-        if parent_role in {"application", "desktop", "frame", "window"}:
+        if parent_role in {
+            "application", "application window", "desktop", "desktop frame",
+            "frame", "window", "root pane", "dialog", "alert", "file chooser",
+        }:
             break
         parent = _parent(parent)
     return current
@@ -766,6 +914,9 @@ def _capture_semantic_accessible(node: Any, search_root: Any, pyatspi: Any) -> C
 
 def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     attributes = _attributes(node)
+    process_id = _process_id(node, attributes)
+    if process_id is not None:
+        attributes["process_id"] = process_id
     bounds = _bounds(node, pyatspi)
     actions = _actions(node)
     hierarchy = _hierarchy(node)
@@ -793,6 +944,34 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         native_class=attributes.get("class") or attributes.get("class-name"),
         logical_subobjects=logical_subobjects,
     )
+
+
+def _process_id(node: Any, attributes: Mapping[str, Any] | None = None) -> int | None:
+    """Return the owning application's PID without making it identity evidence."""
+    raw_attributes = attributes or {}
+    for key in ("process_id", "process-id", "pid"):
+        value = raw_attributes.get(key)
+        try:
+            if value is not None and int(value) > 0:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    current = node
+    for _depth in range(64):
+        if current is None:
+            break
+        for method_name in ("get_process_id", "getProcessId"):
+            method = getattr(current, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                value = int(method())
+            except Exception:
+                continue
+            if value > 0:
+                return value
+        current = _parent(current)
+    return None
 
 
 def _is_menu_role(role: str | None) -> bool:

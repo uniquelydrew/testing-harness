@@ -81,10 +81,13 @@ Click a control in MVD or Mosaic. The result should include its JavaFX class,
 Node `id` when present, accessible role/text, screen bounds, state, hierarchy,
 and candidate `javafx` strategy.
 
-`automation-capture` then uses a hybrid capture service: AT-SPI remains active
-for native GTK/Swing targets while JavaFX bridge endpoints are queried in
-parallel. An AT-SPI failure on JavaFX's empty top-level frame does not terminate
-the capture while the JavaFX bridge is still resolving the click.
+`automation-capture` then uses a hybrid capture service. Capture Next Click
+listens for the actual event in both AT-SPI and the JavaFX bridge, giving the
+native JavaFX result a bounded priority. Continuous recording instead uses the
+X11 topmost client PID as its routing boundary: only the bridge owned by that
+PID may perform JavaFX point resolution. Swing uses java-atk-wrapper/AT-SPI as
+the final fallback and must match the same PID. A covered JavaFX window is never
+eligible merely because its bounds contain the pointer.
 
 ## Discovery
 

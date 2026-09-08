@@ -1396,11 +1396,14 @@ floating **Stop Recording** control. Stop processing runs off the GTK thread;
 the authoring window is restored while adapters finish and the recording is
 correlated.
 
-Recording and Capture Next Click use the same semantic target policy. Repeated
-pointer observations from AT-SPI and the JavaFX bridge are correlated into one
-interaction, preferring the native JavaFX target when both describe the same
-control. Passive labels, generic panels, authoring chrome, focus transitions,
-and other presentation noise are not emitted as test actions.
+Recording and Capture Next Click use the same semantic target policy. On X11,
+the physical pointer monitor first resolves the topmost client window and its
+owning process. Only a JavaFX bridge belonging to that process may hit-test the
+point. Swing then falls back to java-atk-wrapper/AT-SPI, and that accessibility
+snapshot must report the same process owner. This prevents covered windows from
+capturing a click based only on overlapping screen bounds. Passive labels,
+generic panels, authoring chrome, focus transitions, and other presentation
+noise are not emitted as test actions.
 
 After recording stops, the Object Identity Workbench opens automatically with
 every distinct interacted object checked. Its review tree is intentionally
@@ -1445,6 +1448,12 @@ Use the Object Repository view to:
 - capture an object
 - save/recapture an object
 - inspect revision and locator details
+
+Repository edits remain in memory until **Save Repository** is used. **Save
+Repository As** creates or rebinds the current `.ahobjects` file; for an open
+project, the project document is updated to reference that file. An asterisk in
+the main window title indicates unsaved repository changes. Opening another
+repository, project, or inline-object plan prompts before discarding them.
 
 ## Actions
 
