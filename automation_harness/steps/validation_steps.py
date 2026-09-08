@@ -5,15 +5,20 @@ from collections.abc import Sequence
 from automation_harness.core.driver_manager import DriverManager
 from automation_harness.core.step_registry import step
 from automation_harness.core.test_context import TestContext
+from automation_harness.models.evidence import EvidenceItem
 
 
 def _record_assertion(ctx: TestContext, name: str, expected, actual, passed: bool, **fields) -> None:
-    ctx.evidence.record(
-        "assertion",
-        assertion=name,
+    ctx.evidence.record_assertion(
+        name,
+        passed=passed,
         expected=expected,
         actual=actual,
-        passed=passed,
+        evidence=(
+            EvidenceItem.value_item("expected", "value", expected),
+            EvidenceItem.value_item("actual", "value", actual),
+        ),
+        node_id=getattr(ctx, "execution_node_id", None),
         **fields,
     )
 

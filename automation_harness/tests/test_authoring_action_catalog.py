@@ -19,7 +19,7 @@ def test_button_actions_are_contextual_and_include_observation_options():
     action_ids = [item.action_id for item in actions_for(definition)]
     assert "click" in action_ids
     assert "set_text" not in action_ids
-    assert action_ids[-3:] == ["wait_for_state", "assert_state", "read_property"]
+    assert action_ids[-4:] == ["wait_for_state", "assert_exists", "assert_state", "read_property"]
 
 
 def test_click_is_offered_for_general_interactive_components():
@@ -60,6 +60,15 @@ def test_assertion_uses_internal_executor_but_is_not_presented_as_step_library()
     assert call.inputs["component_id"] == "screen.object"
 
 
+def test_assert_exists_is_first_class_and_requires_no_manual_state_input():
+    definition = _component(ObjectType.BUTTON, {"click"})
+    call = action_by_id(definition, "assert_exists").to_step_call(
+        "assert-object", definition.component_id,
+    )
+    assert call.step_id == "gui.object.exists.assert"
+    assert call.inputs == {"component_id": "screen.object"}
+
+
 def test_capture_to_action_to_test_vertical_slice_validates():
     definition = _component(ObjectType.BUTTON, {"click"})
     repository = ComponentRepository({definition.component_id: definition})
@@ -67,6 +76,9 @@ def test_capture_to_action_to_test_vertical_slice_validates():
     assertion = action_by_id(definition, "assert_state").to_step_call(
         "assert-visible", definition.component_id, {"state_name": "visible", "expected": True},
     )
-    plan = TestPlan("captured-object-test", steps=(click, assertion))
+    exists = action_by_id(definition, "assert_exists").to_step_call(
+        "assert-exists", definition.component_id,
+    )
+    plan = TestPlan("captured-object-test", steps=(click, assertion, exists))
     assert validate_plan(plan, default_step_registry()) == []
     assert validate_plan_components(plan, repository) == []
