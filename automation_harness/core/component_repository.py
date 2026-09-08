@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import yaml
 
@@ -22,6 +23,21 @@ _ATSPI_PARENT_KEYS = {"name", "role", "accessible_id"}
 class ComponentRepository:
     components: dict[str, ComponentDefinition]
 
+    def __post_init__(self) -> None:
+        seen: dict[str, str] = {}
+        for name, definition in self.components.items():
+            if name != definition.component_id:
+                raise ComponentRepositoryError(
+                    f"component repository key {name!r} does not match definition name {definition.component_id!r}"
+                )
+            object_id = _normalize_object_id(definition.object_id, prefix=f"component {name!r}.object_id")
+            previous = seen.get(object_id)
+            if previous is not None and previous != name:
+                raise ComponentRepositoryError(
+                    f"immutable object id {object_id!r} is assigned to both {previous!r} and {name!r}"
+                )
+            seen[object_id] = name
+
     @classmethod
     def load(cls, paths: Iterable[Path]) -> "ComponentRepository":
         merged: dict[str, ComponentDefinition] = {}
@@ -33,76 +49,117 @@ class ComponentRepository:
             except yaml.YAMLError as exc:
                 raise ComponentRepositoryError(f"invalid YAML in {path}: {exc}") from exc
             repository = cls.from_document(raw, source=str(path))
-            merged.update(repository.components)
+            for name, definition in repository.components.items():
+                existing = merged.get(name)
+                if existing is not None and existing.object_id != definition.object_id:
+                    definition = replace(definition, object_id=existing.object_id)
+                merged[name] = definition
         return cls(merged)
 
     @classmethod
     def from_document(cls, raw: Any, *, source: str = "repository") -> "ComponentRepository":
-        """Parse a repository document supplied by an editor or a YAML file."""
         if not isinstance(raw, dict):
             raise ComponentRepositoryError(f"{source}: root must be a mapping")
         version = raw.get("version", 1)
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ComponentRepositoryError(f"{source}: unsupported component schema version {version!r}")
         entries = raw.get("components", {})
         if not isinstance(entries, dict):
             raise ComponentRepositoryError(f"{source}: components must be a mapping")
         return cls({
-            str(component_id): _parse_component(Path(source), str(component_id), value, version=version)
-            for component_id, value in entries.items()
+            str(name): _parse_component(Path(source), str(name), value, version=version)
+            for name, value in entries.items()
         })
 
     def get(self, component_id: str) -> ComponentDefinition:
         try:
             return self.components[component_id]
-        except KeyError as exc:
-            candidates = self.suggest(component_id)
-            suffix = f"; possible matches: {', '.join(candidates)}" if candidates else ""
-            raise ComponentRepositoryError(f"unknown component {component_id!r}{suffix}") from exc
+        except KeyError:
+            pass
+        for definition in self.components.values():
+            if definition.object_id == component_id:
+                return definition
+        candidates = self.suggest(component_id)
+        suffix = f"; possible matches: {', '.join(candidates)}" if candidates else ""
+        raise ComponentRepositoryError(f"unknown component {component_id!r}{suffix}")
 
     def contains(self, component_id: str) -> bool:
-        return component_id in self.components
+        return component_id in self.components or any(
+            definition.object_id == component_id for definition in self.components.values()
+        )
+
+    def object_id_for(self, component_id: str) -> str:
+        return self.get(component_id).object_id
 
     def suggest(self, component_id: str, *, limit: int = 3) -> list[str]:
         from difflib import get_close_matches
-
         return get_close_matches(component_id, self.components.keys(), n=limit, cutoff=0.45)
 
     def to_document(self) -> dict[str, Any]:
         return {
-            "version": 2,
+            "version": 3,
             "components": {
-                component_id: _component_to_mapping(definition)
-                for component_id, definition in sorted(self.components.items())
+                name: _component_to_mapping(definition)
+                for name, definition in sorted(self.components.items())
             },
         }
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            yaml.safe_dump(self.to_document(), sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        path.write_text(yaml.safe_dump(self.to_document(), sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     def with_component(self, definition: ComponentDefinition) -> "ComponentRepository":
         merged = dict(self.components)
+        existing = merged.get(definition.component_id)
+        if existing is not None and existing.object_id != definition.object_id:
+            definition = replace(definition, object_id=existing.object_id)
         merged[definition.component_id] = definition
         return ComponentRepository(merged)
 
     def without_component(self, component_id: str) -> "ComponentRepository":
         merged = dict(self.components)
-        merged.pop(component_id, None)
+        if component_id in merged:
+            merged.pop(component_id, None)
+        else:
+            for name, definition in tuple(merged.items()):
+                if definition.object_id == component_id:
+                    merged.pop(name, None)
+                    break
+        return ComponentRepository(merged)
+
+    def rename(self, component_id: str, new_component_id: str) -> "ComponentRepository":
+        if not isinstance(new_component_id, str) or not new_component_id.strip():
+            raise ComponentRepositoryError("new component name must be a non-empty string")
+        new_component_id = new_component_id.strip()
+        definition = self.get(component_id)
+        if new_component_id != definition.component_id and new_component_id in self.components:
+            raise ComponentRepositoryError(f"component {new_component_id!r} already exists")
+        merged = dict(self.components)
+        merged.pop(definition.component_id)
+        merged[new_component_id] = replace(definition, component_id=new_component_id)
         return ComponentRepository(merged)
 
     def overlay(self, other: "ComponentRepository") -> "ComponentRepository":
         merged = dict(self.components)
-        merged.update(other.components)
+        for name, definition in other.components.items():
+            existing = merged.get(name)
+            if existing is not None and existing.object_id != definition.object_id:
+                definition = replace(definition, object_id=existing.object_id)
+            merged[name] = definition
         return ComponentRepository(merged)
 
 
 def _parse_component(path: Path, component_id: str, value: Any, *, version: int = 1) -> ComponentDefinition:
     if not isinstance(value, dict):
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must be a mapping")
+    raw_object_id = value.get("object_id")
+    if raw_object_id is None:
+        if version >= 3:
+            raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_id is required by schema v3")
+        object_id = _legacy_object_id(component_id)
+    else:
+        object_id = _normalize_object_id(raw_object_id, prefix=f"{path}: component {component_id!r}.object_id")
+
     description = value.get("description", "")
     if not isinstance(description, str):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.description must be a string")
@@ -112,9 +169,12 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     expected_states = value.get("expected_states", {})
     if not isinstance(expected_states, Mapping):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.expected_states must be a mapping")
+    action_completion = _mapping_of_mappings(path, component_id, value.get("action_completion", {}), "action_completion")
+    scope = value.get("scope", {})
+    if not isinstance(scope, Mapping):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.scope must be a mapping")
     visual = _normalize_visual(path, component_id, value.get("visual"))
 
-    raw_actions = value.get("actions")
     raw_object_type = value.get("object_type")
     if raw_object_type is None:
         object_type = ObjectType.CUSTOM
@@ -123,12 +183,11 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
             object_type = ObjectType(str(raw_object_type))
         except ValueError as exc:
             raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_type is not a known semantic type") from exc
+    raw_actions = value.get("actions")
     if raw_actions is None:
-        raw_actions = [item.value for item in default_actions(object_type)] if version == 2 else ["resolve", "activate"]
+        raw_actions = [item.value for item in default_actions(object_type)] if version >= 2 else ["resolve", "activate"]
     if not isinstance(raw_actions, list) or not raw_actions or not all(isinstance(item, str) and item for item in raw_actions):
-        raise ComponentRepositoryError(
-            f"{path}: component {component_id!r}.actions must be a non-empty list of strings"
-        )
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.actions must be a non-empty list of strings")
     actions = frozenset(raw_actions)
     if version == 1 and "resolve" not in actions:
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must support the resolve action")
@@ -139,28 +198,21 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     strategies: list[ComponentStrategy] = []
     for index, raw in enumerate(raw_strategies):
         if not isinstance(raw, dict):
-            raise ComponentRepositoryError(
-                f"{path}: component {component_id!r}.strategies[{index}] must be a mapping"
-            )
+            raise ComponentRepositoryError(f"{path}: component {component_id!r}.strategies[{index}] must be a mapping")
         strategy_type = raw.get("type")
         if not isinstance(strategy_type, str) or not strategy_type:
-            raise ComponentRepositoryError(
-                f"{path}: component {component_id!r}.strategies[{index}].type must be a non-empty string"
-            )
+            raise ComponentRepositoryError(f"{path}: component {component_id!r}.strategies[{index}].type must be a non-empty string")
         if strategy_type == "reference":
             raise ComponentRepositoryError(
-                f"{path}: component {component_id!r} uses removed strategy 'reference'; "
-                "use 'reference_inspection' only for non-interactive synthetic inspection"
+                f"{path}: component {component_id!r} uses removed strategy 'reference'; use 'reference_inspection' only for non-interactive synthetic inspection"
             )
         if strategy_type == "reference_inspection" and "activate" in actions:
             raise ComponentRepositoryError(
-                f"{path}: component {component_id!r} cannot declare activate with reference_inspection; "
-                "synthetic inspection may locate evidence but may not perform UI interaction"
+                f"{path}: component {component_id!r} cannot declare activate with reference_inspection; synthetic inspection may locate evidence but may not perform UI interaction"
             )
         if strategy_type == "anchored_visual" and "activate" in actions:
             raise ComponentRepositoryError(
-                f"{path}: component {component_id!r} cannot declare activate with anchored_visual; "
-                "visual targets are externally resolved and read-only"
+                f"{path}: component {component_id!r} cannot declare activate with anchored_visual; visual targets are externally resolved and read-only"
             )
         options = {k: v for k, v in raw.items() if k != "type"}
         if strategy_type in {"atspi", "java_accessibility"}:
@@ -168,6 +220,7 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         elif strategy_type == "anchored_visual":
             options = _normalize_anchored_visual_strategy(path, component_id, index, options)
         strategies.append(ComponentStrategy(strategy_type, options))
+
     properties = value.get("properties", {})
     if not isinstance(properties, Mapping):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.properties must be a mapping")
@@ -180,6 +233,7 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     subobjects = value.get("subobjects", {})
     if not isinstance(subobjects, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in subobjects.items()):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.subobjects must map IDs to selector mappings")
+
     return ComponentDefinition(
         component_id=component_id,
         description=description,
@@ -194,28 +248,31 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         framework=framework,
         native_class=native_class,
         subobjects={str(key): dict(item) for key, item in subobjects.items()},
+        action_completion=action_completion,
+        scope=dict(scope),
+        object_id=object_id,
     )
 
 
-def _normalize_atspi_strategy(
-    path: Path,
-    component_id: str,
-    index: int,
-    options: Mapping[str, Any],
-) -> dict[str, Any]:
-    prefix = f"{path}: component {component_id!r}.strategies[{index}]"
-    if "identification" in options:
-        if len(options) != 1:
-            extra = sorted(set(options) - {"identification"})
+def _mapping_of_mappings(path: Path, component_id: str, value: Any, field_name: str) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.{field_name} must be a mapping")
+    result: dict[str, dict[str, Any]] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or not isinstance(item, Mapping):
             raise ComponentRepositoryError(
-                f"{prefix}: nested AT-SPI identification cannot be mixed with flat properties: {', '.join(extra)}"
+                f"{path}: component {component_id!r}.{field_name} must map non-empty names to mappings"
             )
-        raw_identity = options["identification"]
-    else:
-        # Legacy flat locators are read for compatibility but normalized into
-        # the richer identity model on load/save.
-        raw_identity = {"mandatory": dict(options)}
+        result[key] = dict(item)
+    return result
 
+
+def _normalize_atspi_strategy(path: Path, component_id: str, index: int, options: Mapping[str, Any]) -> dict[str, Any]:
+    prefix = f"{path}: component {component_id!r}.strategies[{index}]"
+    raw_identity = options["identification"] if "identification" in options else {"mandatory": dict(options)}
+    if "identification" in options and len(options) != 1:
+        extra = sorted(set(options) - {"identification"})
+        raise ComponentRepositoryError(f"{prefix}: nested AT-SPI identification cannot be mixed with flat properties: {', '.join(extra)}")
     if not isinstance(raw_identity, Mapping):
         raise ComponentRepositoryError(f"{prefix}.identification must be a mapping")
     mandatory = raw_identity.get("mandatory", {})
@@ -227,14 +284,12 @@ def _normalize_atspi_strategy(
         raise ComponentRepositoryError(f"{prefix}.identification.assistive must be a mapping")
     _validate_locator_conditions(prefix + ".identification.mandatory", mandatory)
     _validate_locator_conditions(prefix + ".identification.assistive", assistive)
-
     if isinstance(ordinal, Mapping):
         if set(ordinal) != {"index"}:
             raise ComponentRepositoryError(f"{prefix}.identification.ordinal mapping must contain only 'index'")
         ordinal = ordinal.get("index")
     if ordinal is not None and (not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0):
         raise ComponentRepositoryError(f"{prefix}.identification.ordinal must be a non-negative integer")
-
     identity: dict[str, Any] = {"mandatory": dict(mandatory)}
     if assistive:
         identity["assistive"] = dict(assistive)
@@ -243,27 +298,17 @@ def _normalize_atspi_strategy(
     return {"identification": identity}
 
 
-def _normalize_anchored_visual_strategy(
-    path: Path, component_id: str, index: int, options: Mapping[str, Any],
-) -> dict[str, Any]:
+def _normalize_anchored_visual_strategy(path: Path, component_id: str, index: int, options: Mapping[str, Any]) -> dict[str, Any]:
     prefix = f"{path}: component {component_id!r}.strategies[{index}]"
     if set(options) != {"anchor_identification", "relative_bounds"}:
-        raise ComponentRepositoryError(
-            f"{prefix} must contain only anchor_identification and relative_bounds"
-        )
-    normalized_anchor = _normalize_atspi_strategy(
-        path, component_id, index, {"identification": options["anchor_identification"]},
-    )["identification"]
+        raise ComponentRepositoryError(f"{prefix} must contain only anchor_identification and relative_bounds")
+    normalized_anchor = _normalize_atspi_strategy(path, component_id, index, {"identification": options["anchor_identification"]})["identification"]
     relative = options["relative_bounds"]
-    if not isinstance(relative, list) or len(relative) != 4 or any(
-        not isinstance(value, (int, float)) or isinstance(value, bool) for value in relative
-    ):
+    if not isinstance(relative, list) or len(relative) != 4 or any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in relative):
         raise ComponentRepositoryError(f"{prefix}.relative_bounds must be four numbers")
-    rx, ry, rw, rh = (float(value) for value in relative)
+    rx, ry, rw, rh = (float(v) for v in relative)
     if min(rx, ry, rw, rh) < 0 or rw <= 0 or rh <= 0 or rx + rw > 1.0001 or ry + rh > 1.0001:
-        raise ComponentRepositoryError(
-            f"{prefix}.relative_bounds must be positive normalized coordinates within the anchor"
-        )
+        raise ComponentRepositoryError(f"{prefix}.relative_bounds must be positive normalized coordinates within the anchor")
     return {"anchor_identification": normalized_anchor, "relative_bounds": [rx, ry, rw, rh]}
 
 
@@ -281,9 +326,7 @@ def _validate_locator_conditions(prefix: str, conditions: Mapping[str, Any]) -> 
                 raise ComponentRepositoryError(f"{prefix}.parent must be a non-empty mapping")
             unknown = set(value) - _ATSPI_PARENT_KEYS
             if unknown:
-                raise ComponentRepositoryError(
-                    f"{prefix}.parent contains unsupported properties: {', '.join(sorted(unknown))}"
-                )
+                raise ComponentRepositoryError(f"{prefix}.parent contains unsupported properties: {', '.join(sorted(unknown))}")
             for parent_key, parent_value in value.items():
                 if not isinstance(parent_value, str) or not parent_value:
                     raise ComponentRepositoryError(f"{prefix}.parent.{parent_key} must be a non-empty string")
@@ -297,19 +340,17 @@ def _validate_locator_conditions(prefix: str, conditions: Mapping[str, Any]) -> 
 
 def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "object_id": definition.object_id,
         "description": definition.description,
         "revision": definition.revision,
         "actions": sorted(definition.actions),
-        "strategies": [
-            {"type": strategy.type, **dict(strategy.options)}
-            for strategy in definition.strategies
-        ],
+        "strategies": [{"type": strategy.type, **dict(strategy.options)} for strategy in definition.strategies],
+        "object_type": definition.object_type.value,
     }
     if definition.expected_states:
         payload["expected_states"] = dict(definition.expected_states)
     if definition.visual:
         payload["visual"] = dict(definition.visual)
-    payload["object_type"] = definition.object_type.value
     if definition.properties:
         payload["properties"] = dict(definition.properties)
     if definition.framework:
@@ -318,7 +359,24 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["native_class"] = definition.native_class
     if definition.subobjects:
         payload["subobjects"] = {key: dict(value) for key, value in definition.subobjects.items()}
+    if definition.action_completion:
+        payload["action_completion"] = {key: dict(value) for key, value in definition.action_completion.items()}
+    if definition.scope:
+        payload["scope"] = dict(definition.scope)
     return payload
+
+
+def _legacy_object_id(component_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, "automation-harness:component:" + component_id))
+
+
+def _normalize_object_id(value: Any, *, prefix: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ComponentRepositoryError(f"{prefix} must be a UUID string")
+    try:
+        return str(UUID(value))
+    except ValueError as exc:
+        raise ComponentRepositoryError(f"{prefix} must be a UUID string") from exc
 
 
 def _normalize_visual(path: Path, component_id: str, value: Any) -> dict[str, Any] | None:
@@ -353,7 +411,9 @@ def _normalize_visual(path: Path, component_id: str, value: Any) -> dict[str, An
             _validate_visual_path(prefix, mask)
             item["mask"] = mask
         profile = raw.get("profile")
-        if not isinstance(profile, Mapping) or not profile or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in profile.items()):
+        if not isinstance(profile, Mapping) or not profile or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in profile.items()
+        ):
             raise ComponentRepositoryError(f"{prefix}.variants.{key}.profile must be a non-empty string mapping")
         item["profile"] = dict(profile)
         component_revision = raw.get("component_revision")
@@ -362,7 +422,12 @@ def _normalize_visual(path: Path, component_id: str, value: Any) -> dict[str, An
         item["component_revision"] = component_revision
         for field, default in (("pixel_tolerance", 12), ("max_difference_ratio", 0.01)):
             field_value = raw.get(field, default)
-            if not isinstance(field_value, (int, float)) or isinstance(field_value, bool) or field_value < 0 or (field == "max_difference_ratio" and field_value > 1):
+            if (
+                not isinstance(field_value, (int, float))
+                or isinstance(field_value, bool)
+                or field_value < 0
+                or (field == "max_difference_ratio" and field_value > 1)
+            ):
                 raise ComponentRepositoryError(f"{prefix}.variants.{key}.{field} is invalid")
             item[field] = field_value
         normalized["variants"][key] = item

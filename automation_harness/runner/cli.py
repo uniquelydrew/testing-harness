@@ -13,6 +13,7 @@ from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.compiler import compile_test, load_compiled_test
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, load_plan, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -123,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan_status = plan_sub.add_parser("status", help="show the initial managed queue projection for a TestPlan")
     plan_status.add_argument("path", type=Path)
     plan_status.add_argument("--json", action="store_true")
+    plan_compile = plan_sub.add_parser("compile", help="compile a TestPlan into a deterministic self-contained execution artifact")
+    plan_compile.add_argument("path", type=Path)
+    plan_compile.add_argument("--output", "-o", type=Path, required=True)
+    plan_compile.add_argument("--components", type=Path, help="additional object repository to overlay before compilation")
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
     plan_run.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
@@ -131,6 +136,18 @@ def build_parser() -> argparse.ArgumentParser:
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
+
+    compiled = sub.add_parser("compiled", help="inspect or execute immutable compiled test artifacts")
+    compiled_sub = compiled.add_subparsers(dest="compiled_command", required=True)
+    compiled_inspect = compiled_sub.add_parser("inspect", help="verify and print compiled artifact metadata")
+    compiled_inspect.add_argument("path", type=Path)
+    compiled_run = compiled_sub.add_parser("run", help="execute a verified compiled artifact")
+    compiled_run.add_argument("path", type=Path)
+    compiled_run.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
+    compiled_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    compiled_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
+    _add_reference_options(compiled_run)
+    _add_gtk_demo_options(compiled_run)
 
     selftest = sub.add_parser("selftest", help="run the built-in synthetic reference regression suites")
     selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -182,6 +199,40 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().print_help(sys.stderr)
         return 2
 
+    if args.command == "compiled":
+        try:
+            artifact = load_compiled_test(args.path)
+            registry = default_step_registry()
+            issues = artifact.validate_runtime(registry)
+            if issues:
+                for issue in issues:
+                    print(f"ERROR: {issue}", file=sys.stderr)
+                return 2
+            if args.compiled_command == "inspect":
+                print(json.dumps({
+                    "format": artifact.document["format"],
+                    "source": artifact.document["source"],
+                    "artifact": artifact.document["artifact"],
+                    "instructions": len(artifact.document["instructions"]),
+                    "step_dependencies": sorted(artifact.document["dependencies"]["steps"]),
+                    "component_dependencies": sorted(artifact.document["dependencies"]["components"]),
+                }, indent=2))
+                return 0
+            variable_overrides = _parse_variable_overrides(args.variables)
+            backend = _backend(args.backend, args)
+            result = execute_plan(
+                artifact.runtime_plan(),
+                backend,
+                runs_dir=args.runs_dir.resolve(),
+                variable_overrides=variable_overrides,
+                compiled_artifact=artifact,
+            )
+            print(json.dumps(result.to_dict(), indent=2, default=str))
+            return int(result.exit_code or 0)
+        except Exception as exc:
+            print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+
     if args.command == "visual":
         try:
             repository_path = args.repository.resolve()
@@ -229,11 +280,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
         registry = default_step_registry()
-        issues = validate_plan(test_plan, registry)
         component_repository = repository_from_plan(test_plan)
         selected_components = getattr(args, "components", None)
         if selected_components is not None:
             component_repository = component_repository.overlay(ComponentRepository.load([selected_components.resolve()]))
+
+        if args.plan_command == "compile":
+            try:
+                artifact = compile_test(test_plan, registry, component_repository)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(artifact.to_json(), encoding="utf-8")
+                print(f"COMPILED: {args.output} sha256={artifact.digest}")
+                return 0
+            except Exception as exc:
+                print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 2
+
+        issues = validate_plan(test_plan, registry)
         issues.extend(validate_plan_components(test_plan, component_repository))
         if args.plan_command == "validate":
             if args.backend:
