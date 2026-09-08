@@ -22,6 +22,8 @@ class StepCall:
     depends_on: tuple[str, ...] = ()
     description: str = ""
     group: str = ""
+    completion: Mapping[str, Any] = field(default_factory=lambda: {"mode": "automatic"})
+    scope: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -31,6 +33,8 @@ class StepCall:
             "inputs": _encode_refs(dict(self.inputs)),
             "outputs": dict(self.outputs),
             "depends_on": list(self.depends_on),
+            "completion": _encode_refs(dict(self.completion)),
+            "scope": _encode_refs(dict(self.scope)),
         }
         if self.group:
             result["group"] = self.group

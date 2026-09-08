@@ -16,7 +16,6 @@ class TestPlanError(ValueError):
     __test__ = False
 
 
-
 def load_plan(path: Path) -> TestPlan:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, Mapping):
@@ -50,8 +49,14 @@ def load_plan(path: Path) -> TestPlan:
         inputs = item.get("inputs", {})
         outputs = item.get("outputs", {})
         depends_on = item.get("depends_on", [])
+        completion = item.get("completion", {"mode": "automatic"})
+        scope = item.get("scope", {})
         if not isinstance(inputs, Mapping) or not isinstance(outputs, Mapping) or not isinstance(depends_on, list):
             raise TestPlanError(f"step {node_id!r} has invalid inputs/outputs/depends_on")
+        if not isinstance(completion, Mapping):
+            raise TestPlanError(f"step {node_id!r}.completion must be a mapping")
+        if not isinstance(scope, Mapping):
+            raise TestPlanError(f"step {node_id!r}.scope must be a mapping")
         steps.append(
             StepCall(
                 node_id=node_id,
@@ -61,6 +66,8 @@ def load_plan(path: Path) -> TestPlan:
                 depends_on=tuple(str(value) for value in depends_on),
                 description=str(item.get("description", "")),
                 group=str(item.get("group", "")),
+                completion=_decode_refs(dict(completion)),
+                scope=_decode_refs(dict(scope)),
             )
         )
     return TestPlan(
@@ -79,19 +86,28 @@ def save_plan(plan: TestPlan, path: Path) -> None:
 
 
 def repository_from_plan(plan: TestPlan) -> ComponentRepository:
-    """Materialize the plan's self-contained object repository."""
+    """Materialize the plan's self-contained object repository.
+
+    Embedded plans remain schema-v2 compatible so legacy objects without
+    immutable IDs receive deterministic identities during materialization.
+    """
     return ComponentRepository.from_document({"version": 2, "components": dict(plan.objects)})
 
 
 def embed_plan_repository(plan: TestPlan, repository: ComponentRepository) -> TestPlan:
-    """Snapshot objects referenced by literal component IDs into a plan."""
+    """Snapshot objects referenced by literal name-or-ID references into a plan."""
     referenced = {
         call.inputs.get("component_id")
         for call in plan.steps
         if isinstance(call.inputs.get("component_id"), str)
     }
     objects = repository.to_document().get("components", {})
-    embedded = {component_id: objects[component_id] for component_id in sorted(referenced) if component_id in objects}
+    embedded: dict[str, Any] = {}
+    for reference in sorted(referenced):
+        if not repository.contains(reference):
+            continue
+        definition = repository.get(reference)
+        embedded[definition.component_id] = objects[definition.component_id]
     return replace(plan, objects=embedded)
 
 
@@ -124,6 +140,17 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
     explicit_edges: dict[str, set[str]] = {node_id: set() for node_id in known_nodes}
     for call in plan.steps:
         definition = definitions.get(call.node_id)
+        mode = call.completion.get("mode", "automatic")
+        if mode not in {"automatic", "explicit", "dispatch-only", "manual"}:
+            issues.append(f"{call.node_id}: invalid completion mode {mode!r}")
+        if mode in {"explicit", "manual"} and not isinstance(call.completion.get("condition"), Mapping):
+            issues.append(f"{call.node_id}: completion mode {mode!r} requires a condition")
+        context_effect = call.scope.get("context")
+        if context_effect is not None:
+            if not isinstance(context_effect, Mapping):
+                issues.append(f"{call.node_id}: scope.context must be a mapping")
+            elif context_effect.get("operation") not in {"push", "pop"}:
+                issues.append(f"{call.node_id}: scope.context operation must be 'push' or 'pop'")
         for dependency in call.depends_on:
             if dependency not in known_nodes:
                 issues.append(f"{call.node_id}: unknown dependency {dependency!r}")
@@ -149,12 +176,9 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
                         f"expects {item.annotation}, got {type(value).__name__}"
                     )
 
-    # Variable references may consume an initial variable or an output produced
-    # anywhere in the graph. A later producer is valid: the managed queue keeps
-    # the consumer BLOCKED until the producer commits the value.
     data_edges: dict[str, set[str]] = {node_id: set() for node_id in known_nodes}
     for call in plan.steps:
-        for path in _collect_refs(call.inputs):
+        for path in _call_refs(call):
             root = path.split(".", 1)[0]
             if _path_available(plan.variables, path):
                 continue
@@ -187,11 +211,7 @@ def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:
 
 
 def validate_plan_components(plan: TestPlan, repository: ComponentRepository) -> list[str]:
-    """Validate literal component references against the repository used for execution.
-
-    Variable-driven component IDs remain runtime-resolved, but literal IDs can and
-    should be rejected before any backend is started.
-    """
+    """Validate literal component references against the repository used for execution."""
     issues: list[str] = []
     for call in plan.steps:
         component_id = call.inputs.get("component_id")
@@ -280,18 +300,13 @@ def _find_cycle(graph: Mapping[str, set[str]]) -> tuple[str, ...]:
 def derive_execution_state(plan: TestPlan) -> ExecutionState:
     state = ExecutionState.from_plan(plan)
     completed: set[str] = set()
-    # Initial queue state only. Runtime executor will reevaluate after each commit.
     for call in plan.steps:
-        refs = tuple(sorted(_collect_refs(call.inputs)))
+        refs = tuple(sorted(_call_refs(call)))
         unresolved = tuple(path for path in refs if not _path_available(plan.variables, path))
         dependency_block = tuple(dep for dep in call.depends_on if dep not in completed)
         node = state.steps[call.node_id]
         node.unresolved_variables = unresolved
-        if unresolved or dependency_block:
-            node.status = StepStatus.BLOCKED
-        else:
-            node.status = StepStatus.READY
-        # Outputs are not available until the producing node actually commits.
+        node.status = StepStatus.BLOCKED if unresolved or dependency_block else StepStatus.READY
     return state
 
 
@@ -345,8 +360,6 @@ def _matches_input_annotation(value: Any, annotation: str) -> bool:
         return isinstance(value, Mapping)
     if normalized.startswith(("tuple[", "Tuple[")):
         return isinstance(value, tuple)
-    # Unknown/project-specific annotations remain runtime-validated rather than
-    # causing false preflight failures.
     return True
 
 
@@ -361,6 +374,10 @@ def _collect_refs(value: Any) -> set[str]:
         for item in value:
             result.update(_collect_refs(item))
     return result
+
+
+def _call_refs(call: StepCall) -> set[str]:
+    return _collect_refs(call.inputs) | _collect_refs(call.scope) | _collect_refs(call.completion)
 
 
 def _path_available(values: Mapping[str, Any], path: str) -> bool:
@@ -445,7 +462,7 @@ class ManagedExecutionQueue:
             node = self.state.steps[call.node_id]
             if node.status in terminal:
                 continue
-            refs = tuple(sorted(_collect_refs(call.inputs)))
+            refs = tuple(sorted(_call_refs(call)))
             unresolved = tuple(path for path in refs if not _path_available(self.state.variables, path))
             unmet_dependencies = tuple(
                 dep for dep in call.depends_on
