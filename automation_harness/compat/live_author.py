@@ -7,10 +7,12 @@ def _prepare():
     install()
     from automation_harness.authoring import app, live_runtime
     from automation_harness.authoring.live_click_policy import install as install_click_policy
+    from automation_harness.authoring.preferences_runtime import install as install_preferences_runtime
 
     live_runtime.capture_runtime._install(app)
     live_runtime._install_workbench_controls()
     install_click_policy(app)
+    install_preferences_runtime(app)
     return app
 
 
