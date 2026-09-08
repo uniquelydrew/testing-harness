@@ -21,10 +21,9 @@ class StepCall:
     outputs: Mapping[str, str] = field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
     description: str = ""
-    group: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        result = {
+        return {
             "id": self.node_id,
             "step": self.step_id,
             "description": self.description,
@@ -32,9 +31,6 @@ class StepCall:
             "outputs": dict(self.outputs),
             "depends_on": list(self.depends_on),
         }
-        if self.group:
-            result["group"] = self.group
-        return result
 
 
 @dataclass(frozen=True)
@@ -44,16 +40,12 @@ class TestPlan:
     version: int = 1
     variables: Mapping[str, Any] = field(default_factory=dict)
     steps: tuple[StepCall, ...] = ()
-    objects: Mapping[str, Any] = field(default_factory=dict)
-    step_definitions: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
             "variables": _encode_refs(dict(self.variables)),
-            "objects": _encode_refs(dict(self.objects)),
-            "step_definitions": _encode_refs(dict(self.step_definitions)),
             "steps": [step.to_dict() for step in self.steps],
         }
 

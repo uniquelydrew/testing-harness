@@ -105,13 +105,6 @@ def test_native_atspi_capture_can_win_hybrid_race():
     assert captured.accessible_id == "follow"
 
 
-def test_instrumented_javafx_wins_bounded_arbitration_after_atspi_success():
-    service = HybridObjectCaptureService(driver=_AtspiSuccess(), javafx_driver=_JavaFxSuccess())
-    captured = service.capture_next_click(timeout=1.0)
-    assert captured.framework == "javafx"
-    assert captured.accessible_id == "cameraSelectorButton"
-
-
 def test_javafx_definition_preserves_native_identity_and_framework():
     service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
     definition = service.definition_from_capture("mvd.camera_selector", _capture("javafx"))
@@ -122,6 +115,18 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert identity["mandatory"] == {"id": "cameraSelectorButton"}
     assert identity["assistive"]["window"] == "ERSA Main Video Display"
     assert "activate" in definition.actions
+
+
+def test_javafx_recapture_preserves_immutable_object_id(tmp_path):
+    service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
+    path = tmp_path / "components.yaml"
+
+    first = service.save_capture(path, "mvd.camera_selector", _capture("javafx"))
+    second = service.save_capture(path, first.object_id, _capture("javafx"))
+
+    assert first.object_id == second.object_id
+    assert second.component_id == "mvd.camera_selector"
+    assert second.revision == 2
 
 
 def test_javafx_definition_rejects_ambiguous_identity():

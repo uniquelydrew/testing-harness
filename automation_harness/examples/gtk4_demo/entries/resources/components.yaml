@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.entries.text:
+    object_id: 70221495-62a5-594e-a10b-4eea7ebb1770
     description: GTK 4.14 Undo and Redo editable text entry.
     actions: [resolve]
     strategies:

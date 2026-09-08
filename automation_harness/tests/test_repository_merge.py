@@ -49,3 +49,4 @@ def test_component_diff_only_reports_persisted_definition_changes():
     assert "Select active camera" in diff
     assert "/tmp/current.yaml" not in diff
     assert "/tmp/incoming.yaml" not in diff
+    assert "object_id" not in diff

@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.buttons.main:
+    object_id: ca8e6d71-0900-521d-872c-a8d46d59d890
     description: GTK 4.14 Dialog demo message-dialog launcher.
     actions: [resolve, activate]
     strategies:

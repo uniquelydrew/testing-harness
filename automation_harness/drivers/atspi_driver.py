@@ -3,14 +3,12 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
-from automation_harness.drivers.atspi_registry import acquire_atspi_registry
 from automation_harness.models.component import (
     AtspiIdentification,
     CapturedComponent,
-    ComponentStrategy,
     ComponentState,
     ResolvedComponent,
 )
@@ -129,7 +127,7 @@ class AtspiDriver:
         match = _deepest_at_point(desktop, x=x, y=y, pyatspi=pyatspi)
         if match is None:
             raise LookupError(f"no AT-SPI object found at desktop point ({x}, {y})")
-        return _capture_semantic_accessible(match, desktop, pyatspi)
+        return _capture_accessible(match, pyatspi)
 
     def capture_scoped_at_point(self, x: int, y: int) -> CapturedComponent:
         """Identify the application under a point, then resolve within it.
@@ -154,39 +152,7 @@ class AtspiDriver:
                 f"no live component matched desktop point ({x}, {y}) "
                 f"within application {application_name!r}"
             )
-        return _capture_semantic_accessible(target, desktop, pyatspi)
-
-    def capture_event_source(self, source: Any, *, settle_delay: float = 0.08) -> CapturedComponent:
-        """Resolve an AT-SPI pointer source through the canonical click pipeline.
-
-        Device coordinates are not a reliable identity source: compositors and
-        desktop chrome can be returned for the same point after focus or popup
-        state changes.  Both Next Click and recording instead scope resolution
-        to the event source's application and re-query the deepest live object
-        at the source bounds.
-        """
-        pyatspi = _pyatspi()
-        source_capture = _capture_accessible(source, pyatspi)
-        if source_capture.application is None or source_capture.bounds is None:
-            raise LookupError("clicked accessibility event has no application-scoped component bounds")
-        left, top, width, height = source_capture.bounds
-        if settle_delay > 0:
-            time.sleep(settle_delay)
-        desktop = pyatspi.Registry.getDesktop(0)
-        application = _live_application(desktop, source_capture.application)
-        if application is None:
-            raise LookupError(
-                f"clicked application {source_capture.application!r} is no longer live"
-            )
-        target = _deepest_at_point(
-            application,
-            x=left + width // 2,
-            y=top + height // 2,
-            pyatspi=pyatspi,
-        )
-        if target is None:
-            raise LookupError("no live component matched the clicked point within its application")
-        return _capture_semantic_accessible(target, desktop, pyatspi)
+        return _capture_accessible(target, pyatspi)
 
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
         """Wait for one desktop mouse press and capture its accessible source.
@@ -205,14 +171,16 @@ class AtspiDriver:
         baseline_signature = _accessible_signature(baseline_focus, pyatspi) if baseline_focus is not None else None
         outcome: queue.Queue[tuple[CapturedComponent | None, BaseException | None]] = queue.Queue(maxsize=1)
         completed = threading.Event()
-        finish_lock = threading.Lock()
 
         def finish(captured: CapturedComponent | None, error: BaseException | None) -> None:
-            with finish_lock:
-                if completed.is_set():
-                    return
-                outcome.put((captured, error))
-                completed.set()
+            if completed.is_set():
+                return
+            completed.set()
+            outcome.put((captured, error))
+            try:
+                pyatspi.Registry.stop()
+            except Exception:
+                pass
 
         def on_target_event(event: Any) -> None:
             event_type = str(getattr(event, "type", ""))
@@ -231,7 +199,25 @@ class AtspiDriver:
                 # Treat one click as a scoped operation. First determine its
                 # application source, then resolve the deepest *live* object
                 # at the source bounds within that application only.
-                captured = self.capture_event_source(source)
+                source_capture = _capture_accessible(source, pyatspi)
+                if source_capture.application is None or source_capture.bounds is None:
+                    raise LookupError("clicked accessibility event has no application-scoped component bounds")
+                left, top, width, height = source_capture.bounds
+                time.sleep(0.08)
+                application = _live_application(
+                    pyatspi.Registry.getDesktop(0), source_capture.application,
+                )
+                if application is None:
+                    raise LookupError(f"clicked application {source_capture.application!r} is no longer live")
+                target = _deepest_at_point(
+                    application,
+                    x=left + width // 2,
+                    y=top + height // 2,
+                    pyatspi=pyatspi,
+                )
+                if target is None:
+                    raise LookupError("no live component matched the clicked point within its application")
+                captured = _capture_accessible(target, pyatspi)
                 finish(captured, None)
             except BaseException as exc:
                 finish(None, exc)
@@ -239,14 +225,13 @@ class AtspiDriver:
         event_types = ("mouse:button:1p", "object:state-changed:focused")
         for event_type in event_types:
             pyatspi.Registry.registerEventListener(on_target_event, event_type)
+        timer = threading.Timer(timeout, lambda: finish(None, TimeoutError("no object was clicked before capture timed out")))
+        timer.daemon = True
+        timer.start()
         try:
-            lease = acquire_atspi_registry(pyatspi)
-            try:
-                if not completed.wait(timeout):
-                    finish(None, TimeoutError("no object was clicked before capture timed out"))
-            finally:
-                lease.close()
+            pyatspi.Registry.start()
         finally:
+            timer.cancel()
             try:
                 for event_type in event_types:
                     pyatspi.Registry.deregisterEventListener(on_target_event, event_type)
@@ -280,56 +265,6 @@ class AtspiDriver:
                 properties={"identification": locator.to_dict()},
             )
         return _capture_accessible(match, pyatspi).state
-
-    def activate_window(
-        self,
-        *,
-        identification: Mapping[str, Any] | AtspiIdentification | None = None,
-        name: str | None = None,
-        role: str | None = None,
-        accessible_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Raise the owning top-level accessible without invoking its action."""
-        pyatspi = _pyatspi()
-        locator = _identification(identification, name=name, role=role, accessible_id=accessible_id)
-        match, trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
-        window = _owning_window(match)
-        if window is None:
-            raise RuntimeError("AT-SPI component has no owning top-level window")
-        _grab_focus(window, label="owning window")
-        return {
-            "operation": "activate_window",
-            "window": str(getattr(window, "name", "") or ""),
-            "resolution_stages": [stage.to_dict() for stage in trace],
-        }
-
-    def focus(
-        self,
-        *,
-        identification: Mapping[str, Any] | AtspiIdentification | None = None,
-        name: str | None = None,
-        role: str | None = None,
-        accessible_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Request and verify component focus without invoking an action."""
-        pyatspi = _pyatspi()
-        locator = _identification(identification, name=name, role=role, accessible_id=accessible_id)
-        match, trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
-        _grab_focus(match, label="component")
-        deadline = time.monotonic() + 1.0
-        focused = False
-        while time.monotonic() < deadline:
-            focused = bool(_capture_accessible(match, pyatspi).state.focused)
-            if focused:
-                break
-            time.sleep(0.02)
-        if not focused:
-            raise RuntimeError("AT-SPI component did not report focused state")
-        return {
-            "operation": "focus",
-            "focused": True,
-            "resolution_stages": [stage.to_dict() for stage in trace],
-        }
 
     def activate(
         self,
@@ -405,38 +340,6 @@ class AtspiDriver:
             raise RuntimeError("AT-SPI component does not expose selectable children") from exc
         return {"child_index": child_index, "resolution_stages": [stage.to_dict() for stage in trace]}
 
-    def select_menu_path(
-        self,
-        selectors: list[Mapping[str, Any]],
-        *,
-        identification: Mapping[str, Any] | AtspiIdentification,
-    ) -> dict[str, Any]:
-        """Traverse and activate a menu path without returning between clicks."""
-        if not selectors:
-            raise ValueError("AT-SPI menu path must not be empty")
-        root, trace = _select_accessible(
-            _pyatspi().Registry.getDesktop(0), _identification(identification)
-        )
-        current = root
-        traversed: list[dict[str, Any]] = []
-        for index, selector in enumerate(selectors):
-            child = _wait_for_menu_child(current, selector, timeout=1.0)
-            terminal = index == len(selectors) - 1
-            action_name = _activate_accessible(child)
-            traversed.append({
-                "selector": dict(selector),
-                "name": getattr(child, "name", None),
-                "role": _role_name(child),
-                "action": action_name,
-            })
-            if not terminal:
-                current = child
-        return {
-            "action": "select_menu_item",
-            "path": traversed,
-            "resolution_stages": [stage.to_dict() for stage in trace],
-        }
-
     def get_value(self, *, identification: Mapping[str, Any] | AtspiIdentification) -> float:
         match, _ = _select_accessible(_pyatspi().Registry.getDesktop(0), _identification(identification))
         try:
@@ -461,40 +364,6 @@ class AtspiDriver:
         except Exception as exc:
             raise RuntimeError("AT-SPI component does not expose a writable numeric value") from exc
         return {"value": float(value), "resolution_stages": [stage.to_dict() for stage in trace]}
-
-
-def _owning_window(accessible: Any) -> Any | None:
-    """Return the nearest dialog/frame/window ancestor for an accessible."""
-    current = accessible
-    fallback = None
-    while current is not None:
-        try:
-            role = str(current.getRoleName() or "").casefold()
-        except Exception:
-            role = ""
-        if role in {"dialog", "frame", "window"}:
-            return current
-        if role == "application":
-            return fallback
-        fallback = current
-        try:
-            parent = current.parent
-        except Exception:
-            parent = None
-        if parent is current:
-            break
-        current = parent
-    return fallback
-
-
-def _grab_focus(accessible: Any, *, label: str) -> None:
-    try:
-        component = accessible.queryComponent()
-        result = component.grabFocus()
-    except Exception as exc:
-        raise RuntimeError(f"AT-SPI {label} does not expose focus control") from exc
-    if result is False:
-        raise RuntimeError(f"AT-SPI {label} rejected focus request")
 
 
 def _pyatspi():
@@ -690,80 +559,6 @@ def _deepest_at_point(node: Any, *, x: int, y: int, pyatspi: Any) -> Any | None:
     return None
 
 
-_SEMANTIC_ROLES = frozenset({
-    "push button", "button", "toggle button", "check box", "radio button",
-    "combo box", "entry", "password text", "spin button", "slider",
-    "list item", "table cell", "tree item", "menu", "menu item",
-    "check menu item", "radio menu item", "page tab", "link",
-})
-_PRESENTATION_ROLES = frozenset({
-    "label", "static", "text", "paragraph", "icon", "image", "section", "panel",
-    "filler", "unknown",
-})
-
-
-def _semantic_accessible(node: Any) -> Any:
-    """Promote a presentation leaf to the nearest actionable semantic owner."""
-    current = node
-    role = (_role_name(current) or "").replace("_", " ").casefold()
-    if role in _SEMANTIC_ROLES or _actions(current) or _is_editable_text(current, role):
-        return current
-    if role not in _PRESENTATION_ROLES:
-        return current
-    parent = _parent(current)
-    while parent is not None:
-        parent_role = (_role_name(parent) or "").replace("_", " ").casefold()
-        if parent_role in _SEMANTIC_ROLES or _actions(parent):
-            return parent
-        if parent_role in {"application", "desktop", "frame", "window"}:
-            break
-        parent = _parent(parent)
-    return current
-
-
-def _is_editable_text(node: Any, role: str) -> bool:
-    """Distinguish an editable AT-SPI text control from a rendered text leaf."""
-    if role != "text":
-        return False
-    try:
-        node.queryEditableText()
-    except Exception:
-        return False
-    return True
-
-
-def _capture_semantic_accessible(node: Any, search_root: Any, pyatspi: Any) -> CapturedComponent:
-    semantic = _semantic_accessible(node)
-    captured = _capture_accessible(semantic, pyatspi)
-    try:
-        identity = captured.candidate_identification()
-        candidates, _stages = _progressive_candidates(search_root, identity)
-    except Exception:
-        return captured
-    if len(candidates) <= 1:
-        return captured
-    ordinal = next(
-        (index for index, candidate in enumerate(candidates) if candidate is semantic or candidate == semantic),
-        None,
-    )
-    if ordinal is None:
-        return captured
-    explicit = AtspiIdentification(identity.mandatory, identity.assistive, ordinal)
-    return replace(
-        captured,
-        authored_strategy=ComponentStrategy("atspi", {"identification": explicit.to_dict()}),
-        backend_properties={
-            **dict(captured.backend_properties),
-            "capture_promotion": {
-                "promoted": semantic is not node,
-                "physical_role": _role_name(node),
-                "semantic_role": _role_name(semantic),
-                "explicit_ordinal": ordinal,
-            },
-        },
-    )
-
-
 def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     attributes = _attributes(node)
     bounds = _bounds(node, pyatspi)
@@ -772,11 +567,9 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     description = getattr(node, "description", None)
     state = _component_state(node, pyatspi, attributes=attributes, bounds=bounds)
     parent = _parent(node)
-    role = _role_name(node)
-    logical_subobjects = _menu_subobjects(node) if _is_menu_role(role) else {}
     return CapturedComponent(
         name=getattr(node, "name", None),
-        role=role,
+        role=_role_name(node),
         description=str(description) if description else None,
         accessible_id=_accessible_id(node, attributes=attributes),
         application=_application_name(node),
@@ -791,49 +584,7 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         parent_accessible_id=_accessible_id(parent) if parent is not None else None,
         framework="atspi",
         native_class=attributes.get("class") or attributes.get("class-name"),
-        logical_subobjects=logical_subobjects,
     )
-
-
-def _is_menu_role(role: str | None) -> bool:
-    normalized = (role or "").replace("_", " ").casefold()
-    return normalized in {"menu", "menu bar", "popup menu", "context menu"}
-
-
-def _menu_subobjects(node: Any) -> dict[str, dict[str, Any]]:
-    """Query visible menu descendants and retain their nested semantic selectors."""
-    result: dict[str, dict[str, Any]] = {}
-    used: set[str] = set()
-    for index, child in enumerate(_children(node), start=1):
-        role = _role_name(child)
-        normalized = (role or "").replace("_", " ").casefold()
-        if normalized not in {"menu", "menu item", "check menu item", "radio menu item", "separator"}:
-            continue
-        name = getattr(child, "name", None)
-        accessible_id = _accessible_id(child)
-        base = _subobject_key(accessible_id or name or normalized or "item")
-        key = base
-        suffix = 2
-        while key in used:
-            key = "%s_%d" % (base, suffix)
-            suffix += 1
-        used.add(key)
-        criteria = {"role": role} if role else {}
-        if accessible_id:
-            criteria["accessible_id"] = accessible_id
-        elif name:
-            criteria["name"] = str(name)
-        selector: dict[str, Any] = {"kind": normalized.replace(" ", "_"), "criteria": criteria, "ordinal": index - 1}
-        children = _menu_subobjects(child)
-        if children:
-            selector["subobjects"] = children
-        result[key] = selector
-    return result
-
-
-def _subobject_key(value: Any) -> str:
-    text = "".join(character.casefold() if character.isalnum() else "_" for character in str(value))
-    return "_".join(part for part in text.split("_") if part) or "item"
 
 
 def _component_state(
@@ -932,57 +683,6 @@ def _children(node: Any) -> list[Any]:
         if child is not None:
             result.append(child)
     return result
-
-
-def _wait_for_menu_child(parent: Any, selector: Mapping[str, Any], *, timeout: float) -> Any:
-    criteria = selector.get("criteria", {})
-    if not isinstance(criteria, Mapping):
-        raise ValueError("menu selector criteria must be a mapping")
-    ordinal = selector.get("ordinal")
-    deadline = time.monotonic() + timeout
-    while True:
-        children = _children(parent)
-        if isinstance(ordinal, int) and not isinstance(ordinal, bool) and 0 <= ordinal < len(children):
-            candidate = children[ordinal]
-            if _menu_child_matches(candidate, criteria):
-                return candidate
-        matches = [child for child in children if _menu_child_matches(child, criteria)]
-        if matches:
-            if len(matches) == 1:
-                return matches[0]
-            raise LookupError("AT-SPI menu selector is ambiguous: %r (%d matches)" % (criteria, len(matches)))
-        if time.monotonic() >= deadline:
-            raise LookupError("AT-SPI menu child was not exposed: %r" % criteria)
-        time.sleep(0.02)
-
-
-def _menu_child_matches(child: Any, criteria: Mapping[str, Any]) -> bool:
-    actual = {
-        "name": getattr(child, "name", None),
-        "role": _role_name(child),
-        "accessible_id": _accessible_id(child),
-    }
-    return all(
-        key in actual
-        and str(actual.get(key) or "").casefold() == str(expected or "").casefold()
-        for key, expected in criteria.items()
-    )
-
-
-def _activate_accessible(node: Any) -> str:
-    try:
-        actions = node.queryAction()
-    except Exception as exc:
-        raise RuntimeError("AT-SPI menu item exposes no actions") from exc
-    available: list[str] = []
-    for index in range(actions.nActions):
-        name = str(actions.getName(index))
-        available.append(name)
-        if name.casefold() in {"click", "press", "activate", "open"}:
-            if actions.doAction(index) is False:
-                raise RuntimeError("AT-SPI menu action %r reported failure" % name)
-            return name
-    raise RuntimeError("AT-SPI menu item exposes no activation action: %s" % ", ".join(available))
 
 
 def _role_name(node: Any) -> str | None:

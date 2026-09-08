@@ -1,6 +1,0 @@
-version: 1
-name: Live desktop authoring workflow
-repository: components.yaml
-runs_dir: runs
-script_steps:
-  - script_steps/environment_prepare.yaml

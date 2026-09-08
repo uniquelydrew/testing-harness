@@ -7,13 +7,9 @@ import socket
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from typing import Any, Mapping
 
-from automation_harness.core.semantic_target import SemanticTargetResolution
 from automation_harness.models.component import CapturedComponent, ComponentState, ComponentStrategy, ResolvedComponent
-from automation_harness.models.gui import ObjectType, classify_accessibility
 
 
 class JavaFxBridgeUnavailable(RuntimeError):
@@ -22,41 +18,6 @@ class JavaFxBridgeUnavailable(RuntimeError):
 
 class JavaFxBridgeProtocolError(RuntimeError):
     pass
-
-
-class JavaFxRecordingTransport(Protocol):
-    def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
-
-
-@dataclass(frozen=True)
-class HttpJavaFxBridgeTransport:
-    """Loopback-only HTTP transport used by the recording agent endpoints."""
-    endpoint: str
-    token: str
-    timeout: float = 5.0
-
-    def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        if not self.endpoint.startswith(("http://127.0.0.1", "http://localhost")):
-            raise ValueError("JavaFX agent endpoint must be loopback-only")
-        request = Request(
-            f"{self.endpoint.rstrip('/')}/{operation}", data=json.dumps(dict(payload)).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Automation-Harness-Token": self.token}, method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                value = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise RuntimeError(f"JavaFX agent {operation} failed: HTTP {exc.code}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"JavaFX agent {operation} is unavailable: {exc.reason}") from exc
-        if not isinstance(value, Mapping):
-            raise RuntimeError(f"JavaFX agent {operation} returned a non-object response")
-        if value.get("ok") is False:
-            raise RuntimeError(f"JavaFX agent {operation} failed: {value.get('error', 'unknown error')}")
-        result = value.get("result", value)
-        if not isinstance(result, Mapping):
-            raise RuntimeError(f"JavaFX agent {operation} result must be an object")
-        return result
 
 
 @dataclass(frozen=True)
@@ -237,28 +198,6 @@ class JavaFxBridgeDriver:
     def state(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> ComponentState:
         return self.inspect(identification=identification).state
 
-    def activate_window(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
-        endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request("activate_window", timeout=5.0, identification=dict(identification or {}))
-        return {
-            "operation": "activate_window",
-            "bridge_pid": endpoint.pid,
-            "window": response.get("window"),
-            "focused": response.get("focused"),
-        }
-
-    def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
-        endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request("focus", timeout=5.0, identification=dict(identification or {}))
-        if response.get("focused") is not True:
-            raise RuntimeError("JavaFX node did not report focused state")
-        return {
-            "operation": "focus",
-            "bridge_pid": endpoint.pid,
-            "node": response.get("node"),
-            "focused": True,
-        }
-
     def activate(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
         response = endpoint.request("activate", timeout=5.0, identification=dict(identification or {}))
@@ -284,27 +223,6 @@ class JavaFxBridgeDriver:
             value=value,
         )
         return {"action": "set_text", "bridge_pid": endpoint.pid, "node": response.get("node")}
-
-    def select_menu_path(
-        self,
-        selectors: list[Mapping[str, Any]],
-        *,
-        identification: Mapping[str, Any] | None = None,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        if not selectors:
-            raise ValueError("JavaFX menu path must not be empty")
-        endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request(
-            "select_menu_path", timeout=5.0,
-            identification=dict(identification or {}),
-            selectors=[dict(selector) for selector in selectors],
-        )
-        return {
-            "action": "select_menu_item",
-            "bridge_pid": endpoint.pid,
-            "path": response.get("path", []),
-        }
 
     def count_matches(self, *, identification: Mapping[str, Any] | None = None) -> int:
         matches, _trace = self._find_matches(identification)
@@ -401,30 +319,6 @@ class JavaFxBridgeDriver:
         return matches, trace
 
 
-@dataclass
-class JavaFxRecordingBridge:
-    """Semantic-capture view over the recording agent's HTTP protocol."""
-    transport: JavaFxRecordingTransport
-
-    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
-        return self.semantic_target(self.transport.request("capture_next_click", {"timeout": timeout})).capture()
-
-    def hit_test(self, x: int, y: int) -> CapturedComponent:
-        return self.semantic_target(self.transport.request("hit_test", {"x": x, "y": y})).capture()
-
-    @staticmethod
-    def semantic_target(response: Mapping[str, Any]) -> SemanticTargetResolution:
-        physical = _captured_recording_node(_require_mapping(response, "physical_node", fallback="node"))
-        semantic = _captured_recording_node(_require_mapping(response, "semantic_node", fallback="node"))
-        promotion = response.get("promotion", {})
-        if not isinstance(promotion, Mapping):
-            raise ValueError("JavaFX capture response promotion must be an object")
-        return SemanticTargetResolution(
-            physical, semantic, bool(promotion.get("promoted", physical != semantic)),
-            {key: value for key, value in promotion.items() if key != "promoted"},
-        )
-
-
 def discover_javafx_endpoints(discovery_dir: Path | None = None) -> tuple[JavaFxBridgeEndpoint, ...]:
     directory = discovery_dir or _default_discovery_dir()
     if not directory.is_dir():
@@ -514,7 +408,6 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         authored_strategy=strategy,
         framework="javafx",
         native_class=native_class,
-        logical_subobjects=_javafx_menu_subobjects(node.get("menu_children")),
     )
 
 
@@ -688,72 +581,6 @@ def _optional_str(value: Any):
 
 def _optional_bool(value: Any):
     return bool(value) if value is not None else None
-
-
-def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) -> Mapping[str, Any]:
-    value = response.get(key, response.get(fallback))
-    if not isinstance(value, Mapping):
-        raise ValueError("JavaFX capture response requires %s" % key)
-    return value
-
-
-def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
-    state_value = node.get("state", {})
-    state = state_value if isinstance(state_value, Mapping) else {}
-    bounds_value = node.get("bounds")
-    bounds = tuple(int(value) for value in bounds_value) if isinstance(bounds_value, (list, tuple)) and len(bounds_value) == 4 else None
-    native_class = _optional_str(node.get("native_class") or node.get("class"))
-    role = _optional_str(node.get("role"))
-    object_type_value = node.get("object_type")
-    try:
-        object_type = ObjectType(str(object_type_value)) if object_type_value else (
-            ObjectType.LABEL if native_class in {"javafx.scene.text.Text", "javafx.scene.control.Label"}
-            else classify_accessibility(role, native_class)
-        )
-    except ValueError:
-        object_type = classify_accessibility(role, native_class)
-    properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
-    logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
-    return CapturedComponent(
-        name=_optional_str(node.get("name") or node.get("text")), role=role,
-        description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
-        application=_optional_str(node.get("application")), window=_optional_str(node.get("window")),
-        hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
-        actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
-        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
-        backend_properties={
-            **dict(properties),
-            **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
-        },
-        object_type=object_type, framework="javafx", native_class=native_class,
-        logical_subobjects=logical_subobjects,
-    )
-
-
-def _javafx_menu_subobjects(values: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(values, (list, tuple)):
-        return {}
-    result: dict[str, dict[str, Any]] = {}
-    for index, raw in enumerate(values):
-        if not isinstance(raw, Mapping):
-            continue
-        name = _optional_str(raw.get("name") or raw.get("text"))
-        accessible_id = _optional_str(raw.get("accessible_id"))
-        role = _optional_str(raw.get("role")) or "menu item"
-        base = "".join(character.casefold() if character.isalnum() else "_" for character in (accessible_id or name or "item"))
-        base = "_".join(part for part in base.split("_") if part) or "item"
-        key = base
-        serial = 2
-        while key in result:
-            key = "%s_%d" % (base, serial); serial += 1
-        criteria = {"accessible_role": role}
-        if accessible_id: criteria["id"] = accessible_id
-        elif name: criteria["text"] = name
-        selector: dict[str, Any] = {"kind": role.replace(" ", "_"), "criteria": criteria, "ordinal": index}
-        children = _javafx_menu_subobjects(raw.get("menu_children"))
-        if children: selector["subobjects"] = children
-        result[key] = selector
-    return result
 
 
 def _monotonic():

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import yaml
 
@@ -22,6 +23,21 @@ _ATSPI_PARENT_KEYS = {"name", "role", "accessible_id"}
 class ComponentRepository:
     components: dict[str, ComponentDefinition]
 
+    def __post_init__(self) -> None:
+        seen_object_ids: dict[str, str] = {}
+        for component_id, definition in self.components.items():
+            if component_id != definition.component_id:
+                raise ComponentRepositoryError(
+                    f"component repository key {component_id!r} does not match definition name {definition.component_id!r}"
+                )
+            object_id = _normalize_object_id(definition.object_id, prefix=f"component {component_id!r}.object_id")
+            previous = seen_object_ids.get(object_id)
+            if previous is not None and previous != component_id:
+                raise ComponentRepositoryError(
+                    f"immutable object id {object_id!r} is assigned to both {previous!r} and {component_id!r}"
+                )
+            seen_object_ids[object_id] = component_id
+
     @classmethod
     def load(cls, paths: Iterable[Path]) -> "ComponentRepository":
         merged: dict[str, ComponentDefinition] = {}
@@ -33,7 +49,14 @@ class ComponentRepository:
             except yaml.YAMLError as exc:
                 raise ComponentRepositoryError(f"invalid YAML in {path}: {exc}") from exc
             repository = cls.from_document(raw, source=str(path))
-            merged.update(repository.components)
+            for component_id, definition in repository.components.items():
+                existing = merged.get(component_id)
+                if existing is not None and existing.object_id != definition.object_id:
+                    # Overlaying/revising a logical object must never replace its
+                    # immutable identity. A different object must use a different
+                    # logical name instead of reusing an existing repository key.
+                    definition = replace(definition, object_id=existing.object_id)
+                merged[component_id] = definition
         return cls(merged)
 
     @classmethod
@@ -42,7 +65,7 @@ class ComponentRepository:
         if not isinstance(raw, dict):
             raise ComponentRepositoryError(f"{source}: root must be a mapping")
         version = raw.get("version", 1)
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ComponentRepositoryError(f"{source}: unsupported component schema version {version!r}")
         entries = raw.get("components", {})
         if not isinstance(entries, dict):
@@ -53,15 +76,31 @@ class ComponentRepository:
         })
 
     def get(self, component_id: str) -> ComponentDefinition:
+        """Resolve a component by logical name or immutable object ID.
+
+        Logical-name lookup is retained for authoring/backward compatibility.
+        Test artifacts should persist ``object_id`` so renaming the logical
+        component cannot invalidate the reference.
+        """
         try:
             return self.components[component_id]
-        except KeyError as exc:
-            candidates = self.suggest(component_id)
-            suffix = f"; possible matches: {', '.join(candidates)}" if candidates else ""
-            raise ComponentRepositoryError(f"unknown component {component_id!r}{suffix}") from exc
+        except KeyError:
+            pass
+        for definition in self.components.values():
+            if definition.object_id == component_id:
+                return definition
+        candidates = self.suggest(component_id)
+        suffix = f"; possible matches: {', '.join(candidates)}" if candidates else ""
+        raise ComponentRepositoryError(f"unknown component {component_id!r}{suffix}")
 
     def contains(self, component_id: str) -> bool:
-        return component_id in self.components
+        if component_id in self.components:
+            return True
+        return any(definition.object_id == component_id for definition in self.components.values())
+
+    def object_id_for(self, component_id: str) -> str:
+        """Return the canonical immutable ID for a name-or-ID reference."""
+        return self.get(component_id).object_id
 
     def suggest(self, component_id: str, *, limit: int = 3) -> list[str]:
         from difflib import get_close_matches
@@ -70,7 +109,7 @@ class ComponentRepository:
 
     def to_document(self) -> dict[str, Any]:
         return {
-            "version": 2,
+            "version": 3,
             "components": {
                 component_id: _component_to_mapping(definition)
                 for component_id, definition in sorted(self.components.items())
@@ -86,23 +125,62 @@ class ComponentRepository:
 
     def with_component(self, definition: ComponentDefinition) -> "ComponentRepository":
         merged = dict(self.components)
+        existing = merged.get(definition.component_id)
+        if existing is not None and existing.object_id != definition.object_id:
+            # Re-capture, editor saves, locator changes, and normal revisions all
+            # retain the original object identity even if a caller constructed a
+            # fresh ComponentDefinition instance.
+            definition = replace(definition, object_id=existing.object_id)
         merged[definition.component_id] = definition
         return ComponentRepository(merged)
 
     def without_component(self, component_id: str) -> "ComponentRepository":
         merged = dict(self.components)
-        merged.pop(component_id, None)
+        if component_id in merged:
+            merged.pop(component_id, None)
+        else:
+            for name, definition in tuple(merged.items()):
+                if definition.object_id == component_id:
+                    merged.pop(name, None)
+                    break
+        return ComponentRepository(merged)
+
+    def rename(self, component_id: str, new_component_id: str) -> "ComponentRepository":
+        """Rename a logical object without changing its immutable identity."""
+        if not isinstance(new_component_id, str) or not new_component_id.strip():
+            raise ComponentRepositoryError("new component name must be a non-empty string")
+        new_component_id = new_component_id.strip()
+        definition = self.get(component_id)
+        if new_component_id != definition.component_id and new_component_id in self.components:
+            raise ComponentRepositoryError(f"component {new_component_id!r} already exists")
+        merged = dict(self.components)
+        merged.pop(definition.component_id)
+        merged[new_component_id] = replace(definition, component_id=new_component_id)
         return ComponentRepository(merged)
 
     def overlay(self, other: "ComponentRepository") -> "ComponentRepository":
         merged = dict(self.components)
-        merged.update(other.components)
+        for component_id, definition in other.components.items():
+            existing = merged.get(component_id)
+            if existing is not None and existing.object_id != definition.object_id:
+                definition = replace(definition, object_id=existing.object_id)
+            merged[component_id] = definition
         return ComponentRepository(merged)
 
 
 def _parse_component(path: Path, component_id: str, value: Any, *, version: int = 1) -> ComponentDefinition:
     if not isinstance(value, dict):
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must be a mapping")
+    raw_object_id = value.get("object_id")
+    if raw_object_id is None:
+        if version >= 3:
+            raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_id is required by schema v3")
+        object_id = _legacy_object_id(component_id)
+    else:
+        object_id = _normalize_object_id(
+            raw_object_id,
+            prefix=f"{path}: component {component_id!r}.object_id",
+        )
     description = value.get("description", "")
     if not isinstance(description, str):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.description must be a string")
@@ -124,7 +202,7 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         except ValueError as exc:
             raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_type is not a known semantic type") from exc
     if raw_actions is None:
-        raw_actions = [item.value for item in default_actions(object_type)] if version == 2 else ["resolve", "activate"]
+        raw_actions = [item.value for item in default_actions(object_type)] if version >= 2 else ["resolve", "activate"]
     if not isinstance(raw_actions, list) or not raw_actions or not all(isinstance(item, str) and item for item in raw_actions):
         raise ComponentRepositoryError(
             f"{path}: component {component_id!r}.actions must be a non-empty list of strings"
@@ -194,6 +272,7 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         framework=framework,
         native_class=native_class,
         subobjects={str(key): dict(item) for key, item in subobjects.items()},
+        object_id=object_id,
     )
 
 
@@ -297,6 +376,7 @@ def _validate_locator_conditions(prefix: str, conditions: Mapping[str, Any]) -> 
 
 def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "object_id": definition.object_id,
         "description": definition.description,
         "revision": definition.revision,
         "actions": sorted(definition.actions),
@@ -373,3 +453,22 @@ def _validate_visual_path(prefix: str, value: str) -> None:
     candidate = Path(value)
     if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts or candidate.parts[0] != "visual":
         raise ComponentRepositoryError(f"{prefix}: visual assets must be relative paths under visual/")
+
+
+def _normalize_object_id(value: Any, *, prefix: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ComponentRepositoryError(f"{prefix} must be a UUID string")
+    try:
+        return str(UUID(value))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ComponentRepositoryError(f"{prefix} must be a valid UUID") from exc
+
+
+def _legacy_object_id(component_id: str) -> str:
+    """Deterministically assign a stable ID while reading legacy v1/v2 data.
+
+    Legacy repositories used the logical name as identity, so the same logical
+    name intentionally maps to the same migration UUID across overlays. The ID
+    becomes explicitly persisted the next time the repository is saved as v3.
+    """
+    return str(uuid5(NAMESPACE_URL, "automation-harness/component/" + component_id))

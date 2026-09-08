@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.values.spin:
+    object_id: f3dd082b-34eb-510a-8cc9-1a022f139b4f
     description: GTK 4.14 spin button value control; captured baseline locator.
     actions: [resolve]
     strategies:

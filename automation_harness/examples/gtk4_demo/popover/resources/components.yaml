@@ -1,6 +1,7 @@
-version: 1
+version: 3
 components:
   gtk_demo.popover.menu:
+    object_id: 61951690-87c7-5684-8e6d-3286ed21e426
     description: GTK 4.14 modal-trigger baseline for transient-window handling.
     actions: [resolve, activate]
     strategies:

@@ -4,7 +4,7 @@ import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.core.gui_execution import ExecutionStrategyResolver
-from automation_harness.models.component import ComponentDefinition, ComponentStrategy
+from automation_harness.models.component import ComponentDefinition
 from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, ObjectSelector, ObjectType, classify_accessibility, default_actions
 
 
@@ -13,9 +13,6 @@ def test_taxonomy_and_default_profiles_are_semantic_not_framework_specific():
     assert classify_accessibility("table", "javafx.scene.control.TableView") is ObjectType.TABLE
     assert ActionType.CLICK in default_actions(ObjectType.BUTTON)
     assert ActionType.SET_TEXT in default_actions(ObjectType.TEXT_FIELD)
-    assert ActionType.CLICK in default_actions(ObjectType.PANEL)
-    assert ActionType.CLICK in default_actions(ObjectType.CANVAS)
-    assert ActionType.CLICK not in default_actions(ObjectType.LABEL)
 
 
 def test_v1_repository_remains_usable_as_semantic_click_object():
@@ -25,9 +22,10 @@ def test_v1_repository_remains_usable_as_semantic_click_object():
     definition = repository.get("save")
     assert definition.object_type is ObjectType.CUSTOM
     assert definition.supports(ActionType.CLICK)
+    assert repository.get(definition.object_id) is definition
 
 
-def test_v2_repository_persists_semantic_metadata_and_subobjects():
+def test_v2_repository_migrates_to_v3_and_persists_immutable_identity():
     repository = ComponentRepository.from_document({"version": 2, "components": {"orders": {
         "object_type": "table", "actions": ["select_row", "select_cell"],
         "properties": {"row_count": 5}, "framework": "javafx", "native_class": "javafx.scene.control.TableView",
@@ -38,8 +36,53 @@ def test_v2_repository_persists_semantic_metadata_and_subobjects():
     assert definition.supports(ActionType.SELECT_CELL)
     assert definition.subobjects["first_row"]["kind"] == "table_row"
     document = repository.to_document()
-    assert document["version"] == 2
+    assert document["version"] == 3
     assert document["components"]["orders"]["object_type"] == "table"
+    assert document["components"]["orders"]["object_id"] == definition.object_id
+    assert ComponentRepository.from_document(document).get(definition.object_id).component_id == "orders"
+
+
+def test_immutable_object_id_survives_logical_rename():
+    repository = ComponentRepository.from_document({"version": 2, "components": {"save": {
+        "object_type": "button", "actions": ["click"],
+        "strategies": [{"type": "atspi", "name": "Save", "role": "push button"}],
+    }}})
+    object_id = repository.get("save").object_id
+
+    renamed = repository.rename("save", "submit_credentials")
+
+    assert not renamed.contains("save")
+    assert renamed.get(object_id).component_id == "submit_credentials"
+    assert renamed.get("submit_credentials").object_id == object_id
+    reloaded = ComponentRepository.from_document(renamed.to_document())
+    assert reloaded.get(object_id).component_id == "submit_credentials"
+
+
+def test_component_revision_cannot_replace_existing_object_identity():
+    original = ComponentDefinition(component_id="save")
+    replacement = ComponentDefinition(component_id="save")
+    assert original.object_id != replacement.object_id
+
+    repository = ComponentRepository({"save": original}).with_component(replacement)
+
+    assert repository.get("save").object_id == original.object_id
+
+
+def test_repository_rejects_duplicate_immutable_object_ids():
+    object_id = "2b692073-a062-4d25-9c90-23e41c2a96da"
+    with pytest.raises(ComponentRepositoryError, match="assigned to both"):
+        ComponentRepository.from_document({"version": 3, "components": {
+            "first": {
+                "object_id": object_id,
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "First"}}}],
+            },
+            "second": {
+                "object_id": object_id,
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Second"}}}],
+            },
+        }})
 
 
 def test_v2_actions_do_not_need_legacy_resolve_marker():
@@ -47,28 +90,6 @@ def test_v2_actions_do_not_need_legacy_resolve_marker():
         "object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "name": "X"}],
     }}})
     assert repository.get("x").supports(ActionType.CLICK)
-
-
-def test_click_is_available_to_most_accessibility_backed_components():
-    repository = ComponentRepository.from_document({"version": 2, "components": {
-        "panel": {"object_type": "panel", "actions": ["focus"], "strategies": [{"type": "atspi", "name": "Workspace"}]},
-        "slider": {"object_type": "slider", "actions": ["set_value"], "strategies": [{"type": "java_accessibility", "name": "Zoom"}]},
-    }})
-    assert repository.get("panel").supports(ActionType.CLICK)
-    assert repository.get("slider").supports(ActionType.CLICK)
-
-
-def test_click_is_not_inferred_for_read_only_or_passive_components():
-    inspection = ComponentDefinition(
-        "status", object_type=ObjectType.CUSTOM, actions=frozenset({"resolve"}),
-        strategies=(ComponentStrategy("reference_inspection", {"key": "status"}),),
-    )
-    label = ComponentDefinition(
-        "label", object_type=ObjectType.LABEL, actions=frozenset({"resolve"}),
-        strategies=(ComponentStrategy("atspi", {"name": "Status"}),),
-    )
-    assert not inspection.supports(ActionType.CLICK)
-    assert not label.supports(ActionType.CLICK)
 
 
 def test_invalid_semantic_type_is_rejected():

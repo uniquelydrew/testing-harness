@@ -15,7 +15,6 @@ from automation_harness.authoring.object_identity_workbench import open_capture_
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.repository_merge import component_diff, definitions_equal
-from automation_harness.formats import REPOSITORY_SUFFIX
 
 
 def _install_capture_backend(app_module):
@@ -73,11 +72,11 @@ def _install_repository_workspace(app_module):
     original_build_objects = app_module.AuthoringApp._build_objects
     original_open_repository = app_module.AuthoringApp.open_repository
 
-    def init(self, repository_path=None, mode="author", project_path=None):
+    def init(self, repository_path=None, mode="author"):
         # Object Capture always starts from a clean workspace. An existing
         # repository can subsequently be opened or merged explicitly.
         initial_path = None if mode == "capture" else repository_path
-        original_init(self, initial_path, mode=mode, project_path=project_path)
+        original_init(self, initial_path, mode=mode)
         self._repository_dirty = False
         self._pending_capture = None
         self._capture_workbench = None
@@ -142,7 +141,7 @@ def _install_repository_workspace(app_module):
         return path
 
     def save_repository_as(self):
-        filename = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save Object Repository")
+        filename = self._choose_file(save=True, yaml=True)
         if not filename:
             return None
         path = Path(filename)
@@ -158,7 +157,7 @@ def _install_repository_workspace(app_module):
     def open_repository(self):
         if self.mode not in {"capture", "repository"}:
             return original_open_repository(self)
-        filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Open Object Repository")
+        filename = self._choose_file(yaml=True)
         if not filename:
             return
         path = Path(filename)
@@ -179,7 +178,7 @@ def _install_repository_workspace(app_module):
         self._set_status("Opened repository: " + str(path))
 
     def merge_repository(self):
-        filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Merge Object Repository")
+        filename = self._choose_file(yaml=True)
         if not filename:
             return
         path = Path(filename)

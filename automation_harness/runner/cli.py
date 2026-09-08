@@ -11,21 +11,18 @@ from pathlib import Path
 from automation_harness.backends.protected import ProtectedBackend
 from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.backends.gtk_demo import GtkDemoBackend
-from automation_harness.backends.live_desktop import LiveDesktopBackend
+from automation_harness.backends.java_desktop import JavaDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
-from automation_harness.core.test_plan import derive_execution_state, load_plan, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
+from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
 from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.runner.validator import validate_bundle
 
 
-_BACKEND_CHOICES = ("reference", "protected", "gtk-demo", "live-desktop")
-
-
-def _backend(name: str, args: argparse.Namespace, backend_config: dict | None = None):
+def _backend(name: str, args: argparse.Namespace, target: dict | None = None):
     if name == "reference":
         return ReferenceBackend(
             gui=getattr(args, "reference_mode", "gui") == "gui",
@@ -33,18 +30,21 @@ def _backend(name: str, args: argparse.Namespace, backend_config: dict | None = 
         )
     if name == "protected":
         return ProtectedBackend()
-    if name == "live-desktop":
-        return LiveDesktopBackend()
     if name == "gtk-demo":
-        config = backend_config or {}
-        example = config.get("example") or getattr(args, "gtk_demo_example", None)
+        target = target or {}
+        example = target.get("example") or getattr(args, "gtk_demo_example", None)
         if not isinstance(example, str) or not example:
-            raise ValueError("GTK Demo backend requires backend.example")
+            raise ValueError("GTK Demo backend requires bundle target.example")
         return GtkDemoBackend(
             example=example,
             executable=getattr(args, "gtk_demo_executable", None),
             display_mode=getattr(args, "gtk_demo_display", "virtual"),
         )
+    if name == "java-desktop":
+        target = target or {}
+        if target.get("kind") != "java-desktop":
+            raise ValueError("java-desktop backend requires manifest.target.kind: java-desktop")
+        return JavaDesktopBackend(target, display_mode=getattr(args, "reference_display", "virtual"))
     raise ValueError(name)
 
 
@@ -53,7 +53,7 @@ def _add_reference_options(parser: argparse.ArgumentParser) -> None:
         "--reference-mode",
         choices=("gui", "headless"),
         default="gui",
-        help="synthetic reference backend mode (default: gui)",
+        help="synthetic reference target mode (default: gui)",
     )
 
 
@@ -72,9 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="automation-run", description="Automation harness development runner")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    validate = sub.add_parser("validate", help="statically validate a test bundle without starting a backend")
+    validate = sub.add_parser("validate", help="statically validate a test bundle without starting any target")
     validate.add_argument("bundle", type=Path)
-    validate.add_argument("--backend", choices=_BACKEND_CHOICES)
+    validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     _add_reference_options(validate)
     _add_gtk_demo_options(validate)
 
@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_sub = plan.add_subparsers(dest="plan_command", required=True)
     plan_validate = plan_sub.add_parser("validate", help="validate a declarative TestPlan against the registered step catalog")
     plan_validate.add_argument("path", type=Path)
-    plan_validate.add_argument("--backend", choices=_BACKEND_CHOICES, help="also validate backend capabilities/risk policy")
+    plan_validate.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), help="also validate backend capabilities/risk policy")
     plan_validate.add_argument("--components", type=Path, help="additional object repository to overlay for validation")
     _add_reference_options(plan_validate)
     _add_gtk_demo_options(plan_validate)
@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_status.add_argument("--json", action="store_true")
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
-    plan_run.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
+    plan_run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     plan_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="validate and execute a bundle")
     run.add_argument("bundle", type=Path)
-    run.add_argument("--backend", choices=_BACKEND_CHOICES)
+    run.add_argument("--backend", choices=("reference", "protected", "gtk-demo", "java-desktop"), default="reference")
     run.add_argument("--runs-dir", type=Path, default=Path("runs"))
     run.add_argument("-v", "--verbose", action="store_true")
     run.add_argument(
@@ -175,12 +175,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-
-    # Python 3.6's argparse compatibility path cannot enforce required
-    # subparsers. Do not fall through and assume bundle-specific arguments.
-    if getattr(args, "command", None) is None:
-        build_parser().print_help(sys.stderr)
-        return 2
 
     if args.command == "visual":
         try:
@@ -215,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         results, exit_code = [], 0
         for suite_path in suite_paths:
             bundle = TestBundle.load(suite_path)
-            backend = _backend("gtk-demo", args, bundle.backend)
+            backend = _backend("gtk-demo", args, bundle.target)
             result = execute_bundle(bundle, backend, runs_dir=args.runs_dir.resolve(), verbose=args.verbose)
             results.append(result.to_dict())
             exit_code = exit_code or int(result.exit_code or 0)
@@ -230,18 +224,16 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         registry = default_step_registry()
         issues = validate_plan(test_plan, registry)
-        component_repository = repository_from_plan(test_plan)
+        package_components = Path(__file__).resolve().parents[1] / "resources" / "components.yaml"
+        component_paths = [package_components]
         selected_components = getattr(args, "components", None)
         if selected_components is not None:
-            component_repository = component_repository.overlay(ComponentRepository.load([selected_components.resolve()]))
+            component_paths.append(selected_components.resolve())
+        component_repository = ComponentRepository.load(component_paths)
         issues.extend(validate_plan_components(test_plan, component_repository))
         if args.plan_command == "validate":
             if args.backend:
-                try:
-                    backend = _backend(args.backend, args)
-                except ValueError as exc:
-                    print(f"ERROR: {exc}", file=sys.stderr)
-                    return 2
+                backend = _backend(args.backend, args)
                 issues.extend(
                     validate_plan_execution(
                         test_plan,
@@ -264,11 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 2
-            try:
-                backend = _backend(args.backend, args)
-            except ValueError as exc:
-                print(f"ERROR: {exc}", file=sys.stderr)
-                return 2
+            backend = _backend(args.backend, args)
             result = execute_plan(
                 test_plan,
                 backend,
@@ -411,14 +399,13 @@ def main(argv: list[str] | None = None) -> int:
             "components": str(bundle.components.relative_to(bundle.root)) if bundle.components else None,
             "step_libraries": [str(path.relative_to(bundle.root)) for path in bundle.step_libraries],
             "variables": bundle.variables or {},
-            "backend": bundle.backend,
+            "target": bundle.target,
             "root": str(bundle.root),
         }, indent=2))
         return 0
 
-    selected_backend = args.backend or ((bundle.backend or {}).get("kind")) or "reference"
     try:
-        backend = _backend(selected_backend, args, bundle.backend)
+        backend = _backend(args.backend, args, bundle.target)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

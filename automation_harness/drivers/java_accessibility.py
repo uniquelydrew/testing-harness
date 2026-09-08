@@ -39,6 +39,25 @@ class JavaAccessibilityDriver:
                 return False
         return False
 
+    @classmethod
+    def application_present(cls, expected_application: str | None = None) -> bool:
+        if platform.system() == "Linux":
+            try:
+                import pyatspi  # type: ignore
+
+                desktop = pyatspi.Registry.getDesktop(0)
+                for index in range(int(desktop.childCount)):
+                    application = desktop.getChildAtIndex(index)
+                    name = str(getattr(application, "name", ""))
+                    if expected_application is None or expected_application.casefold() in name.casefold():
+                        return True
+            except Exception:
+                return False
+            return False
+        if platform.system() == "Windows":
+            return JavaAccessBridgeDriver.application_present(expected_application)
+        return False
+
     def _linux(self) -> AtspiDriver:
         if platform.system() != "Linux":
             raise JavaAccessibilityUnavailable("Java AT-SPI driver is available only on Linux")
@@ -73,9 +92,6 @@ class JavaAccessibilityDriver:
     def select_child(self, child_index: int, **kwargs: Any):
         return self._linux().select_child(child_index, **kwargs) if platform.system() == "Linux" else self._windows().select_child(child_index, **kwargs)
 
-    def select_menu_path(self, selectors: list[Mapping[str, Any]], **kwargs: Any):
-        return self._linux().select_menu_path(selectors, **kwargs) if platform.system() == "Linux" else self._windows().select_menu_path(selectors, **kwargs)
-
     def get_value(self, **kwargs: Any):
         return self._linux().get_value(**kwargs) if platform.system() == "Linux" else self._windows().get_value(**kwargs)
 
@@ -88,7 +104,7 @@ class JavaAccessBridgeDriver:
 
     The native bridge is intentionally loaded lazily: Linux installations do
     not import Windows DLLs, and Windows preflight can report a precise setup
-    error before bridge use.
+    error before a target is launched.
     """
 
     DLL_NAME = "WindowsAccessBridge.dll"
@@ -138,6 +154,29 @@ class JavaAccessBridgeDriver:
         self.bridge.doAccessibleActions.restype = ctypes.c_int32
         self.bridge.releaseJavaObject.argtypes = [ctypes.c_long, ctypes.c_longlong]
         self.bridge.releaseJavaObject.restype = None
+
+    @classmethod
+    def application_present(cls, expected_application: str | None = None) -> bool:
+        cls.require_available()
+        user32 = ctypes.windll.user32
+        matches: list[str] = []
+        CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            title = ctypes.create_unicode_buffer(1024)
+            user32.GetWindowTextW(hwnd, title, len(title))
+            if expected_application and expected_application.casefold() not in title.value.casefold():
+                return True
+            bridge = ctypes.WinDLL(cls.DLL_NAME)
+            if bool(bridge.isJavaWindow(hwnd)):
+                matches.append(title.value)
+                return False
+            return True
+
+        user32.EnumWindows(CALLBACK(visit), 0)
+        return bool(matches)
 
     def _roots(self):
         user32 = ctypes.windll.user32
@@ -247,6 +286,5 @@ class JavaAccessBridgeDriver:
     def set_text(self, value: str, **kwargs: Any): return self._unsupported("text entry")
     def get_selection(self, **kwargs: Any): return self._unsupported("selection retrieval")
     def select_child(self, child_index: int, **kwargs: Any): return self._unsupported("selection")
-    def select_menu_path(self, selectors: list[Mapping[str, Any]], **kwargs: Any): return self._unsupported("menu path selection")
     def get_value(self, **kwargs: Any): return self._unsupported("value retrieval")
     def set_value(self, value: float, **kwargs: Any): return self._unsupported("value setting")
