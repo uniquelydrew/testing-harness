@@ -14,7 +14,6 @@ class CaptureContextNode:
     children: list["CaptureContextNode"] = field(default_factory=list)
     is_target: bool = False
     is_window_root: bool = False
-    is_semantic: bool = True
 
     def walk(self):
         yield self
@@ -29,8 +28,6 @@ class CaptureContext:
     root: CaptureContextNode
     target_key: str
     endpoint: JavaFxBridgeEndpoint | None = None
-    target_keys: tuple[str, ...] = ()
-    captured_by_key: Mapping[str, Any] = field(default_factory=dict)
 
     def find(self, key: str) -> CaptureContextNode | None:
         for node in self.root.walk():
@@ -65,14 +62,6 @@ class CaptureContext:
         class_name = node.payload.get("class")
         if class_name:
             peers = [child for child in parent.children if child.payload.get("class") == class_name]
-            if peers:
-                return peers
-        role = node.payload.get("accessible_role")
-        if role:
-            peers = [
-                child for child in parent.children
-                if child.payload.get("accessible_role") == role
-            ]
             if peers:
                 return peers
         return list(parent.children)
@@ -125,14 +114,9 @@ class CaptureContext:
         return list(path) if visit(self.root) else []
 
     def captured_component(self, key: str):
-        captured = self.captured_by_key.get(key)
-        if captured is not None:
-            return captured
         node = self.find(key)
         if node is None:
             raise KeyError(key)
-        if not node.is_semantic:
-            raise ValueError("structural context cannot be captured as an object")
         if self.framework != "javafx" or self.endpoint is None:
             raise ValueError("context node cannot be converted to a live captured component")
         return _captured(self.endpoint, node.payload)
@@ -150,123 +134,6 @@ def build_capture_context(captured, javafx_driver=None, max_depth=64):
     if framework == "javafx":
         return _build_javafx_context(captured, javafx_driver or JavaFxBridgeDriver(), max_depth=max_depth)
     return _build_fallback_context(captured)
-
-
-def build_recording_context(captures):
-    """Build a compact checked workbench scope from recorded semantic targets.
-
-    A recorded capture's raw accessibility ancestry is diagnostic data, not an
-    authoring tree.  Replaying it here exposed toolkit skin nodes (labels,
-    fillers and panels) and repeated that ancestry for every observation.
-    Recording review therefore groups durable semantic targets by window only.
-    """
-    distinct = []
-    seen = set()
-    for captured in captures:
-        if captured is None:
-            continue
-        identity = _recorded_capture_identity(captured)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        distinct.append(captured)
-    if not distinct:
-        raise ValueError("recording contains no semantic targets")
-
-    root = CaptureContextNode(
-        key="recording-root", label="Recorded interaction scope",
-        payload={}, is_window_root=True, is_semantic=False,
-    )
-    windows = {}
-    captured_by_key = {}
-    target_keys = []
-    for index, captured in enumerate(distinct):
-        window_name = str(
-            getattr(captured, "window", None)
-            or getattr(captured, "application", None)
-            or "Application Window"
-        )
-        window_key = "recording-window-%d" % len(windows)
-        window = windows.get(window_name)
-        if window is None:
-            window = CaptureContextNode(
-                key=window_key, label=window_name, payload={"window": window_name},
-                is_window_root=True, is_semantic=False,
-            )
-            windows[window_name] = window
-            root.children.append(window)
-
-        target_key = "recording-target-%d" % index
-        payload = _recorded_capture_payload(captured)
-        target = CaptureContextNode(
-            key=target_key, label=node_label(payload), payload=payload,
-            is_target=True, is_semantic=True,
-        )
-        window.children.append(target)
-        captured_by_key[target_key] = captured
-        target_keys.append(target_key)
-
-    return CaptureContext(
-        framework="mixed" if len({str(item.framework or "") for item in distinct}) > 1
-        else str(distinct[0].framework or "desktop"),
-        root=root,
-        target_key=target_keys[0],
-        target_keys=tuple(target_keys),
-        captured_by_key=captured_by_key,
-    )
-
-
-def _recorded_capture_identity(captured):
-    properties = dict(getattr(captured, "backend_properties", {}) or {})
-    normalize = lambda value: str(value or "").strip().casefold()
-    scope = (
-        normalize(getattr(captured, "application", None)),
-        normalize(getattr(captured, "window", None)),
-    )
-    role = normalize(getattr(captured, "role", None))
-    accessible_id = normalize(getattr(captured, "accessible_id", None))
-    node_ref = normalize(properties.get("node_ref") or properties.get("ref"))
-    if node_ref:
-        return ("ref", normalize(getattr(captured, "framework", None)), node_ref)
-    if accessible_id:
-        return ("accessible-id", *scope, role, accessible_id)
-
-    ordinal = None
-    strategy = getattr(captured, "authored_strategy", None)
-    if strategy is not None:
-        identification = dict(getattr(strategy, "options", {}) or {}).get("identification", {})
-        if isinstance(identification, Mapping):
-            ordinal = identification.get("ordinal")
-    durable = (
-        "semantic", *scope, role, normalize(getattr(captured, "name", None)),
-        normalize(getattr(captured, "parent_accessible_id", None)),
-        normalize(getattr(captured, "parent_role", None)),
-        normalize(getattr(captured, "parent_name", None)), ordinal,
-    )
-    if any(durable[3:]):
-        return durable
-    return ("geometry", *scope, tuple(getattr(captured, "bounds", ()) or ()))
-
-
-def _recorded_capture_payload(captured):
-    properties = dict(getattr(captured, "backend_properties", {}) or {})
-    ordinal = None
-    strategy = getattr(captured, "authored_strategy", None)
-    if strategy is not None:
-        identification = dict(getattr(strategy, "options", {}) or {}).get("identification", {})
-        if isinstance(identification, Mapping):
-            ordinal = identification.get("ordinal")
-    return {
-        "ref": properties.get("node_ref") or properties.get("ref"),
-        "window": getattr(captured, "window", None),
-        "class": getattr(captured, "native_class", None),
-        "id": getattr(captured, "accessible_id", None),
-        "accessible_role": getattr(captured, "role", None),
-        "accessible_text": getattr(captured, "name", None),
-        "bounds": getattr(captured, "bounds", None),
-        "sibling_index": ordinal,
-        "properties": properties,
-    }
 
 
 def _build_javafx_context(captured, driver, max_depth=64):
@@ -292,7 +159,6 @@ def _build_javafx_context(captured, driver, max_depth=64):
         root_raw = dict(window["root"])
         if not _contains_ref(root_raw, target_ref):
             continue
-        target_ref = _resolved_semantic_ref(root_raw, target_ref)
         title = str(window.get("title") or root_raw.get("window") or "JavaFX Window")
         children = _semantic_children(root_raw, target_ref)
         root_payload = dict(root_raw)
@@ -304,7 +170,6 @@ def _build_javafx_context(captured, driver, max_depth=64):
             children=children,
             is_target=str(root_payload.get("ref")) == str(target_ref),
             is_window_root=True,
-            is_semantic=False,
         )
         root.children = _dedupe_root_child(root, root.children)
         context = CaptureContext("javafx", root, str(target_ref), endpoint=endpoint)
@@ -325,7 +190,6 @@ def _build_fallback_context(captured):
         label=str(window),
         payload={"window": window, "bounds": getattr(captured, "bounds", None)},
         is_window_root=True,
-        is_semantic=False,
     )
     current = root
     for index, label in enumerate(hierarchy[:-1]):
@@ -333,7 +197,6 @@ def _build_fallback_context(captured):
             key="ancestor-%s" % index,
             label=str(label),
             payload={"hierarchy_label": str(label), "window": window},
-            is_semantic=False,
         )
         current.children.append(child)
         current = child
@@ -350,7 +213,6 @@ def _build_fallback_context(captured):
         label=str(getattr(captured, "name", None) or (hierarchy[-1] if hierarchy else "Captured Object")),
         payload=target_payload,
         is_target=True,
-        is_semantic=True,
     ))
     return CaptureContext(str(getattr(captured, "framework", "") or "desktop"), root, target_key)
 
@@ -369,13 +231,10 @@ def _semanticize(raw, target_ref):
     for child in raw.get("children", []) if isinstance(raw.get("children"), list) else []:
         if isinstance(child, Mapping):
             promoted.extend(_semanticize(dict(child), target_ref))
-    is_target = str(raw.get("ref")) == str(target_ref)
-    semantic = is_target or is_semantic_node(raw)
-    structural = bool(promoted) and is_structural_context_node(raw)
-    if not semantic and not structural:
+    keep = str(raw.get("ref")) == str(target_ref) or is_semantic_node(raw)
+    if not keep:
         return promoted
     node = _context_node(raw, target_ref)
-    node.is_semantic = semantic
     node.children = promoted
     return [node]
 
@@ -401,50 +260,25 @@ def _dedupe_root_child(root, children):
 
 
 def is_semantic_node(node):
-    """Mirror the live resolver's interaction-boundary policy for snapshots."""
     class_name = str(node.get("class") or "")
-    simple_name = str(node.get("simple_class") or class_name.rsplit(".", 1)[-1])
-    role = str(node.get("accessible_role") or "").replace("_", " ").casefold()
-    if node.get("semantic_boundary") is True:
+    role = str(node.get("accessible_role") or "")
+    if node.get("id"):
         return True
-    if node.get("actions"):
+    if node.get("accessible_text") or node.get("text"):
         return True
-    properties = node.get("properties")
-    if isinstance(properties, Mapping):
-        if properties.get("automation.semanticBoundary") is True:
-            return True
-        if properties.get("automation.actions") not in (None, "", [], ()):
-            return True
-    boundaries = {
-        "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
-        "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
-        "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
-        "TreeCell", "MenuBar", "MenuButton", "Menu", "MenuItem", "MenuItemContainer", "Tab",
-    }
-    if simple_name in boundaries:
-        return True
-    if simple_name.endswith("Control") and _is_application_class(class_name):
-        return True
-    semantic_roles = {
-        "button", "check box", "radio button", "toggle button", "text field",
-        "password field", "text area", "combo box", "spinner", "slider",
-        "list item", "table cell", "tree item", "menu bar", "menu",
-        "menu item", "tab", "hyperlink",
-    }
-    return role in semantic_roles
-
-
-def is_structural_context_node(node):
-    """Retain stable ancestry for identity without making it saveable."""
-    if node.get("id") not in (None, ""):
+    if node.get("user_data") not in (None, ""):
         return True
     properties = node.get("properties")
     if isinstance(properties, Mapping):
-        return any(
-            str(key).casefold().startswith(("automation.", "test.", "qa."))
-            for key in properties
-        )
-    return False
+        for key in properties:
+            folded = str(key).casefold()
+            if folded.startswith(("automation.", "test.", "qa.")):
+                return True
+    if class_name and _is_application_class(class_name):
+        return True
+    if class_name.startswith("javafx.scene.control."):
+        return True
+    return bool(role and role not in {"PARENT", "NODE"})
 
 
 def identity_descriptors(node):
@@ -484,16 +318,10 @@ def stable_descriptor(node):
 
 
 def node_label(node):
-    # Tree labels describe the semantic object to a human.  Accessibility IDs
-    # are locator evidence and are frequently opaque ordinals (for example the
-    # GNOME shell assigns "2" to a button whose visible name is "03").
-    for key in ("accessible_text", "text"):
+    for key in ("id", "accessible_text", "text"):
         value = node.get(key)
         if value not in (None, ""):
             return str(value)
-    value = node.get("id")
-    if value not in (None, ""):
-        return str(value)
     simple = node.get("simple_class")
     if simple:
         label = str(simple)
@@ -506,28 +334,11 @@ def node_label(node):
 
 
 def suggested_name(node):
-    accessible_text = node.get("accessible_text")
-    node_id = node.get("id")
-    # Prefer the authored ID when it is descriptive.  Numeric/generated IDs
-    # are implementation details and must not replace the semantic label.
-    ordered = (
-        ("id", node_id), ("accessible_text", accessible_text),
-        ("text", node.get("text")), ("simple_class", node.get("simple_class")),
-    )
-    if node_id not in (None, "") and _is_opaque_id(str(node_id)) and accessible_text not in (None, ""):
-        ordered = (
-            ("accessible_text", accessible_text), ("text", node.get("text")),
-            ("id", node_id), ("simple_class", node.get("simple_class")),
-        )
-    for _key, value in ordered:
+    for key in ("id", "accessible_text", "text", "simple_class"):
+        value = node.get(key)
         if value not in (None, ""):
             return _identifier(str(value))
     return "object"
-
-
-def _is_opaque_id(value):
-    normalized = value.strip()
-    return not normalized or normalized.isdigit()
 
 
 def _identifier(value):
@@ -562,28 +373,6 @@ def _find_raw(node, target_ref):
             if found is not None:
                 return found
     return None
-
-
-def _resolved_semantic_ref(root, target_ref):
-    """Promote a serialized physical target to its nearest semantic ancestor."""
-    path = []
-
-    def visit(node):
-        path.append(node)
-        if str(node.get("ref")) == str(target_ref):
-            return True
-        for child in node.get("children", []) if isinstance(node.get("children"), list) else []:
-            if isinstance(child, Mapping) and visit(child):
-                return True
-        path.pop()
-        return False
-
-    if not visit(root):
-        return target_ref
-    for node in reversed(path):
-        if is_semantic_node(node):
-            return str(node.get("ref"))
-    return target_ref
 
 
 def _is_application_class(class_name):

@@ -4,19 +4,13 @@ import builtins
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from automation_harness.core.pointer_actions import click_bounds
-from automation_harness.core.interaction_preparation import (
-    InteractionPreparation,
-    PreparationOutcome,
-    preparation_requirement,
-    validate_preparation,
-)
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
 from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
+from automation_harness.core.predicates import evaluate_state
 from automation_harness.utils.wait import wait_for as wait_for_value
 
 
@@ -110,7 +104,12 @@ class ComponentHandle:
         return GuiState(state.present, state.visible, state.enabled, state.focused, state.properties)
 
     def execute(self, action: GuiAction | ActionType | str | dict, *, strategy: str | None = None) -> ExecutionResult:
-        """Execute one validated semantic action through the configured strategies."""
+        """Execute one validated semantic action through the configured strategies.
+
+        Accessibility-backed strategies are concrete executors. Unsupported
+        requested strategies are retained in the diagnostic trail instead of
+        silently changing test intent.
+        """
         semantic = GuiAction.from_value(action)
         if not self.supports(semantic.type):
             available = ", ".join(sorted(item.value for item in self.definition.semantic_actions)) or "none"
@@ -118,35 +117,10 @@ class ComponentHandle:
                 f"object {self.definition.component_id!r} type {self.definition.object_type.value} does not support "
                 f"{semantic.type.value}; supported actions: {available}"
             )
-        if strategy not in {None, "pointer", "accessibility", "atspi", "java_accessibility", "javafx"}:
+        if strategy not in {None, "accessibility", "atspi", "java_accessibility", "javafx"}:
             raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
-
-        execution_strategy = strategy or "accessibility"
-        preparation = None
         try:
-            preparation = self.prepare_for_interaction(semantic, strategy=strategy)
-            if preparation.strategy != "none":
-                execution_strategy = preparation.strategy
-            if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK}:
-                if strategy not in {None, "pointer"}:
-                    raise ComponentResolutionError(
-                        f"{semantic.type.value} is a pointer action and cannot use strategy {strategy!r}"
-                    )
-                resolved = self.resolve()
-                bounds = resolved.metadata.get("bounds")
-                if bounds is None:
-                    raise ComponentResolutionError(
-                        f"resolved object {self.definition.component_id!r} has no screen bounds for pointer interaction"
-                    )
-                payload = click_bounds(bounds, semantic.type)
-                payload["resolved_strategy"] = resolved.strategy
-                execution_strategy = "pointer"
-            elif semantic.type == ActionType.FOCUS:
-                if preparation is None:
-                    raise ComponentResolutionError("focus preparation produced no result")
-                payload = dict(preparation.component_focus.details)
-                payload["focused"] = preparation.component_focus.success
-            elif semantic.type == ActionType.ACTIVATE:
+            if semantic.type in {ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.ACTIVATE}:
                 payload = self.activate()
             elif semantic.type == ActionType.SET_TEXT:
                 if not isinstance(semantic.value, str):
@@ -165,16 +139,6 @@ class ComponentHandle:
                 if not isinstance(index, int):
                     raise ValueError(f"{semantic.type.value} currently requires selector.criteria.index")
                 payload = self.select_child(index)
-            elif semantic.type == ActionType.SELECT_MENU_ITEM:
-                path = semantic.options.get("path")
-                if not isinstance(path, (list, tuple)) or not path or not all(
-                    isinstance(segment, str) and segment for segment in path
-                ):
-                    raise ValueError("select_menu_item requires a non-empty string path")
-                selectors = self._menu_path_selectors(path)
-                payload = self._accessibility_operation(
-                    "select menu item", "select_menu_path", selectors,
-                )
             elif semantic.type == ActionType.SET_VALUE:
                 if not isinstance(semantic.value, (int, float)) or isinstance(semantic.value, bool):
                     raise ValueError("set_value requires a numeric value")
@@ -184,130 +148,11 @@ class ComponentHandle:
                     f"semantic action {semantic.type.value!r} is declared but has no executor for the current strategy chain"
                 )
         except Exception as exc:
-            self.context.evidence.record(
-                "gui_action_attempt_failed",
-                component_id=self.definition.component_id,
-                action=semantic.to_dict(),
-                strategy=execution_strategy,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            self.context.evidence.record("gui_action_attempt_failed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=strategy or "accessibility", error=f"{type(exc).__name__}: {exc}")
             raise
-        result = ExecutionResult(
-            semantic.type,
-            execution_strategy,
-            payload,
-            ({"strategy": execution_strategy, "success": True},),
-        )
-        self.context.evidence.record(
-            "gui_action_executed",
-            component_id=self.definition.component_id,
-            action=semantic.to_dict(),
-            strategy=result.strategy,
-            result=dict(payload),
-            preparation=preparation.to_dict() if preparation is not None else None,
-        )
+        result = ExecutionResult(semantic.type, strategy or "accessibility", payload, ({"strategy": strategy or "accessibility", "success": True},))
+        self.context.evidence.record("gui_action_executed", component_id=self.definition.component_id, action=semantic.to_dict(), strategy=result.strategy, result=dict(payload))
         return result
-
-    def prepare_for_interaction(
-        self,
-        action: GuiAction | ActionType | str | dict,
-        *,
-        strategy: str | None = None,
-    ) -> InteractionPreparation:
-        """Establish live-desktop interaction preconditions without firing the object."""
-        semantic = GuiAction.from_value(action)
-        requirement = preparation_requirement(semantic)
-        if getattr(self.context, "backend", None) != "live-desktop":
-            preparation = InteractionPreparation(
-                "none",
-                PreparationOutcome.skipped("activate_window", "not a live-desktop execution"),
-                PreparationOutcome.skipped("focus", "not a live-desktop execution"),
-            )
-            self.context.evidence.record(
-                "interaction_prepared",
-                component_id=self.definition.component_id,
-                action=semantic.to_dict(),
-                preparation=preparation.to_dict(),
-            )
-            return preparation
-
-        candidates = [
-            item for item in self.definition.strategies
-            if item.type in {"atspi", "java_accessibility", "javafx"}
-            and strategy in {None, "accessibility", item.type}
-        ]
-        if not candidates:
-            preparation = InteractionPreparation(
-                "none",
-                PreparationOutcome.skipped("activate_window", "no accessibility-backed strategy"),
-                PreparationOutcome.skipped("focus", "no accessibility-backed strategy"),
-            )
-            self.context.evidence.record(
-                "interaction_prepared",
-                component_id=self.definition.component_id,
-                action=semantic.to_dict(),
-                preparation=preparation.to_dict(),
-            )
-            return preparation
-
-        selected = candidates[0]
-        identification = selected.options.get("identification")
-        if selected.type == "atspi":
-            driver = AtspiDriver(self.context)
-            kwargs = {
-                "identification": identification,
-                "name": _optional_str(selected.options.get("name")),
-                "role": _optional_str(selected.options.get("role")),
-                "accessible_id": _optional_str(selected.options.get("accessible_id")),
-            }
-        else:
-            driver = JavaAccessibilityDriver(self.context) if selected.type == "java_accessibility" else JavaFxBridgeDriver(self.context)
-            kwargs = {"identification": identification}
-
-        window = PreparationOutcome.skipped("activate_window", "not required")
-        focus = PreparationOutcome.skipped("focus", "not required")
-        if requirement.activate_window:
-            method = getattr(driver, "activate_window", None)
-            if method is None:
-                window = PreparationOutcome(
-                    "activate_window", False, not requirement.require_window_activation,
-                    supported=False, error=f"{selected.type} does not yet implement window activation",
-                )
-            else:
-                try:
-                    details = method(**kwargs)
-                    window = PreparationOutcome("activate_window", True, True, details=details)
-                except Exception as exc:
-                    window = PreparationOutcome(
-                        "activate_window", True, False,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-        if requirement.request_focus:
-            method = getattr(driver, "focus", None)
-            if method is None:
-                focus = PreparationOutcome(
-                    "focus", False, not requirement.require_focus,
-                    supported=False, error=f"{selected.type} does not yet implement component focus",
-                )
-            else:
-                try:
-                    details = method(**kwargs)
-                    focus = PreparationOutcome("focus", True, True, details=details)
-                except Exception as exc:
-                    focus = PreparationOutcome(
-                        "focus", True, False,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-
-        preparation = InteractionPreparation(selected.type, window, focus)
-        self.context.evidence.record(
-            "interaction_prepared",
-            component_id=self.definition.component_id,
-            action=semantic.to_dict(),
-            preparation=preparation.to_dict(),
-        )
-        validate_preparation(requirement, preparation)
-        return preparation
 
     def assert_state(self, **expected: Any) -> ComponentState:
         observed = self.state()
@@ -324,12 +169,33 @@ class ComponentHandle:
             raise AssertionError(f"component {self.definition.component_id!r} state mismatch: {details}")
         return observed
 
+    def assert_named(self, assertion_id: str) -> ComponentState:
+        try:
+            expression = self.definition.assertions[assertion_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"component {self.definition.component_id!r} has no assertion {assertion_id!r}"
+            ) from exc
+        observed = self.state()
+        if not evaluate_state(observed, expression):
+            raise AssertionError(
+                f"component {self.definition.component_id!r} failed assertion {assertion_id!r}; "
+                f"observed={observed.to_dict()!r}"
+            )
+        self.context.evidence.record(
+            "component_assertion_passed",
+            component_id=self.definition.component_id,
+            assertion=assertion_id,
+            state=observed.to_dict(),
+        )
+        return observed
+
     def assert_visual(self, *, profile=None):
         """Assert this component's framebuffer bounds match its approved visual gold."""
         from automation_harness.drivers.vision_driver import VisionDriver
         return VisionDriver(self.context).compare_component_baseline(self, profile=profile)
 
-    def wait_for(self, *, timeout: float = 5.0, interval: float = 0.1, **expected: Any) -> ComponentState:
+    def wait_for(self, *, timeout: float = 5.0, interval: float = 0.1, stability_window: float = 0.0, **expected: Any) -> ComponentState:
         last: ComponentState | None = None
 
         def predicate() -> bool:
@@ -338,7 +204,7 @@ class ComponentHandle:
             return all(last.get(name) == value for name, value in expected.items())
 
         try:
-            wait_for_value(lambda: predicate(), timeout=timeout, interval=interval, description=f"{self.definition.component_id} state {expected}")
+            wait_for_value(lambda: predicate(), timeout=timeout, interval=interval, stability_window=stability_window, description=f"{self.definition.component_id} state {expected}")
         except TimeoutError as exc:
             actual = last.to_dict() if last is not None else None
             raise ComponentStateTimeout(
@@ -348,8 +214,38 @@ class ComponentHandle:
         assert last is not None
         return last
 
+    def wait_for_expression(
+        self,
+        expression: dict[str, Any],
+        *,
+        timeout: float = 5.0,
+        interval: float = 0.1,
+        stability_window: float = 0.0,
+    ) -> ComponentState:
+        last: ComponentState | None = None
+
+        def supplier() -> ComponentState:
+            nonlocal last
+            last = self.state()
+            return last
+
+        try:
+            return wait_for_value(
+                supplier,
+                lambda state: evaluate_state(state, expression),
+                timeout=timeout,
+                interval=interval,
+                stability_window=stability_window,
+                description=f"{self.definition.component_id} predicate {expression}",
+            )
+        except TimeoutError as exc:
+            raise ComponentStateTimeout(
+                f"component {self.definition.component_id!r} did not satisfy {expression!r} "
+                f"within {timeout}s; last observed state={last.to_dict() if last else None!r}"
+            ) from exc
+
     def activate(self) -> dict[str, Any]:
-        if "activate" not in self.definition.actions and not self.supports(ActionType.ACTIVATE):
+        if "activate" not in self.definition.actions and not self.supports(ActionType.CLICK):
             raise UnsupportedComponentAction(
                 f"component {self.definition.component_id!r} does not support activation"
             )
@@ -389,30 +285,6 @@ class ComponentHandle:
     def select_child(self, child_index: int) -> dict[str, Any]:
         return self._accessibility_operation("select child", "select_child", child_index)
 
-    def _menu_path_selectors(self, path: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
-        current = self.definition.subobjects
-        selectors: list[dict[str, Any]] = []
-        walked: list[str] = []
-        for segment in path:
-            walked.append(segment)
-            raw = current.get(segment)
-            if not isinstance(raw, dict):
-                raise ValueError(
-                    "menu path %r is not defined under %r"
-                    % (segment, ".".join(walked[:-1]) or self.definition.component_id)
-                )
-            selector = {
-                key: value for key, value in raw.items()
-                if key in {"kind", "criteria", "ordinal"}
-            }
-            criteria = selector.get("criteria")
-            if not isinstance(selector.get("kind"), str) or not isinstance(criteria, dict):
-                raise ValueError("menu path %r has an invalid persisted selector" % ".".join(walked))
-            selectors.append(selector)
-            nested = raw.get("subobjects", {})
-            current = nested if isinstance(nested, dict) else {}
-        return selectors
-
     def get_value(self) -> float:
         return self._accessibility_operation("read value", "get_value")
 
@@ -431,8 +303,7 @@ class ComponentHandle:
                     driver = JavaAccessibilityDriver(self.context)
                 else:
                     driver = JavaFxBridgeDriver(self.context)
-                identification = strategy.options.get("identification")
-                result = getattr(driver, method)(*args, identification=identification)
+                result = getattr(driver, method)(*args, identification=strategy.options.get("identification"))
                 self.context.evidence.record(
                     "component_accessibility_operation",
                     component_id=self.definition.component_id,

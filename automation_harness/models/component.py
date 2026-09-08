@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from automation_harness.models.gui import ActionType, ObjectType, PASSIVE_POINTER_TYPES, classify_accessibility, default_actions
+from automation_harness.models.gui import ActionType, ObjectType, classify_accessibility, default_actions
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,13 @@ class ComponentDefinition:
     framework: str | None = None
     native_class: str | None = None
     subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    assertions: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    action_completion: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    scope: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def semantic_actions(self) -> frozenset[ActionType]:
-        """Return canonical actions including geometry-backed pointer Click."""
+        """Canonical v2 actions, with lossless v1 ``activate`` compatibility."""
         values: set[ActionType] = set()
         for action in self.actions:
             if action == "activate":
@@ -50,13 +53,6 @@ class ComponentDefinition:
                 values.add(ActionType(action))
             except ValueError:
                 continue
-        # Any resolvable, non-passive object may be clicked by resolved screen
-        # geometry. A read-only synthetic inspection strategy is the exception.
-        if (
-            any(strategy.type != "reference_inspection" for strategy in self.strategies)
-            and self.object_type not in PASSIVE_POINTER_TYPES
-        ):
-            values.add(ActionType.CLICK)
         return frozenset(values) or default_actions(self.object_type)
 
     def supports(self, action: ActionType) -> bool:

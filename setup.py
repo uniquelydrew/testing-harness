@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="automation-harness",
     version="0.5.2",
-    description="Local-first automation harness with explicit execution backends and semantic object identity",
+    description="Protected-target-safe automation harness with an isolated synthetic reference backend",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     python_requires=">=3.6,<3.7",
@@ -28,12 +28,11 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "automation-run=automation_harness.compat.live_cli:run_cli",
-            "automation-plan=automation_harness.runner.plan_cli:run",
+            "automation-run=automation_harness.compat.python36:run_cli",
             "automation-reference=automation_harness.compat.python36:run_reference",
-            "automation-author=automation_harness.compat.live_author:run_author",
-            "automation-capture=automation_harness.compat.live_author:run_capture",
-            "automation-repository=automation_harness.compat.live_author:run_repository",
+            "automation-author=automation_harness.compat.python36:run_author",
+            "automation-capture=automation_harness.compat.python36:run_capture",
+            "automation-repository=automation_harness.compat.python36:run_repository",
             "automation-javafx=automation_harness.compat.python36:run_javafx",
         ]
     },

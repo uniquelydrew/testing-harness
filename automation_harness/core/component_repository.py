@@ -180,6 +180,20 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     subobjects = value.get("subobjects", {})
     if not isinstance(subobjects, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in subobjects.items()):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.subobjects must map IDs to selector mappings")
+    assertions = value.get("assertions", {})
+    if not isinstance(assertions, Mapping) or not all(isinstance(key, str) and isinstance(item, Mapping) for key, item in assertions.items()):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.assertions must map IDs to assertion mappings")
+    action_completion = value.get("action_completion", {})
+    if not isinstance(action_completion, Mapping) or not all(
+        isinstance(key, str) and key and isinstance(item, Mapping)
+        for key, item in action_completion.items()
+    ):
+        raise ComponentRepositoryError(
+            f"{path}: component {component_id!r}.action_completion must map action IDs to contracts"
+        )
+    scope = value.get("scope", {})
+    if not isinstance(scope, Mapping):
+        raise ComponentRepositoryError(f"{path}: component {component_id!r}.scope must be a mapping")
     return ComponentDefinition(
         component_id=component_id,
         description=description,
@@ -194,6 +208,9 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         framework=framework,
         native_class=native_class,
         subobjects={str(key): dict(item) for key, item in subobjects.items()},
+        assertions={str(key): dict(item) for key, item in assertions.items()},
+        action_completion={str(key): dict(item) for key, item in action_completion.items()},
+        scope=dict(scope),
     )
 
 
@@ -318,6 +335,12 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["native_class"] = definition.native_class
     if definition.subobjects:
         payload["subobjects"] = {key: dict(value) for key, value in definition.subobjects.items()}
+    if definition.assertions:
+        payload["assertions"] = {key: dict(value) for key, value in definition.assertions.items()}
+    if definition.action_completion:
+        payload["action_completion"] = {key: dict(value) for key, value in definition.action_completion.items()}
+    if definition.scope:
+        payload["scope"] = dict(definition.scope)
     return payload
 
 
