@@ -16,6 +16,7 @@ from automation_harness.models.plan import PlanVariableRef, StepStatus, TestPlan
 from automation_harness.models.run import RunResult, utc_now
 from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.reporting.artifacts import RunArtifacts
+from automation_harness.reporting.html_report import render_html_report
 
 
 def execute_plan(
@@ -127,6 +128,7 @@ def execute_plan(
                 inputs=resolved_inputs,
             )
             _write_execution_state(artifacts.root, queue)
+            setattr(context, "execution_node_id", node_id)
             try:
                 invocation = context.run_step_detailed(
                     definition.name,
@@ -156,6 +158,8 @@ def execute_plan(
                 )
                 _write_execution_state(artifacts.root, queue)
                 break
+            finally:
+                setattr(context, "execution_node_id", None)
             _write_execution_state(artifacts.root, queue)
 
         if result.exit_code is None:
@@ -257,9 +261,11 @@ def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, 
         f"Passed: {result.passed}",
         f"Failed: {result.failed}",
         f"Exit code: {result.exit_code}",
+        f"HTML report: {artifacts.report.name}",
     ]
     if result.validation_errors:
         lines.append("Errors:")
         lines.extend(f"- {item}" for item in result.validation_errors)
     artifacts.summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    render_html_report(artifacts.report, artifacts.events, plan, result)
     return result

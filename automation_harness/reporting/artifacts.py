@@ -19,6 +19,7 @@ class RunArtifacts:
     stderr: Path
     run_json: Path
     summary: Path
+    report: Path
     environment: Path
 
     @classmethod
@@ -37,6 +38,7 @@ class RunArtifacts:
             stderr=root / "stderr.log",
             run_json=root / "run.json",
             summary=root / "summary.txt",
+            report=root / "report.html",
             environment=root / "environment.json",
         )
 
