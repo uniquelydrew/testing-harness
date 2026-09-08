@@ -90,5 +90,12 @@ def create_authoring_project(path: Path, name: str) -> AuthoringProject:
     project.repository.parent.mkdir(parents=True, exist_ok=True)
     if not project.repository.exists():
         project.repository.write_text("version: 2\ncomponents: {}\n", encoding="utf-8")
-    path.write_text(yaml.safe_dump(project.to_document(), sort_keys=False), encoding="utf-8")
+    save_authoring_project(path, project)
     return project
+
+
+def save_authoring_project(path: Path, project: AuthoringProject) -> None:
+    path.write_text(
+        yaml.safe_dump(project.to_document(), sort_keys=False),
+        encoding="utf-8",
+    )

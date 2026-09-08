@@ -1,10 +1,15 @@
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import yaml
 
 import pytest
 
-from automation_harness.authoring.project import AuthoringProject, ProjectError, create_authoring_project
+from automation_harness.authoring.project import (
+    AuthoringProject,
+    ProjectError,
+    create_authoring_project,
+    save_authoring_project,
+)
 from automation_harness.core.script_steps import registered_script_step
 
 
@@ -25,6 +30,16 @@ def test_project_round_trip_contains_only_authoring_resources(tmp_path):
         "repository": "objects.ahobjects",
         "runs_dir": "runs",
     }
+
+
+def test_project_repository_can_be_rebound_by_save_as(tmp_path):
+    path = tmp_path / "project.ahproject"
+    project = create_authoring_project(path, "Authoring smoke test")
+    repository = (tmp_path / "alternate.ahobjects").resolve()
+
+    save_authoring_project(path, replace(project, repository=repository))
+
+    assert AuthoringProject.load(path).repository == repository
 
 
 def test_project_resolves_paths_and_loads_script_step_manifests(tmp_path):

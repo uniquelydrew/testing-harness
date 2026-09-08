@@ -6,14 +6,28 @@ import threading
 import time
 from typing import Any, Callable
 
-from automation_harness.drivers.atspi_driver import AtspiDriver, _capture_semantic_accessible, _pyatspi
+from automation_harness.drivers.atspi_driver import (
+    AtspiDriver,
+    AtspiExcludedClickSource,
+    _capture_semantic_accessible,
+    _pyatspi,
+)
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
+from automation_harness.recording.x11_pointer import X11PointerMonitor
 
 
-_STRUCTURAL_ROLES = frozenset({"application", "desktop", "frame", "window", "root pane"})
+_STRUCTURAL_ROLES = frozenset({
+    "application", "application window", "desktop", "desktop frame", "frame",
+    "window", "root pane", "dialog", "alert", "file chooser",
+})
 _PRESENTATION_CONTAINER_ROLES = frozenset({"panel", "filler", "section", "unknown"})
 _PASSIVE_ROLES = frozenset({"label", "static", "paragraph", "icon", "image"})
+
+
+def _normalize_role(value) -> str:
+    return " ".join(str(value or "").replace("_", " ").replace("-", " ").casefold().split())
 
 
 class _PointerRecordingWorker:
@@ -26,8 +40,7 @@ class _PointerRecordingWorker:
     STOPPED = "stopped"
     _STOP = object()
 
-    def __init__(self, resolve, publish, acknowledge=None, acknowledgement_seconds=0.3):
-        self._resolve = resolve
+    def __init__(self, publish, acknowledge=None, acknowledgement_seconds=0.3):
         self._publish = publish
         self._acknowledge = acknowledge
         self._acknowledgement_seconds = max(0.0, float(acknowledgement_seconds))
@@ -72,8 +85,8 @@ class _PointerRecordingWorker:
             self._queue.put(command)
             return True
 
-    def accept_pointer(self, event_type, coordinates, timestamp):
-        return self._accept(("pointer", event_type, coordinates, timestamp))
+    def accept_pointer(self, event_type, coordinates, timestamp, target=None):
+        return self._accept(("pointer", event_type, coordinates, timestamp, target))
 
     def accept_action(self, property_name, selected, event_type, timestamp):
         return self._accept(("action", property_name, selected, event_type, timestamp))
@@ -141,28 +154,26 @@ class _PointerRecordingWorker:
                     {"event_type": event_type}, None, str(after),
                 ))
             return
-        _kind, event_type, coordinates, timestamp = item
+        _kind, event_type, coordinates, timestamp, resolved_target = item
         button = "secondary" if event_type.endswith(("3p", "3r")) else "primary"
         if event_type.endswith(("1p", "3p")):
             self._set_state(self.RESOLVING)
-            target = self._resolve(coordinates)
+            target = resolved_target
             if target is not None:
                 self._pressed[button] = target
                 self._last_target = target
                 self._set_state(self.ACKNOWLEDGING)
                 if self._acknowledge is not None:
                     self._acknowledge(target, self._acknowledgement_seconds)
-                if self._acknowledgement_seconds:
-                    time.sleep(self._acknowledgement_seconds)
             self._set_state(self.READY)
             return
         target = self._pressed.pop(button, None)
         if target is None:
-            self._set_state(self.RESOLVING)
-            target = self._resolve(coordinates)
+            target = resolved_target
         if target is not None:
+            source = "javafx" if getattr(target, "framework", None) == "javafx" else "atspi"
             self._publish(PointerInteraction(
-                timestamp, "atspi", target,
+                timestamp, source, target,
                 {"event_type": event_type, "coordinates": coordinates},
                 button, "released", coordinates,
             ))
@@ -173,7 +184,7 @@ def _is_recordable_target(captured) -> bool:
     """Reject authoring chrome and non-interactive accessibility skin nodes."""
     application = str(getattr(captured, "application", None) or "")
     name = str(getattr(captured, "name", None) or "")
-    role = str(getattr(captured, "role", None) or "").replace("_", " ").casefold()
+    role = _normalize_role(getattr(captured, "role", None))
     actions = tuple(getattr(captured, "actions", ()) or ())
     if application.startswith("Automation Harness") or name == "Stop Recording":
         return False
@@ -184,19 +195,59 @@ def _is_recordable_target(captured) -> bool:
     return True
 
 
+def _is_authoring_chrome(captured) -> bool:
+    application = str(getattr(captured, "application", None) or "")
+    name = str(getattr(captured, "name", None) or "")
+    return application.startswith("Automation Harness") or name == "Stop Recording"
+
+
+def _captured_process_id(captured):
+    properties = dict(getattr(captured, "backend_properties", {}) or {})
+    for key in ("bridge_pid", "process_id", "process-id", "pid"):
+        try:
+            value = int(properties.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 class AtspiRecordingAdapter:
     """Translate bounded AT-SPI events into the framework-neutral observation stream."""
 
-    def __init__(self, driver=None, *, on_resolved=None, acknowledgement_seconds=0.3) -> None:
+    def __init__(
+        self,
+        driver=None,
+        *,
+        on_resolved=None,
+        acknowledgement_seconds=0.3,
+        hold_resolution_timeout=2.0,
+        hold_retry_interval=0.04,
+        pointer_monitor=None,
+        javafx_driver=None,
+    ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
         self.acknowledgement_seconds = acknowledgement_seconds
+        self.hold_resolution_timeout = max(0.0, float(hold_resolution_timeout))
+        self.hold_retry_interval = max(0.005, float(hold_retry_interval))
+        self._pointer_monitor = pointer_monitor or X11PointerMonitor()
+        # Capture Next Click uses this native bridge. Physical recording presses
+        # must query the same bridge before falling back to AT-SPI; OpenJFX does
+        # not reliably expose its scene graph through Linux AT-SPI.
+        self._javafx_driver = javafx_driver or JavaFxBridgeDriver()
+        self._using_x11_pointer = False
+        self._active = False
         self._emit: Callable[[Observation], None] | None = None
         self._lease: AtspiRegistryLease | None = None
         self._pyatspi = None
         self._listeners: list[tuple[Callable[[Any], None], str]] = []
+        self._callback_condition = threading.Condition()
+        self._callbacks_accepting = False
+        self._active_callbacks = 0
+        self._stop_requested = threading.Event()
         self._pointer_worker = _PointerRecordingWorker(
-            self._resolve_pointer_target,
             self._publish,
             acknowledge=on_resolved,
             acknowledgement_seconds=acknowledgement_seconds,
@@ -204,51 +255,106 @@ class AtspiRecordingAdapter:
 
     @property
     def available(self) -> bool:
-        return bool(self.driver.available)
+        if bool(self.driver.available):
+            return True
+        try:
+            return bool(self._javafx_driver.available)
+        except Exception:
+            return False
 
     def start(self, emit: Callable[[Observation], None]) -> None:
-        if self._lease is not None:
+        if self._active:
             raise RuntimeError("AT-SPI recording adapter is already active")
         self._emit = emit
-        self._pyatspi = _pyatspi()
+        atspi_available = bool(self.driver.available)
+        self._pyatspi = _pyatspi() if atspi_available else None
+        self._stop_requested.clear()
         self._pointer_worker.start()
+        with self._callback_condition:
+            self._callbacks_accepting = True
         self._listeners = [
-            (self._pointer, "mouse:button:1p"),
-            (self._pointer, "mouse:button:1r"),
-            (self._pointer, "mouse:button:3p"),
-            (self._pointer, "mouse:button:3r"),
             (self._action, "object:state-changed:checked"),
             (self._action, "object:state-changed:selected"),
             (self._text, "object:text-changed"),
-        ]
+        ] if atspi_available else []
         try:
-            for callback, event_type in self._listeners:
-                self._pyatspi.Registry.registerEventListener(callback, event_type)
-            self._lease = acquire_atspi_registry(self._pyatspi)
+            try:
+                self._pointer_monitor.start(self._physical_pointer)
+                self._using_x11_pointer = True
+            except Exception:
+                # Non-X11 sessions retain the legacy AT-SPI device-event path.
+                self._using_x11_pointer = False
+                if not atspi_available:
+                    raise RuntimeError(
+                        "recording requires X11 pointer monitoring when AT-SPI is unavailable"
+                    )
+                self._listeners[0:0] = [
+                    (self._pointer, "mouse:button:1p"),
+                    (self._pointer, "mouse:button:1r"),
+                    (self._pointer, "mouse:button:3p"),
+                    (self._pointer, "mouse:button:3r"),
+                ]
+            if atspi_available:
+                for callback, event_type in self._listeners:
+                    self._pyatspi.Registry.registerEventListener(callback, event_type)
+                self._lease = acquire_atspi_registry(self._pyatspi)
+            self._active = True
         except Exception:
+            with self._callback_condition:
+                self._callbacks_accepting = False
             for callback, event_type in self._listeners:
                 try:
                     self._pyatspi.Registry.deregisterEventListener(callback, event_type)
                 except Exception:
                     pass
             self._listeners = []
+            if self._using_x11_pointer:
+                self._pointer_monitor.stop()
+                self._using_x11_pointer = False
             self._pointer_worker.stop_and_drain()
             self._emit = None
+            self._pyatspi = None
             raise
 
     def stop(self) -> None:
-        if self._lease is None:
+        if not self._active and self._lease is None:
             return
         lease = self._lease
         self._lease = None
+        self._active = False
+        self._stop_requested.set()
+        with self._callback_condition:
+            self._callbacks_accepting = False
+        if self._using_x11_pointer:
+            self._pointer_monitor.stop()
+            self._using_x11_pointer = False
+        deferred_release = False
         try:
-            for callback, event_type in self._listeners:
-                self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            if self._pyatspi is not None:
+                for callback, event_type in self._listeners:
+                    self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            with self._callback_condition:
+                deferred_release = bool(self._active_callbacks)
         finally:
             self._pointer_worker.stop_and_drain()
-            lease.close()
+            if deferred_release and lease is not None:
+                threading.Thread(
+                    target=self._release_after_callbacks,
+                    args=(lease,),
+                    name="atspi-recording-release",
+                    daemon=True,
+                ).start()
+            elif lease is not None:
+                lease.close()
             self._listeners = []
             self._emit = None
+            self._pyatspi = None
+
+    def _release_after_callbacks(self, lease) -> None:
+        with self._callback_condition:
+            while self._active_callbacks:
+                self._callback_condition.wait()
+        lease.close()
 
     def _target(self, event: Any, coordinates=None, *, prefer_coordinates=False):
         source = getattr(event, "source", None)
@@ -283,20 +389,160 @@ class AtspiRecordingAdapter:
             return None
 
     def _pointer(self, event: Any) -> None:
+        if not self._begin_callback():
+            return
+        try:
+            self._handle_pointer(event)
+        finally:
+            self._end_callback()
+
+    def _handle_pointer(self, event: Any) -> None:
         event_type = str(getattr(event, "type", "")).casefold()
         if not event_type.endswith(("1p", "1r", "3p", "3r")):
             return
+        coordinates = _event_coordinates(event)
+        target = None
+        # Resolve on the Registry dispatch context, but use the bounded snapshot
+        # pipeline rather than the full desktop-wide authoring search. Only the
+        # immutable CapturedComponent crosses to the worker.
+        if event_type.endswith(("1p", "3p")):
+            target = self._resolve_pointer_event(event, coordinates)
         self._pointer_worker.accept_pointer(
             event_type,
-            _event_coordinates(event),
+            coordinates,
             time.monotonic(),
+            target,
         )
+
+    def _physical_pointer(self, event_type, coordinates, timestamp, owner_pid=None) -> None:
+        """Handle an X11 transition without waiting for AT-SPI device events."""
+        if not self._begin_callback():
+            return
+        try:
+            target = None
+            if event_type.endswith(("1p", "3p")):
+                target = self._resolve_physical_pointer_target(coordinates, owner_pid=owner_pid)
+            self._pointer_worker.accept_pointer(
+                event_type, coordinates, timestamp, target,
+            )
+        finally:
+            self._end_callback()
+
+    def _resolve_physical_pointer_target(self, coordinates, owner_pid=None):
+        # X11 owns z-order arbitration. Query only a bridge belonging to the
+        # topmost client process; a bridge for a covered JavaFX window must
+        # never participate merely because its bounds contain the pointer.
+        if owner_pid is not None:
+            try:
+                captured = self._javafx_driver.capture_at_point(
+                    *coordinates, process_id=owner_pid,
+                )
+                if (
+                    _is_recordable_target(captured)
+                    and _captured_process_id(captured) == owner_pid
+                ):
+                    return captured
+            except Exception:
+                pass
+
+        # Swing on Linux has no in-process capture bridge yet. AT-SPI through
+        # java-atk-wrapper is therefore the final semantic fallback, and its
+        # owning PID must agree with X11 whenever both are available.
+        atspi_candidate = None
+        try:
+            snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
+            if snapshot is not None:
+                atspi_candidate = snapshot(*coordinates)
+                if _is_authoring_chrome(atspi_candidate):
+                    return None
+                atspi_pid = _captured_process_id(atspi_candidate)
+                if owner_pid is not None and atspi_pid != owner_pid:
+                    return None
+        except Exception:
+            pass
+
+        # Compatibility path for non-X11/manual invocations: use AT-SPI to
+        # establish process ownership, then restrict JavaFX to that process.
+        if owner_pid is None and atspi_candidate is not None:
+            atspi_pid = _captured_process_id(atspi_candidate)
+            if atspi_pid is not None:
+                try:
+                    captured = self._javafx_driver.capture_at_point(
+                        *coordinates, process_id=atspi_pid,
+                    )
+                    if _is_recordable_target(captured):
+                        return captured
+                except Exception:
+                    pass
+        if atspi_candidate is not None and _is_recordable_target(atspi_candidate):
+            return atspi_candidate
+        if owner_pid is not None:
+            # Never discard known X11 ownership and retry through an
+            # unconstrained accessibility lookup.
+            return None
+        return self._resolve_pointer_event(
+            SimplePointerEvent("mouse:button:1p", coordinates), coordinates,
+        )
+
+    def _begin_callback(self):
+        with self._callback_condition:
+            if not self._callbacks_accepting:
+                return False
+            self._active_callbacks += 1
+            return True
+
+    def _end_callback(self):
+        with self._callback_condition:
+            self._active_callbacks -= 1
+            if not self._active_callbacks:
+                self._callback_condition.notify_all()
 
     def _resolve_pointer_target(self, coordinates):
         if coordinates is None:
             return None
         try:
             captured = self.driver.capture_scoped_at_point(*coordinates)
+        except Exception:
+            return None
+        return captured if _is_recordable_target(captured) else None
+
+    def _resolve_pointer_event(self, event, coordinates):
+        source = getattr(event, "source", None)
+        canonical = getattr(self.driver, "capture_click_snapshot", None)
+        if canonical is not None:
+            deadline = time.monotonic() + self.hold_resolution_timeout
+            while True:
+                try:
+                    return canonical(
+                        source,
+                        coordinates,
+                        excluded_application_prefixes=("Automation Harness",),
+                    )
+                except AtspiExcludedClickSource:
+                    return None
+                except Exception:
+                    if self._stop_requested.is_set() or time.monotonic() >= deadline:
+                        return None
+                    time.sleep(self.hold_retry_interval)
+        if source is not None:
+            try:
+                snapshot = getattr(self.driver, "capture_event_source_snapshot", None)
+                captured = snapshot(source) if snapshot is not None else self.driver.capture_event_source(
+                    source, settle_delay=0.0,
+                )
+                if _is_authoring_chrome(captured):
+                    return None
+                if _is_recordable_target(captured):
+                    return captured
+            except Exception:
+                pass
+        if coordinates is None:
+            return None
+        try:
+            snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
+            captured = snapshot(*coordinates) if snapshot is not None else self.driver.capture_scoped_at_point(
+                *coordinates,
+            )
         except Exception:
             return None
         return captured if _is_recordable_target(captured) else None
@@ -333,3 +579,13 @@ def _event_coordinates(event: Any):
     if x < 0 or y < 0:
         return None
     return (int(x), int(y))
+
+
+class SimplePointerEvent:
+    """Coordinate-only event used by the raw X11 press clock."""
+
+    def __init__(self, event_type, coordinates):
+        self.type = event_type
+        self.detail1 = coordinates[0]
+        self.detail2 = coordinates[1]
+        self.source = None

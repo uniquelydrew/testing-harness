@@ -8,6 +8,7 @@ import pytest
 from automation_harness.drivers.atspi_driver import (
     AtspiAmbiguousObject,
     AtspiObjectNotFound,
+    _process_id,
     _semantic_accessible,
     _select_accessible,
 )
@@ -92,6 +93,21 @@ def test_actionable_leaf_is_not_promoted():
     button = FakeAccessible("2", "push button", "digit-two")
     window = FakeAccessible("Calculator", "frame", children=[button])
     assert _semantic_accessible(button) is button
+
+
+def test_process_id_is_read_from_accessible_application_ancestor():
+    button = FakeAccessible("Save", "push button", "save")
+    window = FakeAccessible("Dialog", "frame", children=[button])
+    application = FakeAccessible("Example", "application", children=[window])
+    application.get_process_id = lambda: 1702
+
+    assert _process_id(button) == 1702
+
+
+def test_process_id_prefers_snapshot_attribute_without_live_traversal():
+    button = FakeAccessible("Save", "push button", "save")
+
+    assert _process_id(button, {"process-id": "1702"}) == 1702
 
 
 def test_assistive_conditions_progressively_disambiguate():

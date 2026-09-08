@@ -1,6 +1,15 @@
+from dataclasses import replace
+import threading
+import time
 from types import SimpleNamespace
 
 from automation_harness.models.component import CapturedComponent, ComponentState
+from automation_harness.drivers.atspi_driver import (
+    AtspiDriver,
+    AtspiExcludedClickSource,
+    _deepest_at_point,
+)
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
     _event_coordinates,
@@ -11,10 +20,13 @@ from automation_harness.recording.adapters.atspi import (
 class _Driver:
     available = True
 
-    def __init__(self, target):
+    def __init__(self, target, source_target=None):
         self.target = target
+        self.source_target = source_target or target
         self.points = []
         self.sources = []
+        self.point_snapshots = []
+        self.source_snapshots = []
 
     def capture_scoped_at_point(self, x, y):
         self.points.append((x, y))
@@ -23,6 +35,14 @@ class _Driver:
     def capture_event_source(self, source, *, settle_delay=0.08):
         self.sources.append((source, settle_delay))
         return self.target
+
+    def capture_at_point_snapshot(self, x, y):
+        self.point_snapshots.append((x, y))
+        return self.target
+
+    def capture_event_source_snapshot(self, source):
+        self.source_snapshots.append(source)
+        return self.source_target
 
 
 def _target():
@@ -33,16 +53,47 @@ def _target():
     )
 
 
+def test_javafx_point_capture_queries_only_the_x11_owner_process():
+    class Endpoint:
+        def __init__(self, pid):
+            self.pid = pid
+            self.calls = []
+
+        def request(self, operation, **payload):
+            self.calls.append((operation, payload))
+            return {"node": {"ref": "owned-%s" % self.pid}}
+
+    covered = Endpoint(701)
+    owner = Endpoint(702)
+
+    class Driver(JavaFxBridgeDriver):
+        def endpoints(self):
+            return (covered, owner)
+
+        def _captured_for_capture(self, endpoint, node):
+            return node["ref"]
+
+    captured = Driver().capture_at_point(25, 30, process_id=702)
+
+    assert captured == "owned-702"
+    assert covered.calls == []
+    assert owner.calls[0][0] == "hit_test"
+
+
 def test_pointer_event_is_re_hit_tested_at_desktop_coordinates():
     driver = _Driver(_target())
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     emitted = []
     adapter._emit = emitted.append
-    event = SimpleNamespace(type="mouse:button:1r", detail1=125, detail2=240, source=None)
     adapter._pointer_worker.start()
-    adapter._pointer(event)
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=None,
+    ))
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=125, detail2=240, source=None,
+    ))
     adapter._pointer_worker.stop_and_drain()
-    assert driver.points == [(125, 240)]
+    assert driver.point_snapshots == [(125, 240)]
     assert emitted[0].target.name == "Save"
     assert emitted[0].coordinates == (125, 240)
 
@@ -54,23 +105,23 @@ def test_pointer_release_uses_semantic_target_resolved_from_matching_press():
     adapter._emit = emitted.append
 
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=125, detail2=240, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=126, detail2=241, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
     assert driver.sources == []
-    assert driver.points == [(125, 240)]
+    assert len(driver.source_snapshots) == 1
     assert len(emitted) == 1
     assert emitted[0].target.name == "Save"
     assert emitted[0].phase == "released"
     assert emitted[0].coordinates == (126, 241)
 
 
-def test_registry_pointer_callback_only_enqueues_resolution_work():
+def test_registry_pointer_callback_resolves_before_enqueuing_work():
     driver = _Driver(_target())
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     event = SimpleNamespace(
@@ -79,28 +130,223 @@ def test_registry_pointer_callback_only_enqueues_resolution_work():
 
     assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 1.0) is False
     adapter._pointer_worker.start()
-    adapter._pointer(event)
+    adapter._handle_pointer(event)
 
     assert driver.sources == []
+    assert len(driver.source_snapshots) == 1
     adapter._pointer_worker.stop_and_drain()
-    assert driver.points == [(125, 240)]
     assert driver.sources == []
     assert adapter._pointer_worker.state == "stopped"
     assert adapter._pointer_worker.accept_pointer("mouse:button:1p", (1, 2), 2.0) is False
 
 
 def test_pointer_press_coordinates_override_generic_shell_event_source():
-    driver = _Driver(_target())
+    shell = CapturedComponent(
+        name="GNOME Shell", role="application", description=None,
+        accessible_id=None, application="gnome-shell", hierarchy=(), actions=(),
+        bounds=(0, 0, 1920, 1080), state=ComponentState(True),
+    )
+    driver = _Driver(_target(), source_target=shell)
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
 
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=500, detail2=600, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
-    assert driver.points == [(500, 600)]
+    assert driver.point_snapshots == [(500, 600)]
     assert driver.sources == []
+
+
+def test_desktop_frame_event_source_falls_through_to_clicked_component():
+    desktop_frame = CapturedComponent(
+        name="main", role="desktop frame", description=None,
+        accessible_id="-1", application="Application Window", hierarchy=(),
+        actions=(), bounds=(0, 0, 1024, 768), state=ComponentState(True),
+    )
+    driver = _Driver(_target(), source_target=desktop_frame)
+    events = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: events.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert len(driver.source_snapshots) == 1
+    assert driver.point_snapshots == [(125, 240)]
+    assert events == [_target()]
+    assert not _is_recordable_target(desktop_frame)
+
+
+def test_point_hit_testing_excludes_highlight_overlay_application_subtree():
+    class Accessible:
+        def __init__(self, name, role, bounds=None, children=()):
+            self.name = name
+            self.role = role
+            self.bounds = bounds
+            self.children = list(children)
+
+        @property
+        def childCount(self):
+            return len(self.children)
+
+        def getChildAtIndex(self, index):
+            return self.children[index]
+
+        def getRoleName(self):
+            return self.role
+
+        def queryComponent(self):
+            return self
+
+        def getExtents(self, coordinate_type):
+            if self.bounds is None:
+                raise RuntimeError("structural node has no component geometry")
+            return SimpleNamespace(
+                x=self.bounds[0], y=self.bounds[1],
+                width=self.bounds[2], height=self.bounds[3],
+            )
+
+    button = Accessible("Open", "push button", (10, 20, 30, 40))
+    target_app = Accessible("Target", "application", children=(button,))
+    red_edge = Accessible("", "window", (9, 19, 32, 42))
+    harness_app = Accessible("Automation Harness Author", "application", children=(red_edge,))
+    desktop = Accessible("Desktop", "desktop", children=(target_app, harness_app))
+
+    resolved = _deepest_at_point(
+        desktop,
+        x=12,
+        y=22,
+        pyatspi=SimpleNamespace(DESKTOP_COORDS=0),
+        excluded_application_prefixes=("Automation Harness",),
+    )
+
+    assert resolved is button
+
+
+def test_recording_and_next_click_use_the_same_canonical_click_snapshot():
+    desktop_frame = replace(
+        _target(), name="main", role="desktop frame", accessible_id="-1",
+        application="Application Window", actions=(), bounds=(0, 0, 1024, 768),
+    )
+
+    class CanonicalDriver(AtspiDriver):
+        available = True
+
+        def capture_event_source_snapshot(self, source):
+            return desktop_frame
+
+        def capture_at_point_snapshot(self, x, y, *, excluded_application_prefixes=()):
+            return _target()
+
+    driver = CanonicalDriver()
+    expected = driver.capture_click_snapshot(
+        object(), (125, 240),
+        excluded_application_prefixes=("Automation Harness",),
+    )
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert highlighted == [expected]
+
+
+def test_press_hold_retries_until_transient_target_becomes_accessible():
+    class SettlingDriver(_Driver):
+        def __init__(self):
+            super().__init__(_target())
+            self.attempts = 0
+
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise LookupError("transient menu item is not exposed yet")
+            return self.target
+
+    driver = SettlingDriver()
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        driver,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+        hold_resolution_timeout=0.2,
+        hold_retry_interval=0.001,
+    )
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.attempts == 3
+    assert highlighted == [_target()]
+
+
+def test_press_hold_does_not_retry_authoring_controls():
+    class ExcludedDriver(_Driver):
+        def __init__(self):
+            super().__init__(_target())
+            self.attempts = 0
+
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            self.attempts += 1
+            raise AtspiExcludedClickSource("authoring control")
+
+    driver = ExcludedDriver()
+    adapter = AtspiRecordingAdapter(
+        driver,
+        hold_resolution_timeout=1.0,
+        hold_retry_interval=0.1,
+    )
+    adapter._pointer_worker.start()
+    started = time.monotonic()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=125, detail2=240, source=object(),
+    ))
+    elapsed = time.monotonic() - started
+    adapter._pointer_worker.stop_and_drain()
+
+    assert driver.attempts == 1
+    assert elapsed < 0.05
+
+
+def test_stop_request_cancels_an_unresolved_hold_retry():
+    entered = threading.Event()
+
+    class UnresolvedDriver(_Driver):
+        def capture_click_snapshot(self, source, coordinates, *, excluded_application_prefixes=()):
+            entered.set()
+            raise LookupError("not exposed")
+
+    adapter = AtspiRecordingAdapter(
+        UnresolvedDriver(_target()),
+        hold_resolution_timeout=2.0,
+        hold_retry_interval=0.01,
+    )
+    resolving = threading.Thread(
+        target=adapter._resolve_pointer_event,
+        args=(SimpleNamespace(source=object()), (125, 240)),
+    )
+    resolving.start()
+    assert entered.wait(1)
+    adapter._stop_requested.set()
+    resolving.join(0.1)
+
+    assert not resolving.is_alive()
 
 
 def test_resolved_target_is_acknowledged_before_next_interaction():
@@ -113,15 +359,334 @@ def test_resolved_target_is_acknowledged_before_next_interaction():
     )
     adapter._emit = lambda observation: events.append(("emit", observation.target.name))
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    # Acknowledgement is produced while recording is active, without relying
+    # on stop_and_drain() to unblock semantic resolution.
+    for _unused in range(100):
+        if events:
+            break
+        time.sleep(0.001)
+    assert events == [("highlight", "Save")]
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=10, detail2=20, source=object(),
     ))
     adapter._pointer_worker.stop_and_drain()
 
     assert events == [("highlight", "Save"), ("emit", "Save")]
+
+
+def test_physical_press_resolves_and_highlights_before_release_arrives():
+    highlighted = threading.Event()
+    emitted = []
+    adapter = AtspiRecordingAdapter(
+        _Driver(_target()),
+        on_resolved=lambda target, duration: highlighted.set(),
+        acknowledgement_seconds=0,
+    )
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    adapter._physical_pointer("mouse:button:1p", (10, 20), 1.0)
+
+    assert highlighted.wait(0.1)
+    assert emitted == []
+    adapter._physical_pointer("mouse:button:1r", (10, 20), 2.0)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert len(emitted) == 1
+    assert emitted[0].target.name == "Save"
+    assert emitted[0].timestamp == 2.0
+
+
+def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
+    javafx_target = replace(
+        _target(), name="File", accessible_id="fileMenu", role="menu",
+        application="ERSA test.build.0", framework="javafx",
+        native_class="com.sun.javafx.scene.control.MenuBarButton",
+    )
+
+    class JavaFxDriver:
+        def __init__(self):
+            self.points = []
+
+        def capture_at_point(self, x, y, *, process_id=None):
+            self.points.append((x, y))
+            assert process_id == 702
+            return javafx_target
+
+    atspi = _Driver(_target())
+    atspi.target = replace(
+        atspi.target, name="main", role="desktop frame", accessible_id="-1",
+        application="Application Window", actions=(),
+        backend_properties={"process_id": 702},
+    )
+    javafx_target = replace(javafx_target, backend_properties={"bridge_pid": 702})
+    javafx = JavaFxDriver()
+    highlighted = []
+    emitted = []
+    adapter = AtspiRecordingAdapter(
+        atspi,
+        javafx_driver=javafx,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    adapter._physical_pointer("mouse:button:1p", (140, 70), 1.0, 702)
+    adapter._physical_pointer("mouse:button:1r", (140, 70), 2.0, 702)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert javafx.points == [(140, 70)]
+    assert atspi.point_snapshots == []
+    assert highlighted == [javafx_target]
+    assert len(emitted) == 1
+    assert emitted[0].target is javafx_target
+    assert emitted[0].source == "javafx"
+
+
+def test_physical_press_prefers_javafx_semantic_target_over_recordable_atspi_proxy():
+    coarse = replace(
+        _target(), name="File", role="menu", accessible_id=None,
+        application="ERSA test.build.0", bounds=(0, 0, 1024, 768),
+        backend_properties={"process_id": 702},
+    )
+    exact = replace(
+        coarse, accessible_id="fileMenu", framework="javafx",
+        native_class="javafx.scene.control.Menu", bounds=(10, 20, 80, 24),
+        backend_properties={"bridge_pid": 702},
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
+            return exact
+
+    adapter = AtspiRecordingAdapter(_Driver(coarse), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=702) is exact
+
+
+def test_physical_press_rejects_javafx_window_beneath_topmost_application():
+    topmost = replace(
+        _target(), name="Confirm", application="Native Dialog",
+        backend_properties={"process_id": 701}, bounds=(0, 0, 400, 300),
+    )
+    underneath = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is topmost
+
+
+def test_structural_topmost_window_blocks_javafx_window_beneath_it():
+    topmost = replace(
+        _target(), name="main", role="desktop frame", actions=(),
+        application="Native Dialog", backend_properties={"process_id": 701},
+        bounds=(0, 0, 400, 300),
+    )
+    underneath = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is None
+
+
+def test_x11_owner_rejects_atspi_target_with_unknown_process():
+    unowned = replace(
+        _target(), name="Confirm", application="Unknown Native Dialog",
+        backend_properties={}, bounds=(0, 0, 400, 300),
+    )
+
+    class NoJavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            raise LookupError("no JavaFX endpoint for owning process")
+
+    adapter = AtspiRecordingAdapter(_Driver(unowned), javafx_driver=NoJavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=701) is None
+
+
+def test_matching_process_uses_javafx_semantic_target():
+    proxy = replace(
+        _target(), name="main", role="desktop frame", actions=(),
+        application="Application Window", backend_properties={"process_id": 702},
+    )
+    semantic = replace(
+        _target(), name="File", application="ERSA", framework="javafx",
+        backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
+    )
+
+    class JavaFxDriver:
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
+            return semantic
+
+    adapter = AtspiRecordingAdapter(_Driver(proxy), javafx_driver=JavaFxDriver())
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=702) is semantic
+
+
+def test_physical_press_does_not_hit_test_javafx_below_authoring_chrome():
+    harness = replace(
+        _target(), application="Automation Harness Author",
+        name="Stop Recording",
+    )
+
+    class JavaFxDriver:
+        called = False
+
+        def capture_at_point(self, x, y):
+            self.called = True
+            return replace(_target(), framework="javafx")
+
+    javafx = JavaFxDriver()
+    adapter = AtspiRecordingAdapter(_Driver(harness), javafx_driver=javafx)
+
+    assert adapter._resolve_physical_pointer_target((140, 70)) is None
+    assert not javafx.called
+
+
+def test_javafx_only_session_starts_physical_recording_without_atspi_registry():
+    javafx_target = replace(
+        _target(), name="File", accessible_id="fileMenu", role="menu",
+        framework="javafx", backend_properties={"bridge_pid": 702},
+    )
+
+    class UnavailableAtspi:
+        available = False
+
+    class JavaFxDriver:
+        available = True
+
+        def capture_at_point(self, x, y, *, process_id=None):
+            assert process_id == 702
+            return javafx_target
+
+    class PointerMonitor:
+        callback = None
+        stopped = False
+
+        def start(self, callback):
+            self.callback = callback
+
+        def stop(self):
+            self.stopped = True
+
+    monitor = PointerMonitor()
+    emitted = []
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        UnavailableAtspi(), javafx_driver=JavaFxDriver(),
+        pointer_monitor=monitor,
+        on_resolved=lambda target, duration: highlighted.append(target),
+        acknowledgement_seconds=0,
+    )
+
+    assert adapter.available
+    adapter.start(emitted.append)
+    monitor.callback("mouse:button:1p", (140, 70), 1.0, 702)
+    monitor.callback("mouse:button:1r", (140, 70), 2.0, 702)
+    adapter.stop()
+
+    assert monitor.stopped
+    assert highlighted == [javafx_target]
+    assert len(emitted) == 1
+    assert emitted[0].target is javafx_target
+
+
+def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
+    highlighted = []
+    adapter = AtspiRecordingAdapter(
+        _Driver(_target()),
+        on_resolved=lambda target, duration: highlighted.append(target.name),
+        acknowledgement_seconds=0.3,
+    )
+    adapter._pointer_worker.start()
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1p", (10, 20), 1.0, _target(),
+    )
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1r", (10, 20), 1.01,
+    )
+    adapter._pointer_worker.accept_pointer(
+        "mouse:button:1p", (12, 22), 1.02, replace(_target(), name="Open"),
+    )
+
+    deadline = time.monotonic() + 0.1
+    while len(highlighted) < 2 and time.monotonic() < deadline:
+        time.sleep(0.001)
+    adapter._pointer_worker.stop_and_drain()
+
+    assert highlighted == ["Save", "Open"]
+
+
+def test_stop_returns_while_deferring_lease_release_until_active_resolution_finishes():
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingDriver(_Driver):
+        def capture_event_source_snapshot(self, source):
+            entered.set()
+            release.wait(1)
+            return self.target
+
+    class Lease:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    registry = SimpleNamespace(deregisterEventListener=lambda callback, event_type: None)
+    adapter = AtspiRecordingAdapter(BlockingDriver(_target()), acknowledgement_seconds=0)
+    adapter._pyatspi = SimpleNamespace(Registry=registry)
+    lease = Lease()
+    adapter._lease = lease
+    adapter._listeners = [(adapter._pointer, "mouse:button:1p")]
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+
+    callback = threading.Thread(target=adapter._pointer, args=(SimpleNamespace(
+        type="mouse:button:1p", detail1=10, detail2=20, source=object(),
+    ),))
+    callback.start()
+    assert entered.wait(1)
+
+    stopping = threading.Thread(target=adapter.stop)
+    stopping.start()
+    stopping.join(1)
+    assert not stopping.is_alive()
+    assert not lease.closed
+
+    release.set()
+    callback.join(1)
+    assert not callback.is_alive()
+    for _unused in range(100):
+        if lease.closed:
+            break
+        time.sleep(0.001)
+    assert lease.closed
 
 
 def test_action_and_text_events_drain_against_last_resolved_target():
@@ -130,10 +695,10 @@ def test_action_and_text_events_drain_against_last_resolved_target():
     emitted = []
     adapter._emit = emitted.append
     adapter._pointer_worker.start()
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
-    adapter._pointer(SimpleNamespace(
+    adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1r", detail1=10, detail2=20, source=object(),
     ))
     adapter._action(SimpleNamespace(
