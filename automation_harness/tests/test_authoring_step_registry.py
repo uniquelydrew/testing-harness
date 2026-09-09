@@ -5,8 +5,10 @@ from automation_harness.authoring.step_registry import (
     AuthoringStepRegistry,
     StepRegistryArtifactError,
     create_step_registry,
+    load_step_registry_resources,
     save_step_registry,
 )
+from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.reusable_steps import ReusableStepDefinition
 from automation_harness.models.plan import TestPlan
 
@@ -96,3 +98,61 @@ def test_registry_step_ids_are_unique(tmp_path):
 
     loaded = AuthoringStepRegistry.load(path)
     assert [item.step_id for item in loaded.steps] == ["navigation.open"]
+
+
+def test_project_registry_resources_merge_steps_and_objects(tmp_path):
+    first_path = tmp_path / "first.ahregistry"
+    second_path = tmp_path / "second.ahregistry"
+    first = create_step_registry(first_path, "First")
+    second = create_step_registry(second_path, "Second")
+    first = first.with_step(ReusableStepDefinition(
+        "navigation.open", "Open", "", TestPlan("Open"), {}, {}
+    ))
+    second = second.with_step(ReusableStepDefinition(
+        "navigation.close", "Close", "", TestPlan("Close"), {}, {}
+    ))
+    save_step_registry(first_path, first)
+    save_step_registry(second_path, second)
+
+    one = ComponentRepository.from_document({
+        "version": 2,
+        "components": {
+            "window.open": {
+                "object_type": "button",
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "name": "Open", "role": "push button"}],
+            }
+        },
+    })
+    two = ComponentRepository.from_document({
+        "version": 2,
+        "components": {
+            "window.close": {
+                "object_type": "button",
+                "actions": ["click"],
+                "strategies": [{"type": "atspi", "name": "Close", "role": "push button"}],
+            }
+        },
+    })
+    one.save(first.repository)
+    two.save(second.repository)
+
+    resources = load_step_registry_resources((first_path, second_path))
+
+    assert set(resources.steps) == {"navigation.open", "navigation.close"}
+    assert resources.repository.contains("window.open")
+    assert resources.repository.contains("window.close")
+
+
+def test_project_registry_resources_reject_ambiguous_step_ids(tmp_path):
+    paths = []
+    for filename, name in (("first.ahregistry", "First"), ("second.ahregistry", "Second")):
+        path = tmp_path / filename
+        registry = create_step_registry(path, name).with_step(ReusableStepDefinition(
+            "navigation.open", "Open", "", TestPlan("Open"), {}, {}
+        ))
+        save_step_registry(path, registry)
+        paths.append(path)
+
+    with pytest.raises(StepRegistryArtifactError, match="ambiguous"):
+        load_step_registry_resources(paths)
