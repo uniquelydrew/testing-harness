@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import yaml
 
@@ -77,6 +77,57 @@ class AuthoringStepRegistry:
             if step.step_id == step_id:
                 return step
         raise StepRegistryArtifactError("unknown reusable step %r" % step_id)
+
+
+@dataclass(frozen=True)
+class LoadedStepRegistryResources:
+    """Strict merged view of Step Registries loaded into one Project."""
+
+    registries: tuple[AuthoringStepRegistry, ...]
+    steps: Mapping[str, ReusableStepDefinition]
+    repository: ComponentRepository
+
+
+def load_step_registry_resources(paths: Iterable[Path]) -> LoadedStepRegistryResources:
+    registries = tuple(AuthoringStepRegistry.load(Path(path)) for path in paths)
+    steps: dict[str, ReusableStepDefinition] = {}
+    step_sources: dict[str, str] = {}
+    components = {}
+    object_ids: dict[str, str] = {}
+
+    for registry in registries:
+        for step in registry.steps:
+            if step.step_id in steps:
+                raise StepRegistryArtifactError(
+                    "reusable step %r is ambiguous across registries %r and %r"
+                    % (step.step_id, step_sources[step.step_id], registry.name)
+                )
+            steps[step.step_id] = step
+            step_sources[step.step_id] = registry.name
+
+        repository = ComponentRepository.load((registry.repository,))
+        for component_id, definition in repository.components.items():
+            existing = components.get(component_id)
+            if existing is not None:
+                if existing != definition:
+                    raise StepRegistryArtifactError(
+                        "component %r conflicts across loaded Step Registry repositories" % component_id
+                    )
+                continue
+            previous_name = object_ids.get(definition.object_id)
+            if previous_name is not None and previous_name != component_id:
+                raise StepRegistryArtifactError(
+                    "immutable object id %r is assigned to both %r and %r across loaded Step Registries"
+                    % (definition.object_id, previous_name, component_id)
+                )
+            components[component_id] = definition
+            object_ids[definition.object_id] = component_id
+
+    return LoadedStepRegistryResources(
+        registries=registries,
+        steps=steps,
+        repository=ComponentRepository(components),
+    )
 
 
 def create_step_registry(
