@@ -1,7 +1,7 @@
-"""Python-version-safe entry points for live authoring/capture surfaces."""
+"""Python-version-safe entry points for authoring/capture surfaces."""
 
 
-def _prepare():
+def _prepare_legacy():
     from automation_harness.compat.python36 import install
 
     install()
@@ -10,6 +10,7 @@ def _prepare():
         live_runtime,
         registry_portability_runtime,
         registry_runtime,
+        standalone_registry_runtime,
     )
     from automation_harness.authoring.live_click_policy import install as install_click_policy
     from automation_harness.authoring.preferences_runtime import install as install_preferences_runtime
@@ -22,19 +23,24 @@ def _prepare():
     app.STEP_REGISTRY_SUFFIX = STEP_REGISTRY_SUFFIX
     registry_runtime.install(app)
     registry_portability_runtime.install(app)
+    standalone_registry_runtime.install(app)
     return app
 
 
 def run_author():
-    app = _prepare()
-    return app.main()
+    from automation_harness.compat.python36 import install
+
+    install()
+    from automation_harness.authoring.gui.launcher import main
+
+    return main()
 
 
 def run_capture():
-    app = _prepare()
+    app = _prepare_legacy()
     return app.capture_main()
 
 
 def run_repository():
-    app = _prepare()
+    app = _prepare_legacy()
     return app.repository_main()
