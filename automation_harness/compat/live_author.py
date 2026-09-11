@@ -1,10 +1,20 @@
 """Python-version-safe entry points for authoring/capture surfaces."""
 
 
+def _initialize_display_threads():
+    # Must run before importing GTK/GDK or any other Xlib consumer.  Recording
+    # owns a background Xlib display for physical press timing, while GTK uses
+    # X11 on the main thread.
+    from automation_harness.recording.x11_threads import initialize_x11_threads
+
+    initialize_x11_threads()
+
+
 def _prepare_legacy():
     from automation_harness.compat.python36 import install
 
     install()
+    _initialize_display_threads()
     from automation_harness.authoring import (
         app,
         live_runtime,
@@ -31,6 +41,7 @@ def run_author():
     from automation_harness.compat.python36 import install
 
     install()
+    _initialize_display_threads()
     from automation_harness.authoring.gui.launcher import main
 
     return main()

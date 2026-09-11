@@ -37,6 +37,7 @@ class StartWindow(ArtifactWindow):
             ("New Test Plan", lambda: self.create_artifact("plan")),
             ("New Step Registry", lambda: self.create_artifact("registry")),
             ("New Object Repository", lambda: self.create_artifact("repository")),
+            ("Preferences", self.preferences_dialog),
         )
         for index, (label, callback) in enumerate(actions):
             button = Gtk.Button(label=label); button.set_size_request(260, 54); button.connect("clicked", lambda _button, fn=callback: fn()); grid.attach(button, index % 2, index // 2, 1, 1)

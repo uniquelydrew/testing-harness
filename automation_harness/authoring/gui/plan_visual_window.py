@@ -26,12 +26,6 @@ from automation_harness.models.plan import StepCall
 class VisualTestPlanWindow(RecordingTestPlanWindow):
     """Recording-capable Test Plan editor with explicit repository visual assertions."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if self.project is not None and self.project.object_repositories:
-            self.repository = self.repository.overlay(ComponentRepository.load(self.project.object_repositories))
-            self.refresh_all()
-
     def add_object_action(self):
         if not self.repository.components:
             return self.info("Object Action", "No objects are available. Open or capture objects in an Object Repository first.")
@@ -84,7 +78,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                         repository_path = candidate
                         break
             if repository_path is None:
-                return self.error("Assert Match", "The selected object is not backed by a writable Object Repository. Add its repository to the Project first.")
+                return self.error("Assert Match", "The selected object is not backed by a writable Object Repository. Assign its repository to the Test Plan first.")
             try:
                 updated = import_visual_match(repository_path, definition.component_id, image, match_id)
                 self.repository = self.repository.with_component(updated)
@@ -180,7 +174,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
     def _run_finished(self, result, error):
         self.window.deiconify(); self.window.present()
         launcher = getattr(self, "launching_window", None)
-        launcher_window = getattr(launcher, "window", None)
+        launcher_window = getattr(launcher, "window", launcher)
         if launcher_window is not None:
             try:
                 launcher_window.deiconify(); launcher_window.present()

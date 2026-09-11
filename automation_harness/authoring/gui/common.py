@@ -30,6 +30,7 @@ class ArtifactWindow:
         self.status = Gtk.Label(label="Ready")
         self.status.set_halign(Gtk.Align.END)
         self.toolbar.pack_end(self.status, True, True, 0)
+        self.button("Preferences", self.preferences_dialog)
 
     def finish_build(self):
         self._update_title()
@@ -53,6 +54,11 @@ class ArtifactWindow:
         button.connect("clicked", lambda *_args: callback())
         (parent or self.toolbar).pack_start(button, False, False, 0)
         return button
+
+    def preferences_dialog(self):
+        from automation_harness.authoring.gui.preferences import show_preferences_dialog
+        if show_preferences_dialog(self.window, getattr(self, "project", None)):
+            self.set_status("Preferences saved")
 
     @staticmethod
     def scrolled(widget):

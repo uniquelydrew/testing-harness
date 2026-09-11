@@ -10,9 +10,11 @@ from gi.repository import Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
+from automation_harness.authoring.plan_repository import assign_repository, assigned_repository_path, load_authoring_repository
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
-from automation_harness.core.test_plan import embed_plan_repository, save_plan
+from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
+from automation_harness.formats import REPOSITORY_SUFFIX
 
 
 class TestPlanAuthoringWindow(TestPlanWindow):
@@ -20,13 +22,43 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
+        if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
+            assigned, _path = load_authoring_repository(self.plan, self.path)
+            self.repository = repository_from_plan(self.plan).overlay(assigned)
+            if self.registry_resources:
+                self.repository = self.repository.overlay(self.registry_resources.repository)
         self.button("Add Object Action", self.add_object_action)
-        if self.project and self.project.object_repositories:
-            self.button(
-                "Open Object Repository",
-                lambda: self.open_artifact(self.project.object_repositories[0], project_context=self.project_context),
-            )
+        self.button("Assign Object Repository", self.assign_object_repository)
+        self.button("Open Object Repository", self.open_assigned_repository)
         self.window.show_all()
+
+    def assign_object_repository(self):
+        selected = self.choose_file(title="Assign Object Repository", suffix=REPOSITORY_SUFFIX)
+        if selected is None:
+            return
+        try:
+            selected = selected.resolve()
+            if not selected.is_file():
+                raise ValueError("object repository does not exist")
+            assigned = __import__("automation_harness.core.component_repository", fromlist=["ComponentRepository"]).ComponentRepository.load((selected,))
+            self.plan = assign_repository(self.plan, self.path, selected)
+            self.assigned_repository_path = selected
+            self.repository = repository_from_plan(self.plan).overlay(assigned)
+            if self.registry_resources:
+                self.repository = self.repository.overlay(self.registry_resources.repository)
+            if self.project_context:
+                project = AuthoringProject.load(self.project_context).with_object_repository(selected)
+                save_authoring_project(self.project_context, project); self.project = project
+        except Exception as exc:
+            return self.error("Assign Object Repository", "%s: %s" % (type(exc).__name__, exc))
+        self.mark_dirty(); self.refresh_all(); self.set_status("Assigned object repository: %s" % selected.name)
+
+    def open_assigned_repository(self):
+        path = assigned_repository_path(self.plan, self.path)
+        if path is None:
+            return self.info("Object Repository", "This Test Plan does not currently have an assigned Object Repository.")
+        return self.open_artifact(path, project_context=self.project_context)
 
     def save(self):
         """Persist direct objects first, then add transitive Registry dependencies."""
@@ -38,6 +70,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             self.plan = portable
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
+                repository_path = assigned_repository_path(self.plan, self.path)
+                if repository_path is not None:
+                    project = project.with_object_repository(repository_path)
                 save_authoring_project(self.project_context, project)
                 self.project = project
         except Exception as exc:
@@ -48,7 +83,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not self.repository.components:
             return self.info(
                 "Object Action",
-                "No objects are available. Open or capture objects in an Object Repository first.",
+                "No objects are available. Assign or capture objects in an Object Repository first.",
             )
         dialog = Gtk.Dialog(title="Add Object Action", transient_for=self.window, modal=True)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
