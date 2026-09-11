@@ -19,6 +19,7 @@ def install() -> None:
     _INSTALLED = True
 
     from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
+    from automation_harness.authoring import plan_repository
     from automation_harness.recording.session import RecordingSession, RepositoryMatch
 
     original_save_node = ObjectIdentityWorkbench._save_node
@@ -83,8 +84,15 @@ def install() -> None:
             return RepositoryMatch("ambiguous", matches)
         return result
 
+    def matching_component_ids(repository, capture):
+        return list(find_existing_component_ids(repository, capture))
+
     ObjectIdentityWorkbench._save_node = save_node
     RecordingSession._match = match
+    # Every plan-authoring capture materialization checks semantic identity
+    # before generating a name. This covers direct recording/capture paths that
+    # never open Object Identity Workbench.
+    plan_repository.matching_component_ids = matching_component_ids
 
 
 def _propagate_app_rename(app, old_component_id: str, new_component_id: str) -> None:
