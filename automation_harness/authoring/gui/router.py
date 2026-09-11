@@ -24,9 +24,6 @@ _SUFFIX_TYPES = {
 }
 
 
-# Projects are top-level workspaces. Opening the same project from one of its
-# child artifact windows should return focus to the existing workspace rather
-# than creating another independent ProjectWindow instance.
 _OPEN_PROJECT_WINDOWS = {}
 
 
@@ -126,5 +123,5 @@ def open_window(path: Path, *, project_context=None, launching_window=None):
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
         return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
-    from automation_harness.authoring.gui.repository_window import ObjectRepositoryWindow
-    return _finish(ObjectRepositoryWindow(path, project_context=project_context, opener=open_window), launching_window)
+    from automation_harness.authoring.gui.repository_workbench_window import WorkbenchObjectRepositoryWindow
+    return _finish(WorkbenchObjectRepositoryWindow(path, project_context=project_context, opener=open_window), launching_window)

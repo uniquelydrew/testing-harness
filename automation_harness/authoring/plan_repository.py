@@ -69,11 +69,10 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
 
 
 def matching_component_ids(repository: ComponentRepository, capture: CapturedComponent) -> list[str]:
+    """Match a capture to logical objects by resolver strategy, never framework."""
     result = []
     candidate = capture.candidate_strategy()
     for component_id, definition in repository.components.items():
-        if definition.framework and capture.framework and definition.framework != capture.framework:
-            continue
         if definition.object_type != capture.semantic_type() and definition.object_type.value != "custom":
             continue
         if candidate in definition.strategies:
@@ -81,7 +80,8 @@ def matching_component_ids(repository: ComponentRepository, capture: CapturedCom
             continue
         for strategy in definition.strategies:
             if strategy.type == candidate.type and strategy.options == candidate.options:
-                result.append(component_id); break
+                result.append(component_id)
+                break
     return result
 
 
@@ -96,8 +96,9 @@ def definition_from_capture(component_id: str, capture: CapturedComponent) -> Co
         actions=actions,
         object_type=capture.semantic_type(),
         properties=dict(capture.backend_properties),
-        framework=capture.framework,
-        native_class=capture.native_class,
+        # Framework/class describe one observation, not the logical object.
+        framework=None,
+        native_class=None,
         subobjects={str(key): dict(value) for key, value in capture.logical_subobjects.items()},
     )
 
@@ -130,6 +131,8 @@ def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids
         properties=properties,
         subobjects=subobjects,
         description=" / ".join(descriptions),
+        framework=None,
+        native_class=None,
         revision=max([target.revision, *[item.revision for item in sources]]) + 1,
     )
     result = repository.with_component(merged)
@@ -139,10 +142,34 @@ def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids
 
 
 def _unique_component_id(repository: ComponentRepository, capture: CapturedComponent) -> str:
-    raw = capture.accessible_id or capture.name or capture.role or "recorded-object"
-    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw.strip()).strip("-.").lower() or "recorded-object"
+    base = _qualified_capture_id(capture)
     candidate = base
     index = 2
     while candidate in repository.components:
-        candidate = "%s-%d" % (base, index); index += 1
+        candidate = "%s%d" % (base, index)
+        index += 1
     return candidate
+
+
+def _qualified_capture_id(capture: CapturedComponent) -> str:
+    """Build a semantic path from the captured window/hierarchy/target."""
+    raw_segments = []
+    window = capture.window or capture.application
+    if window:
+        raw_segments.append(window)
+    for value in capture.hierarchy or ():
+        if value and str(value) not in raw_segments:
+            raw_segments.append(value)
+    leaf = capture.accessible_id or capture.name or capture.role or "Object"
+    if not raw_segments or str(raw_segments[-1]).casefold() != str(leaf).casefold():
+        raw_segments.append(leaf)
+    segments = [_semantic_segment(value) for value in raw_segments]
+    segments = [value for index, value in enumerate(segments) if value and (index == 0 or value != segments[index - 1])]
+    return ".".join(segments) or "Object"
+
+
+def _semantic_segment(value) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", str(value or ""))
+    if not words:
+        return "Object"
+    return "".join(word[:1].upper() + word[1:] for word in words)

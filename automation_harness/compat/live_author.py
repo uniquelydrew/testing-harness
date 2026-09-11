@@ -10,11 +10,18 @@ def _initialize_display_threads():
     initialize_x11_threads()
 
 
+def _install_click_capture_policy():
+    from automation_harness.authoring.atspi_click_capture_policy import install
+
+    install()
+
+
 def _prepare_legacy():
     from automation_harness.compat.python36 import install
 
     install()
     _initialize_display_threads()
+    _install_click_capture_policy()
     from automation_harness.authoring import (
         app,
         live_runtime,
@@ -42,6 +49,7 @@ def run_author():
 
     install()
     _initialize_display_threads()
+    _install_click_capture_policy()
     from automation_harness.authoring.gui.launcher import main
 
     return main()
