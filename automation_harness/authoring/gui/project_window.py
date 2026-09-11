@@ -8,10 +8,11 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
+from automation_harness.authoring.plan_repository import assigned_repository_path
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
-from automation_harness.authoring.step_registry import create_step_registry
+from automation_harness.authoring.step_registry import AuthoringStepRegistry, create_step_registry
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.test_plan import save_plan
+from automation_harness.core.test_plan import load_plan, repository_from_plan, save_plan
 from automation_harness.formats import PLAN_SUFFIX, REPOSITORY_SUFFIX, STEP_REGISTRY_SUFFIX
 from automation_harness.models.plan import TestPlan
 
@@ -56,16 +57,71 @@ class ProjectWindow(ArtifactWindow):
         self.refresh_detail()
 
     def refresh_detail(self):
-        path = self.selected(self.tree, 2)
-        if not path:
+        path_text = self.selected(self.tree, 2)
+        label = self.selected(self.tree, 0)
+        if not path_text:
             text = (
                 "%s\n\nTest Plans: %d\nStep Registries: %d\nObject Repositories: %d" %
                 (self.project.name, len(self.project.test_plans), len(self.project.step_registries), len(self.project.object_repositories))
             )
-        else:
-            artifact = Path(path)
-            text = "%s\n\n%s\n\nExists: %s" % (artifact.stem, artifact, artifact.is_file())
-        self.detail.get_buffer().set_text(text)
+            self.detail.get_buffer().set_text(text)
+            return
+
+        artifact = Path(path_text)
+        lines = [artifact.stem, "", str(artifact), "", "Exists: %s" % artifact.is_file()]
+        if not artifact.is_file():
+            self.detail.get_buffer().set_text("\n".join(lines))
+            return
+
+        try:
+            if label == "Object Repository":
+                repository = ComponentRepository.load((artifact,))
+                resolver_counts = {}
+                type_counts = {}
+                roots = set()
+                for component_id, definition in repository.components.items():
+                    roots.add(component_id.split(".", 1)[0])
+                    object_type = definition.object_type.value
+                    type_counts[object_type] = type_counts.get(object_type, 0) + 1
+                    for strategy in definition.strategies:
+                        resolver_counts[strategy.type] = resolver_counts.get(strategy.type, 0) + 1
+                lines.extend((
+                    "Objects: %d" % len(repository.components),
+                    "Top-level object trees: %d" % len(roots),
+                    "Resolver alternatives: %d" % sum(resolver_counts.values()),
+                ))
+                if resolver_counts:
+                    lines.append("Resolvers: %s" % ", ".join(
+                        "%s (%d)" % item for item in sorted(resolver_counts.items())
+                    ))
+                if type_counts:
+                    lines.append("Object types: %s" % ", ".join(
+                        "%s (%d)" % item for item in sorted(type_counts.items())
+                    ))
+
+            elif label == "Test Plan":
+                plan = load_plan(artifact)
+                embedded = repository_from_plan(plan)
+                assigned = assigned_repository_path(plan, artifact)
+                lines.extend((
+                    "Steps: %d" % len(plan.steps),
+                    "Variables: %d" % len(plan.variables),
+                    "Embedded objects: %d" % len(embedded.components),
+                    "Assigned Object Repository: %s" % (assigned if assigned is not None else "none"),
+                ))
+
+            elif label == "Step Registry":
+                registry = AuthoringStepRegistry.load(artifact)
+                repository = ComponentRepository.load((registry.repository,))
+                lines.extend((
+                    "Reusable steps: %d" % len(registry.steps),
+                    "Object Repository: %s" % registry.repository,
+                    "Repository objects: %d" % len(repository.components),
+                ))
+        except Exception as exc:
+            lines.extend(("", "Unable to inspect artifact:", "%s: %s" % (type(exc).__name__, exc)))
+
+        self.detail.get_buffer().set_text("\n".join(lines))
 
     def save(self):
         save_authoring_project(self.path, self.project)
@@ -98,7 +154,6 @@ class ProjectWindow(ArtifactWindow):
             kind = detect_artifact(path)
             if kind is ArtifactType.TEST_PLAN: self.project = self.project.with_test_plan(path)
             elif kind is ArtifactType.STEP_REGISTRY:
-                from automation_harness.authoring.step_registry import AuthoringStepRegistry
                 registry = AuthoringStepRegistry.load(path)
                 self.project = self.project.with_step_registry(path).with_object_repository(registry.repository)
             elif kind is ArtifactType.OBJECT_REPOSITORY: self.project = self.project.with_object_repository(path)

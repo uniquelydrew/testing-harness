@@ -5,7 +5,7 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import GObject, Gtk
 
 
 class ArtifactWindow:
@@ -69,7 +69,7 @@ class ArtifactWindow:
 
     @staticmethod
     def list_tree(columns):
-        store = Gtk.ListStore(*([str] * len(columns)))
+        store = Gtk.ListStore(*([GObject.TYPE_STRING] * len(columns)))
         tree = Gtk.TreeView(model=store)
         for index, (title, width) in enumerate(columns):
             renderer = Gtk.CellRendererText()

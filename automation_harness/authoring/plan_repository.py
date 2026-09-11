@@ -69,7 +69,6 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
 
 
 def matching_component_ids(repository: ComponentRepository, capture: CapturedComponent) -> list[str]:
-    """Match a capture to logical objects by resolver strategy, never framework."""
     result = []
     candidate = capture.candidate_strategy()
     for component_id, definition in repository.components.items():
@@ -96,11 +95,40 @@ def definition_from_capture(component_id: str, capture: CapturedComponent) -> Co
         actions=actions,
         object_type=capture.semantic_type(),
         properties=dict(capture.backend_properties),
-        # Framework/class describe one observation, not the logical object.
         framework=None,
         native_class=None,
         subobjects={str(key): dict(value) for key, value in capture.logical_subobjects.items()},
     )
+
+
+def merge_repository_or(target: ComponentRepository, source: ComponentRepository) -> tuple[ComponentRepository, dict[str, int]]:
+    """Merge one logical Object Repository into another using OR locators.
+
+    The target repository is canonical. Immutable IDs and component names that
+    already exist in the target remain canonical; compatible source definitions
+    contribute resolver alternatives and metadata. Objects absent from the
+    target are copied as-is (normalized to framework-agnostic logical objects).
+    """
+    result = target
+    stats = {"added": 0, "merged": 0, "unchanged": 0}
+
+    for source_name, source_definition in sorted(source.components.items()):
+        canonical_name = _canonical_target_name(result, source_definition)
+        normalized_source = replace(source_definition, framework=None, native_class=None)
+        if canonical_name is None:
+            result = result.with_component(normalized_source)
+            stats["added"] += 1
+            continue
+
+        current = result.get(canonical_name)
+        merged = _merge_definition_or(current, normalized_source)
+        if merged == current:
+            stats["unchanged"] += 1
+            continue
+        result = result.with_component(merged)
+        stats["merged"] += 1
+
+    return result, stats
 
 
 def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids: Iterable[str]) -> ComponentRepository:
@@ -108,68 +136,126 @@ def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids
     sources = [repository.get(value) for value in source_ids if value != target_id]
     if not sources:
         return repository
-    strategies = list(target.strategies)
-    actions = set(target.actions)
-    properties = dict(target.properties)
-    subobjects = {str(k): dict(v) for k, v in target.subobjects.items()}
-    descriptions = [target.description] if target.description else []
+    merged = target
     for source in sources:
-        if source.object_type != target.object_type:
-            raise ValueError("OR merge requires the same semantic object type")
-        for strategy in source.strategies:
-            if strategy not in strategies:
-                strategies.append(strategy)
-        actions.update(source.actions)
-        properties.update({k: v for k, v in source.properties.items() if k not in properties})
-        subobjects.update({k: dict(v) for k, v in source.subobjects.items() if k not in subobjects})
-        if source.description and source.description not in descriptions:
-            descriptions.append(source.description)
-    merged = replace(
-        target,
-        strategies=tuple(strategies),
-        actions=frozenset(actions),
-        properties=properties,
-        subobjects=subobjects,
-        description=" / ".join(descriptions),
-        framework=None,
-        native_class=None,
-        revision=max([target.revision, *[item.revision for item in sources]]) + 1,
-    )
+        merged = _merge_definition_or(merged, source)
     result = repository.with_component(merged)
     for source in sources:
         result = result.without_component(source.component_id)
     return result
 
 
+def _canonical_target_name(repository: ComponentRepository, source: ComponentDefinition) -> str | None:
+    for name, definition in repository.components.items():
+        if definition.object_id == source.object_id:
+            return name
+    if source.component_id in repository.components:
+        return source.component_id
+    return None
+
+
+def _merge_definition_or(target: ComponentDefinition, source: ComponentDefinition) -> ComponentDefinition:
+    if target.object_type != source.object_type:
+        if target.object_type.value == "custom":
+            object_type = source.object_type
+        elif source.object_type.value == "custom":
+            object_type = target.object_type
+        else:
+            raise ValueError(
+                "OR merge requires compatible semantic object types: %s is %s, %s is %s"
+                % (target.component_id, target.object_type.value, source.component_id, source.object_type.value)
+            )
+    else:
+        object_type = target.object_type
+
+    strategies = list(target.strategies)
+    for strategy in source.strategies:
+        if strategy not in strategies:
+            strategies.append(strategy)
+
+    actions = frozenset(set(target.actions) | set(source.actions))
+    properties = dict(target.properties)
+    properties.update({key: value for key, value in source.properties.items() if key not in properties})
+    subobjects = {str(key): dict(value) for key, value in target.subobjects.items()}
+    subobjects.update({str(key): dict(value) for key, value in source.subobjects.items() if key not in subobjects})
+    expected_states = dict(target.expected_states)
+    expected_states.update({key: value for key, value in source.expected_states.items() if key not in expected_states})
+    action_completion = {str(key): dict(value) for key, value in target.action_completion.items()}
+    action_completion.update({str(key): dict(value) for key, value in source.action_completion.items() if key not in action_completion})
+    scope = dict(target.scope)
+    scope.update({key: value for key, value in source.scope.items() if key not in scope})
+
+    descriptions = []
+    for value in (target.description, source.description):
+        if value and value not in descriptions:
+            descriptions.append(value)
+
+    changed = (
+        tuple(strategies) != tuple(target.strategies)
+        or actions != target.actions
+        or properties != dict(target.properties)
+        or subobjects != {str(key): dict(value) for key, value in target.subobjects.items()}
+        or expected_states != dict(target.expected_states)
+        or action_completion != {str(key): dict(value) for key, value in target.action_completion.items()}
+        or scope != dict(target.scope)
+        or object_type != target.object_type
+        or target.framework is not None
+        or target.native_class is not None
+        or (not target.visual and source.visual)
+    )
+    if not changed:
+        return target
+
+    return replace(
+        target,
+        strategies=tuple(strategies),
+        actions=actions,
+        properties=properties,
+        subobjects=subobjects,
+        expected_states=expected_states,
+        action_completion=action_completion,
+        scope=scope,
+        object_type=object_type,
+        description=" / ".join(descriptions),
+        visual=target.visual or source.visual,
+        framework=None,
+        native_class=None,
+        revision=max(target.revision, source.revision) + 1,
+    )
+
+
 def _unique_component_id(repository: ComponentRepository, capture: CapturedComponent) -> str:
-    base = _qualified_capture_id(capture)
+    raw = _qualified_capture_name(capture)
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw.strip()).strip("-.") or "RecordedObject"
     candidate = base
     index = 2
     while candidate in repository.components:
-        candidate = "%s%d" % (base, index)
+        candidate = "%s-%d" % (base, index)
         index += 1
     return candidate
 
 
-def _qualified_capture_id(capture: CapturedComponent) -> str:
-    """Build a semantic path from the captured window/hierarchy/target."""
-    raw_segments = []
-    window = capture.window or capture.application
-    if window:
-        raw_segments.append(window)
-    for value in capture.hierarchy or ():
-        if value and str(value) not in raw_segments:
-            raw_segments.append(value)
-    leaf = capture.accessible_id or capture.name or capture.role or "Object"
-    if not raw_segments or str(raw_segments[-1]).casefold() != str(leaf).casefold():
-        raw_segments.append(leaf)
-    segments = [_semantic_segment(value) for value in raw_segments]
-    segments = [value for index, value in enumerate(segments) if value and (index == 0 or value != segments[index - 1])]
-    return ".".join(segments) or "Object"
+def _qualified_capture_name(capture: CapturedComponent) -> str:
+    raw = list(getattr(capture, "hierarchy", ()) or ())
+    if not raw:
+        raw = [capture.window or capture.application, capture.accessible_id or capture.name or capture.role]
+    segments = []
+    for value in raw:
+        if value in (None, ""):
+            continue
+        text = _semantic_segment(value)
+        if text and (not segments or text != segments[-1]):
+            segments.append(text)
+    return ".".join(segments) or "RecordedObject"
 
 
 def _semantic_segment(value) -> str:
-    words = re.findall(r"[A-Za-z0-9]+", str(value or ""))
-    if not words:
-        return "Object"
-    return "".join(word[:1].upper() + word[1:] for word in words)
+    output = []
+    capitalize = True
+    for character in str(value or "").strip():
+        if character.isalnum():
+            output.append(character.upper() if capitalize else character)
+            capitalize = False
+        else:
+            capitalize = True
+    return "".join(output) or "Object"

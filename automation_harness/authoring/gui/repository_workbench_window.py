@@ -4,6 +4,9 @@ from dataclasses import replace
 import threading
 from types import MethodType
 
+import gi
+
+gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import suggested_name
@@ -25,6 +28,7 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         self._workbench_original_definition = None
         self._workbench_original_component_id = None
         super().__init__(*args, **kwargs)
+        self.button("Capture Next Click", self.capture_next_click)
         self._rename_legacy_edit_button(self.root)
         self._install_hierarchical_tree()
         self.refresh()
@@ -44,19 +48,6 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
             columns[0].set_title("Object")
         if len(columns) > 2:
             columns[2].set_title("Resolvers")
-
-    def _append_tree_row(self, parent, values):
-        """Append a TreeStore row without relying on newer PyGObject overloads.
-
-        RHEL 8/Python 3.6's Gtk override exposes TreeStore.append(parent) rather
-        than the newer append(parent, row) convenience signature. Populate the
-        returned iterator explicitly so the routed repository editor works on
-        the target platform as well as newer development environments.
-        """
-        iterator = self.store.append(parent)
-        for column, value in enumerate(values):
-            self.store.set_value(iterator, column, value)
-        return iterator
 
     def selected(self, tree, column=0):
         if tree is self.tree:
@@ -91,16 +82,20 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
                 key = tuple(prefix)
                 iterator = branches.get(key)
                 if iterator is None:
-                    iterator = self._append_tree_row(parent, (segment, "", "", "", ""))
+                    iterator = self.store.append(parent)
+                    self.store.set_value(iterator, 0, segment)
+                    self.store.set_value(iterator, 1, "")
+                    self.store.set_value(iterator, 2, "")
+                    self.store.set_value(iterator, 3, "")
+                    self.store.set_value(iterator, 4, "")
                     branches[key] = iterator
                 parent = iterator
-            self._append_tree_row(parent, (
-                segments[-1],
-                definition.object_type.value,
-                ", ".join(resolver_names),
-                str(definition.revision),
-                component_id,
-            ))
+            iterator = self.store.append(parent)
+            self.store.set_value(iterator, 0, segments[-1])
+            self.store.set_value(iterator, 1, definition.object_type.value)
+            self.store.set_value(iterator, 2, ", ".join(resolver_names))
+            self.store.set_value(iterator, 3, str(definition.revision))
+            self.store.set_value(iterator, 4, component_id)
             visible += 1
         self.tree.expand_all()
         self.set_status(
@@ -164,6 +159,35 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
             "Use Edit in Workbench to inspect the semantic tree and change identity properties.",
         ))
         self.detail.get_buffer().set_text("\n".join(lines))
+
+    def capture_next_click(self):
+        if not getattr(self.capture, "available", True):
+            return self.error("Object Capture", "No supported live desktop capture backend is available.")
+        self.set_status("Waiting for next physical click…")
+        self.window.hide()
+
+        def worker():
+            try:
+                captured = self.capture.capture_next_click(timeout=30.0)
+            except Exception as exc:
+                GLib.idle_add(self._capture_next_click_finished, None, exc)
+            else:
+                GLib.idle_add(self._capture_next_click_finished, captured, None)
+
+        threading.Thread(target=worker, name="repository-next-click-capture", daemon=True).start()
+
+    def _capture_next_click_finished(self, captured, error):
+        self.window.show_all()
+        self.window.present()
+        if error is not None:
+            self.set_status("Capture Next Click failed")
+            self.error("Capture Next Click", "%s: %s" % (type(error).__name__, error))
+            return False
+        self._workbench_original_component_id = None
+        self._workbench_original_definition = None
+        self._configure_workbench(open_capture_workbench(self, captured))
+        self.set_status("Click captured — review semantic tree and identity in Object Identity Workbench")
+        return False
 
     def edit_selected(self):
         component_id = self.selected(self.tree)
@@ -310,9 +334,6 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
                 )
                 self.repository = self.repository.with_component(updated)
 
-        # Framework/class are properties of an observation/resolver, not of the
-        # logical repository object. Normalize every object touched by the
-        # workbench so newly captured objects follow the same rule as edits.
         normalized = self.repository
         for name, definition in tuple(normalized.components.items()):
             if definition.framework is not None or definition.native_class is not None:
