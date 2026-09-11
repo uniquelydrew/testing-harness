@@ -83,7 +83,6 @@ final class JavaFxRecorder {
             addListener(focusProperty, () -> focus(scene));
         } catch (ReflectiveOperationException | RuntimeException ignored) {
             debug("could not attach JavaFX scene listeners", ignored);
-            // A partial JavaFX runtime should not prevent the target from running.
         }
     }
 
@@ -145,7 +144,6 @@ final class JavaFxRecorder {
             });
         } catch (RuntimeException ignored) {
             debug("could not observe JavaFX property " + propertyMethod, ignored);
-            // A custom control can expose a nonstandard property surface.
         }
     }
 
@@ -153,7 +151,9 @@ final class JavaFxRecorder {
         JavaFxSemanticTargetResolver.Resolution resolution = JavaFxSemanticTargetResolver.resolveSemanticTarget(physical);
         Map<String, Object> target = target(resolution);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("type", type); result.put("timestamp", System.nanoTime() / 1_000_000_000.0); result.put("target", target);
+        result.put("type", type);
+        result.put("timestamp", System.nanoTime() / 1_000_000_000.0);
+        result.put("target", target);
         return result;
     }
 
@@ -168,17 +168,14 @@ final class JavaFxRecorder {
             semantic.put("properties", properties);
         }
         target.put("semantic_node", semantic);
-        target.put("promotion", Map.of("promoted", resolution.promoted(), "descendant_depth", resolution.descendantDepth(), "reason", resolution.reason()));
+        target.put("promotion", Map.of(
+            "promoted", resolution.promoted(),
+            "descendant_depth", resolution.descendantDepth(),
+            "reason", resolution.reason()
+        ));
         return target;
     }
 
-    /**
-     * Describe a Menu/MenuItem independently of the rendered popup skin.  The
-     * parent Menu chain is the durable path.  The closest owning MenuBar or
-     * MenuButton is captured when it can be recovered from the physical node;
-     * ContextMenu remains an explicit logical owner when no scene-graph owner
-     * exists.
-     */
     private static Map<String, Object> logicalMenuMetadata(Object semantic, Object physical) {
         String semanticRole = role(semantic);
         if (!Set.of("menu", "menu item", "check menu item", "radio menu item").contains(semanticRole)) {
@@ -205,12 +202,16 @@ final class JavaFxRecorder {
         if (sceneOwner != null) {
             owner.put("kind", role(sceneOwner));
             owner.put("node", snapshot(sceneOwner));
+        } else if (top != semantic && "menu".equals(role(top))) {
+            // MenuBar dropdowns render inside popup windows too. The popup is
+            // implementation state; the durable owner is the logical top Menu
+            // (File/Edit/etc.) that the repository already knows by id/text.
+            owner.put("kind", "menu");
+            owner.put("logical", menuSelector(top));
         } else if (parentPopup != null) {
             owner.put("kind", "context menu");
             owner.put("popup", menuOwnerSnapshot(parentPopup));
         } else {
-            // Top-level Menu is still useful for associating the leaf with a
-            // separately captured File/Edit/etc. menu owner by durable id.
             owner.put("kind", "menu");
             owner.put("logical", menuSelector(top));
         }
@@ -263,7 +264,8 @@ final class JavaFxRecorder {
         if (accessibleText != null && !String.valueOf(accessibleText).isBlank()) result.put("name", String.valueOf(accessibleText));
         else if (text != null && !String.valueOf(text).isBlank()) result.put("name", String.valueOf(text));
         String role = role(node);
-        result.put("role", role); result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        result.put("role", role);
+        result.put("ref", Integer.toHexString(System.identityHashCode(node)));
         if (role.equals("menu") || role.equals("menu bar") || role.equals("context menu")) {
             Object children = invoke(node, "getItems");
             if (!(children instanceof Iterable<?>)) children = invoke(node, "getMenus");
@@ -309,38 +311,69 @@ final class JavaFxRecorder {
     }
 
     private static Object handler(Class<?> type, java.util.function.Consumer<Object> consumer) {
-        return Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type}, (_proxy, method, args) -> { if (method.getName().equals("handle")) consumer.accept(args[0]); return null; });
+        return Proxy.newProxyInstance(
+            type.getClassLoader(),
+            new Class<?>[]{type},
+            (_proxy, method, args) -> {
+                if (method.getName().equals("handle")) consumer.accept(args[0]);
+                return null;
+            }
+        );
     }
 
     private static void addListener(Object property, Runnable action) {
         try {
             Class<?> listener = Class.forName("javafx.beans.InvalidationListener");
-            Object proxy = Proxy.newProxyInstance(listener.getClassLoader(), new Class<?>[]{listener}, (_proxy, method, _args) -> { if (method.getName().equals("invalidated")) action.run(); return null; });
+            Object proxy = Proxy.newProxyInstance(
+                listener.getClassLoader(),
+                new Class<?>[]{listener},
+                (_proxy, method, _args) -> {
+                    if (method.getName().equals("invalidated")) action.run();
+                    return null;
+                }
+            );
             Class.forName("javafx.beans.Observable").getMethod("addListener", listener).invoke(property, proxy);
-        } catch (ReflectiveOperationException ignored) { debug("could not attach JavaFX property listener", ignored); }
+        } catch (ReflectiveOperationException ignored) {
+            debug("could not attach JavaFX property listener", ignored);
+        }
     }
 
     private static Object invoke(Object target, String method) {
         if (target == null) return null;
-        try { return target.getClass().getMethod(method).invoke(target); }
-        catch (ReflectiveOperationException ignored) { return null; }
+        try {
+            return target.getClass().getMethod(method).invoke(target);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
     }
 
-    private static void offer(Map<String, Object> event) { if (buffer != null) buffer.offer(event); }
+    private static void offer(Map<String, Object> event) {
+        if (buffer != null) buffer.offer(event);
+    }
 
     private static void runOnFxThread(Runnable action) {
-        try { Class.forName("javafx.application.Platform").getMethod("runLater", Runnable.class).invoke(null, action); }
-        catch (ReflectiveOperationException ignored) { /* JavaFX not initialized. */ }
+        try {
+            Class.forName("javafx.application.Platform").getMethod("runLater", Runnable.class).invoke(null, action);
+        } catch (ReflectiveOperationException ignored) {
+            // JavaFX not initialized.
+        }
     }
 
     private static void runOnFxThreadAndWait(Runnable action) {
         try {
             Class<?> platform = Class.forName("javafx.application.Platform");
-            if (Boolean.TRUE.equals(platform.getMethod("isFxApplicationThread").invoke(null))) { action.run(); return; }
+            if (Boolean.TRUE.equals(platform.getMethod("isFxApplicationThread").invoke(null))) {
+                action.run();
+                return;
+            }
             CompletableFuture<Void> completed = new CompletableFuture<>();
             platform.getMethod("runLater", Runnable.class).invoke(null, (Runnable) () -> {
-                try { action.run(); completed.complete(null); }
-                catch (Throwable error) { completed.completeExceptionally(error); }
+                try {
+                    action.run();
+                    completed.complete(null);
+                } catch (Throwable error) {
+                    completed.completeExceptionally(error);
+                }
             });
             completed.get(2, TimeUnit.SECONDS);
         } catch (Exception ignored) { }
