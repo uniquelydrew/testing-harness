@@ -9,6 +9,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from automation_harness.authoring.preferences_runtime import AuthoringPreferences, preferences_path
+from automation_harness.core.resolution_retry import object_resolution_timeout
 
 
 def recording_highlights_enabled() -> bool:
@@ -33,6 +34,12 @@ def show_preferences_dialog(owner, project=None):
     runs = Gtk.Entry(); runs.set_text(str(current.resolved_runs_dir(project)))
     highlight = Gtk.CheckButton(label="Highlight targets during recording")
     highlight.set_active(recording_highlights_enabled())
+    resolution_timeout = Gtk.SpinButton.new_with_range(0.0, 120.0, 0.5)
+    resolution_timeout.set_digits(1)
+    resolution_timeout.set_value(object_resolution_timeout())
+    resolution_timeout.set_tooltip_text(
+        "How long object lookup retries before failing. Set 0 to disable retries."
+    )
 
     def add_path_row(index, label_text, entry, title):
         label = Gtk.Label(label=label_text); label.set_xalign(0); grid.attach(label, 0, index, 1, 1)
@@ -49,7 +56,11 @@ def show_preferences_dialog(owner, project=None):
 
     add_path_row(0, "Default files folder", files, "Select default files folder")
     add_path_row(1, "Test runs folder", runs, "Select test runs folder")
-    grid.attach(highlight, 0, 2, 3, 1)
+    timeout_label = Gtk.Label(label="Object resolution timeout (seconds)")
+    timeout_label.set_xalign(0)
+    grid.attach(timeout_label, 0, 2, 1, 1)
+    grid.attach(resolution_timeout, 1, 2, 1, 1)
+    grid.attach(highlight, 0, 3, 3, 1)
     dialog.show_all(); response = dialog.run()
     if response != Gtk.ResponseType.OK:
         dialog.destroy(); return False
@@ -62,6 +73,7 @@ def show_preferences_dialog(owner, project=None):
         raw = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
         if not isinstance(raw, dict): raw = {}
         raw["recording_highlight_clicks"] = bool(highlight.get_active())
+        raw["object_resolution_timeout"] = float(resolution_timeout.get_value())
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     finally:
