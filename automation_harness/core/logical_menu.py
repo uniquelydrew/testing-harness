@@ -1,13 +1,13 @@
 """Logical menu ownership and subobject matching.
 
-JavaFX renders Menu/MenuItem values through disposable skin nodes.  Repository
+JavaFX renders Menu/MenuItem values through disposable skin nodes. Repository
 identity must therefore attach menu descendants to a durable owner and retain
 only selectors for the logical MenuItem graph.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, MutableMapping
 
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 
@@ -37,7 +37,7 @@ def durable_menu_criteria(capture: CapturedComponent) -> dict[str, Any]:
     """Extract selector evidence that belongs to the logical MenuItem.
 
     Never return window, CSS class, skin class, literal hierarchy, node ref, or
-    bridge endpoint metadata.  The live ERSA recordings demonstrate that those
+    bridge endpoint metadata. The live ERSA recordings demonstrate that those
     values describe ContextMenuContent/MenuItemContainer instances rather than
     application menu identity.
     """
@@ -48,6 +48,34 @@ def durable_menu_criteria(capture: CapturedComponent) -> dict[str, Any]:
     if name and name != capture.accessible_id:
         criteria["text"] = name
     return criteria
+
+
+def normalize_menu_subobjects(
+    subobjects: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Return the canonical runtime shape for nested menu selectors.
+
+    Earlier capture code persisted ``selector: {criteria, ordinal}`` while the
+    runtime executor consumes ``criteria`` and ``ordinal`` directly on each
+    subobject. Accept both representations so existing repositories migrate in
+    memory without forcing users to recapture menus.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for key, raw in subobjects.items():
+        if not isinstance(raw, Mapping):
+            continue
+        item = dict(raw)
+        selector = item.pop("selector", None)
+        if isinstance(selector, Mapping):
+            if "criteria" not in item and isinstance(selector.get("criteria"), Mapping):
+                item["criteria"] = dict(selector["criteria"])
+            if "ordinal" not in item and selector.get("ordinal") is not None:
+                item["ordinal"] = selector.get("ordinal")
+        nested = item.get("subobjects")
+        if isinstance(nested, Mapping):
+            item["subobjects"] = normalize_menu_subobjects(nested)
+        result[str(key)] = item
+    return result
 
 
 def find_logical_menu_targets(
@@ -61,8 +89,20 @@ def find_logical_menu_targets(
     for definition in definitions:
         if definition.framework not in (None, "javafx"):
             continue
-        _walk_subobjects(definition.component_id, definition.subobjects, (), (), criteria, matches)
+        normalized = normalize_menu_subobjects(definition.subobjects)
+        _replace_mutable_subobjects(definition.subobjects, normalized)
+        _walk_subobjects(definition.component_id, normalized, (), (), criteria, matches)
     return tuple(matches)
+
+
+def _replace_mutable_subobjects(
+    original: Mapping[str, Mapping[str, Any]], normalized: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """Migrate an in-memory repository definition when its mapping is mutable."""
+    if not isinstance(original, MutableMapping):
+        return
+    original.clear()
+    original.update({key: dict(value) for key, value in normalized.items()})
 
 
 def _walk_subobjects(
@@ -74,21 +114,25 @@ def _walk_subobjects(
     matches: list[LogicalMenuTarget],
 ) -> None:
     for subobject_id, raw in subobjects.items():
-        selector = raw.get("selector", {}) if isinstance(raw, Mapping) else {}
-        selector = selector if isinstance(selector, Mapping) else {}
-        expected = selector.get("criteria", {})
+        if not isinstance(raw, Mapping):
+            continue
+        expected = raw.get("criteria", {})
         expected = expected if isinstance(expected, Mapping) else {}
+        selector = {
+            key: value for key, value in raw.items()
+            if key in {"kind", "criteria", "ordinal"}
+        }
         next_path = path + (str(subobject_id),)
-        next_selectors = selectors + (dict(selector),)
+        next_selectors = selectors + (selector,)
         if expected and _criteria_match(expected, captured):
             matches.append(LogicalMenuTarget(owner_component_id, next_path, next_selectors))
-        nested = raw.get("subobjects", {}) if isinstance(raw, Mapping) else {}
+        nested = raw.get("subobjects", {})
         if isinstance(nested, Mapping):
             _walk_subobjects(owner_component_id, nested, next_path, next_selectors, captured, matches)
 
 
 def _criteria_match(expected: Mapping[str, Any], captured: Mapping[str, Any]) -> bool:
-    # IDs are authoritative when both sides have one.  Text supplements ID and
+    # IDs are authoritative when both sides have one. Text supplements ID and
     # becomes the primary selector only when no ID exists.
     expected_id = expected.get("id")
     captured_id = captured.get("id")
@@ -104,5 +148,5 @@ def _criteria_match(expected: Mapping[str, Any], captured: Mapping[str, Any]) ->
 def menu_action_payload(target: LogicalMenuTarget) -> dict[str, Any]:
     return {
         "type": "select_menu_item",
-        "subobject_path": list(target.subobject_path),
+        "path": list(target.subobject_path),
     }
