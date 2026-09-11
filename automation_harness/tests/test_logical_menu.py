@@ -8,6 +8,7 @@ from automation_harness.core.logical_menu import (
 )
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
+from automation_harness.recording.observations import ActionFired, PointerInteraction
 from automation_harness.recording.session import RecordedInteraction, RecordingSession, interactions_to_steps
 
 
@@ -30,6 +31,22 @@ def _live_camera_selector_capture(native_class="com.sun.javafx.scene.control.Con
         native_class=native_class,
         object_type=ObjectType.MENU_ITEM,
     )
+
+
+def _logical_camera_selector_capture():
+    physical = _live_camera_selector_capture("javafx.scene.control.MenuItem")
+    return CapturedComponent(**{
+        **physical.__dict__,
+        "name": "Camera Selector",
+        "description": None,
+        "hierarchy": (),
+        "backend_properties": {
+            "logical_menu": {
+                "path": [{"kind": "menu item", "criteria": {"id": "cameraSelectorMenuItem", "text": "Camera Selector"}}],
+                "owner": {"kind": "context menu", "popup": {"role": "context menu"}},
+            }
+        },
+    })
 
 
 def _owner():
@@ -135,3 +152,23 @@ def test_recorded_menu_subobject_becomes_select_menu_item_action():
             "path": ["camera", "camera_selector"],
         },
     }
+
+
+def test_skin_pointer_and_logical_action_collapse_to_one_menu_interaction():
+    owner = _owner()
+    session = RecordingSession(repository=ComponentRepository({owner.component_id: owner}))
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "javafx", _live_camera_selector_capture(), {},
+        "primary", "released", (100, 100),
+    ))
+    session.observe(ActionFired(
+        1.05, "javafx", _logical_camera_selector_capture(), {}, "activate",
+    ))
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    interaction = interactions[0]
+    assert interaction.target.native_class == "javafx.scene.control.MenuItem"
+    assert interaction.repository_match.status == "known_subobject"
+    assert interaction.repository_match.subobject_path == ("camera", "camera_selector")
