@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.completion import await_step_completion
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.reusable_step_expansion import expand_reusable_steps
+from automation_harness.core.reusable_steps import ReusableStepDefinition
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_context import TestContext
 from automation_harness.core.test_plan import ManagedExecutionQueue, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
@@ -31,8 +33,14 @@ def execute_plan(
     variable_overrides: Mapping[str, object] | None = None,
     component_repository: ComponentRepository | None = None,
     compiled_artifact: "CompiledTest | None" = None,
+    reusable_steps: Mapping[str, ReusableStepDefinition] | None = None,
 ) -> RunResult:
-    """Execute a validated declarative or compiled TestPlan using installed steps."""
+    """Execute a validated declarative or compiled TestPlan using installed steps.
+
+    User-authored Registry Steps remain explicit in persisted Test Plans. When their
+    definitions are supplied here, they are expanded into deterministic primitive calls
+    before structural/runtime validation and queue construction.
+    """
 
     artifacts = RunArtifacts.create(runs_dir, plan.name)
     result = RunResult(
@@ -62,6 +70,29 @@ def execute_plan(
         objects=plan.objects,
         step_definitions=plan.step_definitions,
     )
+    if reusable_steps:
+        try:
+            runtime_plan = expand_reusable_steps(runtime_plan, reusable_steps)
+            recorder.record(
+                "reusable_steps_expanded",
+                authored_step_count=len(plan.steps),
+                executable_step_count=len(runtime_plan.steps),
+                reusable_step_ids=sorted(reusable_steps),
+            )
+        except Exception as exc:
+            result.validation_errors = [f"reusable step expansion: {type(exc).__name__}: {exc}"]
+            result.exit_code = 2
+            recorder.record("plan_validation_failed", issues=result.validation_errors)
+            return _finalize(
+                runtime_plan,
+                backend,
+                result,
+                artifacts,
+                recorder,
+                initial_variables,
+                registry=registry,
+                compiled_artifact=compiled_artifact,
+            )
 
     if compiled_artifact is not None:
         components = compiled_artifact.component_repository()

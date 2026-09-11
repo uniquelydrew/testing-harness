@@ -7,6 +7,7 @@ from pathlib import Path
 PROJECT_SUFFIX = ".ahproject"
 PLAN_SUFFIX = ".ahplan"
 REPOSITORY_SUFFIX = ".ahobjects"
+STEP_REGISTRY_SUFFIX = ".ahregistry"
 SCRIPT_STEP_SUFFIX = ".ahstep"
 
 

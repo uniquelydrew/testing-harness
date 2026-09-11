@@ -12,6 +12,8 @@ import ctypes.util
 import threading
 import time
 
+from automation_harness.recording.x11_threads import initialize_x11_threads
+
 
 _BUTTON_MASKS = {
     1: 1 << 8,  # Button1Mask
@@ -21,6 +23,9 @@ _BUTTON_MASKS = {
 
 class _XlibPointerBackend:
     def __init__(self):
+        # Entry points initialize this before GTK.  Keep the defensive call for
+        # tests and non-GUI consumers that instantiate the backend directly.
+        initialize_x11_threads()
         library = ctypes.util.find_library("X11") or "libX11.so.6"
         self._xlib = ctypes.CDLL(library)
         self._xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
