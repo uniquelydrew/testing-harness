@@ -20,10 +20,10 @@ from automation_harness.models.component import CapturedComponent, ComponentDefi
 class _RepositoryWorkbenchHost:
     """Minimal app contract consumed by ObjectIdentityWorkbench.
 
-    Repository editing is deliberately backed by persisted definitions rather
-    than pretending the repository is a live desktop capture. Synthetic capture
-    records are only an adapter for the existing property editor; saves mutate
-    the original ComponentDefinition and preserve immutable object identity.
+    Repository editing is backed by persisted definitions rather than pretending
+    the repository is a live desktop capture. Synthetic captures adapt stored
+    locators to the existing property editor; saves mutate the original
+    ComponentDefinition and preserve immutable object identity and metadata.
     """
 
     def __init__(self, path: Path) -> None:
@@ -129,6 +129,10 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             self._set_checked(key, True)
         if context.target_key:
             self._select_key(context.target_key)
+            selected = self.nodes.get(context.target_key)
+            if selected is not None and selected.is_semantic:
+                self.selected_key = selected.key
+                self._render_properties(selected)
         self._set_status("Repository scope loaded — %d object(s) prechecked" % len(self._definition_by_key))
         return result
 
@@ -138,6 +142,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             "Save Selected", "Save Checked",
         }
         for widget in _walk_widgets(self.window):
+            if isinstance(widget, Gtk.Label) and widget.get_text() == "Capture Scope":
+                widget.set_text("Repository Scope")
             if isinstance(widget, Gtk.Button) and widget.get_label() in hide:
                 widget.hide()
         # Repository membership is fixed while editing. Checked rows communicate
@@ -160,6 +166,30 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             )
         return "Repository hierarchy"
 
+    def _render_properties(self, node):
+        """Render persisted locator identity directly for every resolver type."""
+        for child in self.properties_box.get_children():
+            self.properties_box.remove(child)
+        self.identity_fields = []
+        self.ordinal_field = None
+        self.name_entry = None
+
+        definition = self._definition_by_key.get(node.key)
+        if definition is None:
+            self._add_message("Select a repository object to edit its identity.")
+            self.properties_box.show_all()
+            return
+
+        captured = self._captured_for_node(node)
+        identity = self.identity_overrides.get(node.key)
+        if identity is None:
+            identity = _definition_identity(definition) or {"mandatory": {}}
+        inherited = self.context.inherited_descriptors(node.key) if self.context else {}
+        common = self.context.common_peer_descriptors(node.key) if self.context else {}
+        framework = str(getattr(captured, "framework", "") or "")
+        self._build_property_inventory(node, identity, inherited, common, framework)
+        self.properties_box.show_all()
+
     def _save_node(self, node, component_id, identity):
         definition = self._definition_by_key.get(node.key)
         if definition is None:
@@ -173,11 +203,16 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             repository = rename_repository_component(repository, current_id, component_id)
 
         current = repository.get(component_id)
-        strategy = _strategy_with_identity(current, identity)
+        strategies = list(current.strategies)
+        index = _editable_strategy_index(current)
+        if index is None:
+            strategies.insert(0, ComponentStrategy("atspi", {"identification": dict(identity)}))
+        else:
+            strategies[index] = _strategy_with_identity(strategies[index], identity)
         updated = replace(
             current,
             component_id=component_id,
-            strategies=(strategy,) + tuple(current.strategies[1:]),
+            strategies=tuple(strategies),
             revision=current.revision + 1,
         )
         self._repository_host.repository = repository.with_component(updated)
@@ -186,6 +221,9 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         self.app._mark_repository_dirty(True)
 
     def save_repository(self):
+        # In repository mode Save Selected, Save Checked, and Save Repository are
+        # intentionally collapsed into this one operation. Every object already
+        # belongs to the loaded repository; only changed definitions are updated.
         self._remember_selected_edits()
         errors = []
         saved = 0
@@ -353,12 +391,19 @@ def _capture_payload(capture: CapturedComponent, definition: ComponentDefinition
 
 
 def _editable_strategy(definition: ComponentDefinition) -> ComponentStrategy:
-    for strategy in definition.strategies:
-        if strategy.type in {"javafx", "atspi", "java_accessibility"}:
-            return strategy
+    index = _editable_strategy_index(definition)
+    if index is not None:
+        return definition.strategies[index]
     if definition.strategies:
         return definition.strategies[0]
     return ComponentStrategy("atspi", {"identification": {"mandatory": {"name": definition.component_id}}})
+
+
+def _editable_strategy_index(definition: ComponentDefinition):
+    for index, strategy in enumerate(definition.strategies):
+        if strategy.type in {"javafx", "atspi", "java_accessibility"}:
+            return index
+    return 0 if definition.strategies else None
 
 
 def _definition_identity(definition: ComponentDefinition):
@@ -367,11 +412,10 @@ def _definition_identity(definition: ComponentDefinition):
     return dict(value) if isinstance(value, Mapping) else None
 
 
-def _strategy_with_identity(definition: ComponentDefinition, identity: Mapping[str, Any]):
-    current = _editable_strategy(definition)
-    options = dict(current.options)
+def _strategy_with_identity(strategy: ComponentStrategy, identity: Mapping[str, Any]):
+    options = dict(strategy.options)
     options["identification"] = dict(identity)
-    return ComponentStrategy(current.type, options)
+    return ComponentStrategy(strategy.type, options)
 
 
 def _component_id_for_object_id(repository: ComponentRepository, object_id: str):
