@@ -123,5 +123,5 @@ def open_window(path: Path, *, project_context=None, launching_window=None):
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
         return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
-    from automation_harness.authoring.gui.repository_rhel_window import RhelWorkbenchObjectRepositoryWindow
-    return _finish(RhelWorkbenchObjectRepositoryWindow(path, project_context=project_context, opener=open_window), launching_window)
+    from automation_harness.authoring.gui.repository_identity_workbench_window import RepositoryIdentityWorkbenchWindow
+    return _finish(RepositoryIdentityWorkbenchWindow(path, project_context=project_context, opener=open_window), launching_window)
