@@ -160,9 +160,97 @@ final class JavaFxRecorder {
     private static Map<String, Object> target(JavaFxSemanticTargetResolver.Resolution resolution) {
         Map<String, Object> target = new LinkedHashMap<>();
         target.put("physical_node", snapshot(resolution.physicalTarget()));
-        target.put("semantic_node", snapshot(resolution.semanticTarget()));
+        Map<String, Object> semantic = snapshot(resolution.semanticTarget());
+        Map<String, Object> logicalMenu = logicalMenuMetadata(resolution.semanticTarget(), resolution.physicalTarget());
+        if (!logicalMenu.isEmpty()) {
+            Map<String, Object> properties = new LinkedHashMap<>();
+            properties.put("logical_menu", logicalMenu);
+            semantic.put("properties", properties);
+        }
+        target.put("semantic_node", semantic);
         target.put("promotion", Map.of("promoted", resolution.promoted(), "descendant_depth", resolution.descendantDepth(), "reason", resolution.reason()));
         return target;
+    }
+
+    /**
+     * Describe a Menu/MenuItem independently of the rendered popup skin.  The
+     * parent Menu chain is the durable path.  The closest owning MenuBar or
+     * MenuButton is captured when it can be recovered from the physical node;
+     * ContextMenu remains an explicit logical owner when no scene-graph owner
+     * exists.
+     */
+    private static Map<String, Object> logicalMenuMetadata(Object semantic, Object physical) {
+        String semanticRole = role(semantic);
+        if (!Set.of("menu", "menu item", "check menu item", "radio menu item").contains(semanticRole)) {
+            return Collections.emptyMap();
+        }
+
+        List<Map<String, Object>> path = new java.util.ArrayList<>();
+        Object current = semantic;
+        Object top = semantic;
+        int guard = 0;
+        while (current != null && guard++ < 32) {
+            path.add(0, menuSelector(current));
+            top = current;
+            Object parentMenu = invoke(current, "getParentMenu");
+            if (parentMenu == null) break;
+            current = parentMenu;
+        }
+
+        Object sceneOwner = nearestMenuSceneOwner(physical);
+        Object parentPopup = invoke(semantic, "getParentPopup");
+        if (parentPopup == null) parentPopup = invoke(top, "getParentPopup");
+
+        Map<String, Object> owner = new LinkedHashMap<>();
+        if (sceneOwner != null) {
+            owner.put("kind", role(sceneOwner));
+            owner.put("node", snapshot(sceneOwner));
+        } else if (parentPopup != null) {
+            owner.put("kind", "context menu");
+            owner.put("popup", menuOwnerSnapshot(parentPopup));
+        } else {
+            // Top-level Menu is still useful for associating the leaf with a
+            // separately captured File/Edit/etc. menu owner by durable id.
+            owner.put("kind", "menu");
+            owner.put("logical", menuSelector(top));
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("path", path);
+        result.put("owner", owner);
+        return result;
+    }
+
+    private static Map<String, Object> menuSelector(Object item) {
+        Map<String, Object> selector = new LinkedHashMap<>();
+        selector.put("kind", role(item));
+        Map<String, Object> criteria = new LinkedHashMap<>();
+        Object id = invoke(item, "getId");
+        Object text = invoke(item, "getText");
+        if (id != null && !String.valueOf(id).isBlank()) criteria.put("id", String.valueOf(id));
+        if (text != null && !String.valueOf(text).isBlank()) criteria.put("text", String.valueOf(text));
+        selector.put("criteria", criteria);
+        return selector;
+    }
+
+    private static Map<String, Object> menuOwnerSnapshot(Object owner) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("class", owner.getClass().getName());
+        result.put("role", role(owner));
+        Object id = invoke(owner, "getId");
+        if (id != null && !String.valueOf(id).isBlank()) result.put("id", String.valueOf(id));
+        return result;
+    }
+
+    private static Object nearestMenuSceneOwner(Object physical) {
+        Object current = physical;
+        int guard = 0;
+        while (current != null && guard++ < 64) {
+            String name = current.getClass().getSimpleName();
+            if (name.equals("MenuBar") || name.equals("MenuButton")) return current;
+            current = invoke(current, "getParent");
+        }
+        return null;
     }
 
     private static Map<String, Object> snapshot(Object node) {
