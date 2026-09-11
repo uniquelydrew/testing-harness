@@ -17,6 +17,7 @@ class ArtifactWindow:
         self.path = Path(path).resolve() if path is not None else None
         self.project_context = Path(project_context).resolve() if project_context is not None else None
         self.opener = opener
+        self.launching_window = None
         self.dirty = False
         self.window = Gtk.Window()
         self.window.set_default_size(1180, 760)
@@ -131,7 +132,11 @@ class ArtifactWindow:
     def open_artifact(self, path, *, project_context=None):
         if self.opener is None:
             return None
-        return self.opener(Path(path), project_context=project_context or self.project_context)
+        return self.opener(
+            Path(path),
+            project_context=project_context or self.project_context,
+            launching_window=self.window,
+        )
 
     def save(self):
         raise NotImplementedError

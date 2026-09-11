@@ -24,6 +24,12 @@ _SUFFIX_TYPES = {
 }
 
 
+# Projects are top-level workspaces. Opening the same project from one of its
+# child artifact windows should return focus to the existing workspace rather
+# than creating another independent ProjectWindow instance.
+_OPEN_PROJECT_WINDOWS = {}
+
+
 def detect_artifact(path: Path) -> ArtifactType:
     path = Path(path)
     suffix_type = _SUFFIX_TYPES.get(path.suffix.casefold())
@@ -65,16 +71,60 @@ def _detect_schema(raw: Mapping):
     return None
 
 
-def open_window(path: Path, *, project_context=None):
+def _project_key(path: Path) -> Path:
+    return Path(path).resolve()
+
+
+def _present_existing_project(path: Path):
+    key = _project_key(path)
+    existing = _OPEN_PROJECT_WINDOWS.get(key)
+    if existing is None:
+        return None
+    window = getattr(existing, "window", None)
+    if window is None:
+        _OPEN_PROJECT_WINDOWS.pop(key, None)
+        return None
+    try:
+        window.deiconify()
+        window.present()
+    except Exception:
+        _OPEN_PROJECT_WINDOWS.pop(key, None)
+        return None
+    return existing
+
+
+def _register_project_window(path: Path, project_window):
+    key = _project_key(path)
+    _OPEN_PROJECT_WINDOWS[key] = project_window
+
+    def unregister(*_args):
+        if _OPEN_PROJECT_WINDOWS.get(key) is project_window:
+            _OPEN_PROJECT_WINDOWS.pop(key, None)
+
+    project_window.window.connect("destroy", unregister)
+    return project_window
+
+
+def _finish(window, launching_window):
+    window.launching_window = launching_window
+    return window.finish_build()
+
+
+def open_window(path: Path, *, project_context=None, launching_window=None):
+    path = Path(path).resolve()
     artifact_type = detect_artifact(path)
     if artifact_type is ArtifactType.PROJECT:
+        existing = _present_existing_project(path)
+        if existing is not None:
+            return existing
         from automation_harness.authoring.gui.project_window import ProjectWindow
-        return ProjectWindow(path, opener=open_window).finish_build()
+        project_window = _finish(ProjectWindow(path, opener=open_window), launching_window)
+        return _register_project_window(path, project_window)
     if artifact_type is ArtifactType.TEST_PLAN:
-        from automation_harness.authoring.gui.plan_recording_window import RecordingTestPlanWindow
-        return RecordingTestPlanWindow(path, project_context=project_context, opener=open_window).finish_build()
+        from automation_harness.authoring.gui.plan_launch_window import LaunchRestoringTestPlanWindow
+        return _finish(LaunchRestoringTestPlanWindow(path, project_context=project_context, opener=open_window), launching_window)
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
-        return StepRegistryWindow(path, project_context=project_context, opener=open_window).finish_build()
+        return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
     from automation_harness.authoring.gui.repository_window import ObjectRepositoryWindow
-    return ObjectRepositoryWindow(path, project_context=project_context, opener=open_window).finish_build()
+    return _finish(ObjectRepositoryWindow(path, project_context=project_context, opener=open_window), launching_window)

@@ -16,20 +16,30 @@ _OPEN_WINDOWS = []
 
 
 def _track(window):
+    if window in _OPEN_WINDOWS:
+        return window
     _OPEN_WINDOWS.append(window)
     window.window.connect("destroy", lambda *_args: _window_closed(window))
     return window
 
 
 def _window_closed(window):
-    try: _OPEN_WINDOWS.remove(window)
-    except ValueError: pass
+    try:
+        _OPEN_WINDOWS.remove(window)
+    except ValueError:
+        pass
     if not _OPEN_WINDOWS:
         Gtk.main_quit()
 
 
-def open_tracked(path, *, project_context=None):
-    return _track(open_window(Path(path), project_context=project_context))
+def open_tracked(path, *, project_context=None, launching_window=None):
+    return _track(
+        open_window(
+            Path(path),
+            project_context=project_context,
+            launching_window=launching_window,
+        )
+    )
 
 
 def main(argv=None):
@@ -52,7 +62,9 @@ def main(argv=None):
         dialog.format_secondary_text("%s: %s" % (type(exc).__name__, exc)); dialog.run(); dialog.destroy(); return 2
 
     if args.smoke_test:
-        while Gtk.events_pending(): Gtk.main_iteration_do(False)
-        for item in tuple(_OPEN_WINDOWS): item.window.destroy()
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        for item in tuple(_OPEN_WINDOWS):
+            item.window.destroy()
         return 0
     Gtk.main(); return 0
