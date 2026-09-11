@@ -118,8 +118,6 @@ class RecordingSession:
                 if not self._active:
                     return tuple(self._interactions)
             try:
-                # Adapters may return their final source-filtered batch from stop;
-                # retain it for correlation before closing the session gate.
                 for adapter in reversed(self.adapters):
                     adapter.stop()
             finally:
@@ -130,7 +128,6 @@ class RecordingSession:
             return result
 
     def observations(self) -> tuple[Observation, ...]:
-        """Diagnostics only; normal operation intentionally retains no raw stream."""
         with self._lock:
             return tuple(self._diagnostics)
 
@@ -155,7 +152,7 @@ class RecordingSession:
             elif isinstance(observation, ActionFired):
                 if observation.target is None:
                     return
-                if self._pending and _same_target(self._pending.target, observation.target):
+                if self._pending and _same_logical_target(self._pending.target, observation.target):
                     self._merge_action(observation)
                 else:
                     self._begin(_action_type(observation.action), observation, {})
@@ -163,7 +160,6 @@ class RecordingSession:
                 if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
                     self._add_delta(observation)
             elif isinstance(observation, FocusChanged):
-                # Focus is correlation context only, never a standalone record.
                 return
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
@@ -214,17 +210,16 @@ class RecordingSession:
     def _merge_action(self, observation: ActionFired) -> None:
         assert self._pending is not None
         action = _action_type(observation.action)
-        # A direct control event is stronger evidence than a generic pointer
-        # click for state-owning controls such as check boxes and lists.
         if action not in {ActionType.ACTIVATE, ActionType.CLICK}:
             selected_action = action
         else:
             selected_action = self._pending.action
+        target = _preferred_target(self._pending.target, observation.target)
         self._pending = RecordedInteraction(
-            selected_action, self._pending.target, self._pending.parameters,
+            selected_action, target, self._pending.parameters,
             self._pending.started_at, observation.timestamp, self._pending.resulting_changes,
             {**self._pending.evidence, **dict(observation.evidence), "action_fired": observation.action},
-            self._pending.confidence, self._pending.repository_match,
+            self._pending.confidence, self._match(target),
         )
 
     def _add_delta(self, observation: StateChanged) -> None:
@@ -254,21 +249,14 @@ class RecordingSession:
             return RepositoryMatch("unresolved")
         if self.repository is None:
             return RepositoryMatch("new_candidate")
-
-        # Menu/MenuItem capture is owner-relative.  A rendered MenuItemContainer
-        # (or the logical MenuItem promoted from it) is never a top-level object
-        # when its selector already exists under a durable menu owner.
         if is_javafx_menu_skin_capture(target):
             logical = find_logical_menu_targets(self.repository.components.values(), target)
             if len(logical) == 1:
                 match = logical[0]
-                return RepositoryMatch(
-                    "known_subobject", (match.owner_component_id,), match.subobject_path,
-                )
+                return RepositoryMatch("known_subobject", (match.owner_component_id,), match.subobject_path)
             if len(logical) > 1:
                 owners = tuple(dict.fromkeys(item.owner_component_id for item in logical))
                 return RepositoryMatch("ambiguous", owners)
-
         matches = [component_id for component_id, definition in self.repository.components.items() if _matches_capture(definition, target)]
         if len(matches) == 1:
             return RepositoryMatch("known_unique", tuple(matches))
@@ -283,13 +271,11 @@ class RecordingSession:
 
 
 def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_index: int = 1) -> tuple[StepCall, ...]:
-    """Convert only reviewed, uniquely resolved interactions to normal GUI steps."""
     result: list[StepCall] = []
     for index, interaction in enumerate(interactions, start_index):
         component_id = interaction.repository_match.component_id
         if component_id is None:
             raise ValueError("recorded interaction must have a unique repository match before adding it to a test")
-
         if interaction.repository_match.status == "known_subobject":
             if not interaction.repository_match.subobject_path:
                 raise ValueError("recorded menu subobject match has no owner-relative path")
@@ -304,7 +290,6 @@ def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_
             action = {"type": interaction.action.value}
             action.update(interaction.parameters)
             description = f"Recorded {interaction.action.value} on {component_id}"
-
         result.append(StepCall(
             node_id=f"recorded-{index:03d}", step_id="gui.object.action",
             inputs={"component_id": component_id, "action": action},
@@ -324,14 +309,14 @@ def _same_logical_target(left: CapturedComponent | None, right: CapturedComponen
         return left is right
     left_scope = (left.window or left.application or "").casefold()
     right_scope = (right.window or right.application or "").casefold()
-    shared_identity = (
-        bool(left.accessible_id and right.accessible_id and left.accessible_id == right.accessible_id)
-        or bool(left.name and right.name and left.name.casefold() == right.name.casefold())
-    )
+    if left.accessible_id and right.accessible_id:
+        return (
+            left.accessible_id == right.accessible_id
+            and left.semantic_type() == right.semantic_type()
+            and (not left_scope or not right_scope or left_scope == right_scope)
+        )
     return (
-        shared_identity
-        and (not left.accessible_id or not right.accessible_id or left.accessible_id == right.accessible_id)
-        and (left.name or "").casefold() == (right.name or "").casefold()
+        bool(left.name and right.name and left.name.casefold() == right.name.casefold())
         and left.semantic_type() == right.semantic_type()
         and (not left_scope or not right_scope or left_scope == right_scope)
     )
