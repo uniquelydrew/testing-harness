@@ -9,7 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, MutableMapping
 
-from automation_harness.models.component import CapturedComponent, ComponentDefinition
+from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentStrategy
+from automation_harness.models.gui import ObjectType
 
 _INTERNAL_MENU_SKINS = (
     "com.sun.javafx.scene.control.ContextMenuContent$MenuItemContainer",
@@ -34,13 +35,6 @@ def is_javafx_menu_skin_capture(capture: CapturedComponent | None) -> bool:
 
 
 def durable_menu_criteria(capture: CapturedComponent) -> dict[str, Any]:
-    """Extract selector evidence that belongs to the logical MenuItem.
-
-    Never return window, CSS class, skin class, literal hierarchy, node ref, or
-    bridge endpoint metadata. The live ERSA recordings demonstrate that those
-    values describe ContextMenuContent/MenuItemContainer instances rather than
-    application menu identity.
-    """
     criteria: dict[str, Any] = {}
     if capture.accessible_id:
         criteria["id"] = capture.accessible_id
@@ -53,13 +47,6 @@ def durable_menu_criteria(capture: CapturedComponent) -> dict[str, Any]:
 def normalize_menu_subobjects(
     subobjects: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Return the canonical runtime shape for nested menu selectors.
-
-    Earlier capture code persisted ``selector: {criteria, ordinal}`` while the
-    runtime executor consumes ``criteria`` and ``ordinal`` directly on each
-    subobject. Accept both representations so existing repositories migrate in
-    memory without forcing users to recapture menus.
-    """
     result: dict[str, dict[str, Any]] = {}
     for key, raw in subobjects.items():
         if not isinstance(raw, Mapping):
@@ -78,17 +65,72 @@ def normalize_menu_subobjects(
     return result
 
 
+def ensure_recorded_menu_owner(repository, capture: CapturedComponent) -> ComponentDefinition | None:
+    """Materialize a logical ContextMenu owner when recording discovers one.
+
+    MenuBar/Menu owners should already exist as independently captured controls
+    and are matched by id/text. A ContextMenu is different: it may exist only
+    while the popup is open. If the recording agent identifies a ContextMenu
+    owner and the repository has none, add one logical owner so all subsequently
+    recorded MenuItems nest under the same component rather than becoming
+    top-level objects.
+    """
+    properties = dict(capture.backend_properties or {})
+    metadata = properties.get("logical_menu")
+    if not isinstance(metadata, Mapping):
+        return None
+    owner = metadata.get("owner")
+    if not isinstance(owner, Mapping):
+        return None
+    kind = str(owner.get("kind") or "").replace("_", " ").casefold()
+    if kind != "context menu":
+        return None
+
+    existing = [
+        definition for definition in repository.components.values()
+        if definition.framework in (None, "javafx")
+        and getattr(definition.object_type, "value", "") == "context_menu"
+        and _definition_matches_owner(definition, owner)
+    ]
+    if len(existing) == 1:
+        return existing[0]
+    if len(existing) > 1:
+        return None
+
+    popup = owner.get("popup")
+    popup = popup if isinstance(popup, Mapping) else {}
+    popup_id = popup.get("id")
+    base = str(popup_id or "ContextMenu")
+    component_id = base
+    suffix = 2
+    while component_id in repository.components:
+        component_id = "%s-%d" % (base, suffix)
+        suffix += 1
+
+    mandatory = {"class": "javafx.scene.control.ContextMenu"}
+    if popup_id not in (None, ""):
+        mandatory = {"id": popup_id}
+    definition = ComponentDefinition(
+        component_id=component_id,
+        description="Logical JavaFX context menu",
+        strategies=(ComponentStrategy("javafx", {"identification": {"mandatory": mandatory}}),),
+        actions=frozenset({"resolve", "select_menu_item"}),
+        object_type=ObjectType.CONTEXT_MENU,
+        framework="javafx",
+        native_class="javafx.scene.control.ContextMenu",
+        properties={"logical_owner": "context_menu"},
+        subobjects={},
+    )
+    # ComponentRepository is an immutable value at the API level, but its map is
+    # intentionally shared with the authoring session. Mutating this single new
+    # entry lets the workbench/save flow see the discovered owner immediately.
+    repository.components[component_id] = definition
+    return definition
+
+
 def find_logical_menu_targets(
     definitions: Iterable[ComponentDefinition], capture: CapturedComponent
 ) -> tuple[LogicalMenuTarget, ...]:
-    """Find or attach a repository menu subobject for a captured descendant.
-
-    Existing subobjects win. If the recording agent supplied a logical menu
-    owner/path and that owner resolves uniquely to an existing repository
-    component, a newly observed path is added beneath that owner in memory.
-    This prevents a newly encountered MenuItem from becoming another top-level
-    repository object.
-    """
     criteria = durable_menu_criteria(capture)
     if not criteria:
         return ()
