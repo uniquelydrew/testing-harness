@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_handle import ComponentHandle
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.execution_context import ExecutionContextStack, bind_component_lineage
+from automation_harness.core.javafx_menu_execution import install_javafx_menu_execution
 from automation_harness.core.javafx_transient_resolution import install_javafx_transient_resolution
 from automation_harness.core.resolution_retry import install_component_handle_retry
 from automation_harness.core.services import AutomationServices
@@ -19,6 +20,7 @@ from automation_harness.utils.evidence import EvidenceRecorder
 
 install_component_handle_retry(ComponentHandle)
 install_javafx_transient_resolution()
+install_javafx_menu_execution()
 
 
 @dataclass
