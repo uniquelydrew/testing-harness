@@ -16,6 +16,9 @@ public final class JavaFxSemanticTargetResolver {
         "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
         "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab"
     );
+    private static final Set<String> LOGICAL_MENU_NAMES = Set.of(
+        "Menu", "MenuItem", "CustomMenuItem", "CheckMenuItem", "RadioMenuItem"
+    );
 
     private JavaFxSemanticTargetResolver() { }
 
@@ -26,6 +29,13 @@ public final class JavaFxSemanticTargetResolver {
         Object current = physicalTarget;
         int depth = 0;
         while (current != null) {
+            Object logicalMenu = logicalMenuDelegate(current);
+            if (logicalMenu != null) {
+                return new Resolution(
+                    physicalTarget, logicalMenu, depth,
+                    depth > 0 ? "logical_menu_from_ancestor" : "logical_menu_from_skin"
+                );
+            }
             if (isInteractionBoundary(current)) {
                 return new Resolution(physicalTarget, current, depth, depth > 0 ? "interactive_ancestor" : "physical_target");
             }
@@ -38,7 +48,34 @@ public final class JavaFxSemanticTargetResolver {
         return new Resolution(physicalTarget, physicalTarget, 0, "no_interactive_ancestor");
     }
 
+    /**
+     * JavaFX renders logical Menu/MenuItem values through disposable skin
+     * controls such as MenuBarButton and ContextMenuContent.MenuItemContainer.
+     * Those skin objects are useful only while the popup exists.  Resolve the
+     * backing logical menu object at capture time so repository identity never
+     * depends on com.sun.javafx.* implementation classes.
+     */
+    private static Object logicalMenuDelegate(Object candidate) {
+        String className = candidate.getClass().getName();
+        if (!className.startsWith("com.sun.javafx.")) return null;
+        for (String accessor : new String[]{"getItem", "getMenu"}) {
+            Object value = invokeNoArg(candidate, accessor);
+            if (value != null && isLogicalMenuObject(value)) return value;
+        }
+        return null;
+    }
+
+    private static boolean isLogicalMenuObject(Object value) {
+        Class<?> type = value.getClass();
+        while (type != null) {
+            if (LOGICAL_MENU_NAMES.contains(type.getSimpleName())) return true;
+            type = type.getSuperclass();
+        }
+        return false;
+    }
+
     static boolean isInteractionBoundary(Object node) {
+        if (isLogicalMenuObject(node)) return true;
         Class<?> type = node.getClass();
         boolean controlSubclass = false;
         while (type != null) {
@@ -64,6 +101,16 @@ public final class JavaFxSemanticTargetResolver {
             Method method = node.getClass().getMethod("getParent");
             return method.invoke(node);
         } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private static Object invokeNoArg(Object target, String methodName) {
+        try {
+            Method method = target.getClass().getMethod(methodName);
+            if (method.getParameterCount() != 0) return null;
+            return method.invoke(target);
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
             return null;
         }
     }
