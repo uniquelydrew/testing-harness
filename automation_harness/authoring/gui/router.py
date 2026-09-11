@@ -118,8 +118,8 @@ def open_window(path: Path, *, project_context=None, launching_window=None):
         project_window = _finish(ProjectWindow(path, opener=open_window), launching_window)
         return _register_project_window(path, project_window)
     if artifact_type is ArtifactType.TEST_PLAN:
-        from automation_harness.authoring.gui.plan_launch_window import LaunchRestoringTestPlanWindow
-        return _finish(LaunchRestoringTestPlanWindow(path, project_context=project_context, opener=open_window), launching_window)
+        from automation_harness.authoring.gui.plan_form_window import FormEditingTestPlanWindow
+        return _finish(FormEditingTestPlanWindow(path, project_context=project_context, opener=open_window), launching_window)
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
         return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
