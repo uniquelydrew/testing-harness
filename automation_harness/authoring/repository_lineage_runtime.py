@@ -75,6 +75,9 @@ def install() -> None:
             self._set_status(
                 "Saved repository — %d lineage scope(s) updated and propagated to descendants" % renamed
             )
+            # Rebuild the repository-backed scope so the tree immediately shows
+            # the new parent/lineage names rather than stale pre-save paths.
+            self._load_context_async()
         return result
 
     def highlight_selected(self):
@@ -194,7 +197,11 @@ def _apply_lineage_renames(workbench) -> int:
     components = {}
     for old_id, definition in repository.components.items():
         new_id = rename_map.get(old_id, old_id)
-        components[new_id] = replace(definition, component_id=new_id, revision=definition.revision + (1 if new_id != old_id else 0))
+        components[new_id] = replace(
+            definition,
+            component_id=new_id,
+            revision=definition.revision + (1 if new_id != old_id else 0),
+        )
     repository = ComponentRepository(components)
     workbench._repository_host.repository = repository
     workbench.app.repository = repository
@@ -203,7 +210,10 @@ def _apply_lineage_renames(workbench) -> int:
     # so the normal repository save pass updates locator edits instead of
     # recreating objects under stale pre-rename names.
     for key, definition in tuple(workbench._definition_by_key.items()):
-        current_id = next((name for name, item in repository.components.items() if item.object_id == definition.object_id), None)
+        current_id = next(
+            (name for name, item in repository.components.items() if item.object_id == definition.object_id),
+            None,
+        )
         if current_id is None:
             continue
         updated = repository.get(current_id)
@@ -229,8 +239,7 @@ def _lineage_rename_map(repository, edits):
         for original_path, new_segment, _key in edits:
             path_parts = original_path.split(".")
             depth = len(path_parts)
-            if len(original_parts) <= depth:
-                # Branches represent ancestors; an object must be below it.
+            if len(original_parts) < depth:
                 continue
             if original_parts[:depth] != path_parts:
                 continue
