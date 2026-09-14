@@ -554,7 +554,8 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     The ordering is intentional: explicit IDs and application-authored metadata
     outrank JavaFX implementation classes; stable lineage/layout outrank literal
     hierarchy; ordinal selection is added later only when this identity still
-    resolves multiple runtime Nodes.
+    resolves multiple runtime Nodes. Internal JavaFX skin classes are diagnostic
+    evidence only and are never authored into durable identity.
     """
     mandatory = {}
     assistive = {}
@@ -597,13 +598,18 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     elif role:
         mandatory["accessible_role"] = role
     elif native_class:
-        mandatory["class"] = native_class
+        # Internal JavaFX skin classes are not stable enough to persist. If a
+        # node has no other semantic evidence, refuse to author it rather than
+        # creating a locator that is expected to break between skins/runs.
+        raise ValueError(
+            "captured JavaFX node exposes only an internal skin class and no durable semantic identity"
+        )
 
     if domain_properties and "properties" not in mandatory:
         assistive["properties"] = domain_properties
     if user_data not in (None, "") and "user_data" not in mandatory:
         assistive["user_data"] = user_data
-    if native_class and "class" not in mandatory:
+    if native_class and "class" not in mandatory and not internal_class:
         assistive["class"] = native_class
     if role and "accessible_role" not in mandatory:
         assistive["accessible_role"] = role
@@ -617,9 +623,9 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
         assistive["layout"] = layout
     if lineage:
         assistive["lineage"] = lineage
-    elif hierarchy:
+    elif hierarchy and not internal_class:
         assistive["hierarchy"] = hierarchy
-    if style_classes and not lineage and not layout:
+    if style_classes and not lineage and not layout and not internal_class:
         assistive["style_classes"] = style_classes
 
     if not mandatory:
@@ -760,32 +766,47 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     )
 
 
-def _javafx_menu_subobjects(values: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(values, (list, tuple)):
+def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, (list, tuple)):
         return {}
-    result: dict[str, dict[str, Any]] = {}
-    for index, raw in enumerate(values):
-        if not isinstance(raw, Mapping):
+    result = {}
+    counts = {}
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
             continue
-        name = _optional_str(raw.get("name") or raw.get("text"))
-        accessible_id = _optional_str(raw.get("accessible_id"))
-        role = _optional_str(raw.get("role")) or "menu item"
-        base = "".join(character.casefold() if character.isalnum() else "_" for character in (accessible_id or name or "item"))
-        base = "_".join(part for part in base.split("_") if part) or "item"
-        key = base
-        serial = 2
-        while key in result:
-            key = "%s_%d" % (base, serial); serial += 1
-        criteria = {"accessible_role": role}
-        if accessible_id: criteria["id"] = accessible_id
-        elif name: criteria["text"] = name
-        selector: dict[str, Any] = {"kind": role.replace(" ", "_"), "criteria": criteria, "ordinal": index}
-        children = _javafx_menu_subobjects(raw.get("menu_children"))
-        if children: selector["subobjects"] = children
-        result[key] = selector
+        base = _menu_subobject_id(item, index)
+        count = counts.get(base, 0)
+        counts[base] = count + 1
+        key = base if count == 0 else "%s_%d" % (base, count + 1)
+        selector = {
+            "criteria": {
+                candidate_key: candidate_value
+                for candidate_key, candidate_value in (
+                    ("id", item.get("id")),
+                    ("text", item.get("text")),
+                    ("class", item.get("class")),
+                )
+                if candidate_value not in (None, "") and not (
+                    candidate_key == "class" and _is_internal_javafx_class(str(candidate_value))
+                )
+            },
+            "ordinal": index,
+        }
+        nested = _javafx_menu_subobjects(item.get("menu_children"))
+        result[key] = {
+            "kind": str(item.get("role") or "menu_item"),
+            "selector": selector,
+            **({"subobjects": nested} if nested else {}),
+        }
     return result
 
 
-def _monotonic():
+def _menu_subobject_id(item: Mapping[str, Any], index: int) -> str:
+    raw = str(item.get("id") or item.get("text") or item.get("name") or "menu_%d" % (index + 1))
+    value = "".join(character.lower() if character.isalnum() else "_" for character in raw).strip("_")
+    return value or "menu_%d" % (index + 1)
+
+
+def _monotonic() -> float:
     import time
     return time.monotonic()

@@ -304,46 +304,15 @@ class AuthoringApp:
         self.state_tab.pack_start(self.state_caption, False, False, 0)
         self.state_tree, self.state_store = self._tree((("Node", 100), ("Step", 300), ("Status", 100), ("Unresolved Variables", 420)))
         self.state_tab.pack_start(self._scrolled(self.state_tree), True, True, 0)
-        self._button(self.state_tab, "Refresh Projection", self.refresh_state)
-
-    def _selected(self, tree, column=0):
-        model, iterator = tree.get_selection().get_selected()
-        return model.get_value(iterator, column) if iterator is not None else None
-
-    @staticmethod
-    def _select_value(tree, value, column=0):
-        if value is None:
-            return
-        model = tree.get_model()
-        iterator = model.get_iter_first()
-        while iterator is not None:
-            if model.get_value(iterator, column) == value:
-                tree.get_selection().select_iter(iterator)
-                tree.scroll_to_cell(model.get_path(iterator))
-                return
-            iterator = model.iter_next(iterator)
-
-    def _set_status(self, value):
-        self.status.set_text(value)
-
-    @staticmethod
-    def _set_text(widget, value):
-        widget.get_buffer().set_text(value)
-
-    @staticmethod
-    def _get_text(widget):
-        buffer = widget.get_buffer()
-        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
 
     def refresh_all(self) -> None:
         self.refresh_objects()
-        if self.mode != "author":
-            return
-        self.refresh_steps(); self.refresh_plan(); self.refresh_variables(); self.refresh_state()
+        if self.mode == "author":
+            self.refresh_steps(); self.refresh_plan(); self.refresh_variables(); self.refresh_state(); self.refresh_recorded_interactions()
 
     def refresh_objects(self) -> None:
         selected = self._selected(self.object_tree)
-        selected_for_step = self.step_object.get_active_id() if hasattr(self, "step_object") else selected
+        selected_for_step = self.step_object.get_active_id() if hasattr(self, "step_object") else None
         self.object_store.clear()
         if hasattr(self, "step_object"):
             self.step_object.remove_all()
@@ -614,7 +583,7 @@ class AuthoringApp:
             self._highlight_timeout = GLib.timeout_add(1600, self._restore_after_highlight, None)
 
     def _restore_after_highlight(self, captured=None):
-        self._clear_highlight(); self.window.show_all(); self.window.present()
+        self._clear_highlight(); self._resurface_authoring_windows()
         if captured is not None:
             self._present_capture(captured)
         return False
@@ -627,6 +596,28 @@ class AuthoringApp:
         for edge in self._highlight_windows:
             edge.destroy()
         self._highlight_windows = []
+
+    def _resurface_authoring_windows(self):
+        """Bring the authoring surface and active object workbench back immediately.
+
+        Simulated object actions intentionally hand focus to the target application so
+        transient menus/context popups can be opened. Once the synthetic action has
+        completed, the authoring UI must reclaim focus without destroying the target's
+        transient state before the user starts the subsequent capture operation.
+        """
+        windows = [self.window]
+        workbench = getattr(self, "_capture_workbench", None)
+        workbench_window = getattr(workbench, "window", None) if workbench is not None else None
+        if workbench_window is not None:
+            windows.append(workbench_window)
+        for window in windows:
+            try:
+                window.show_all()
+                window.deiconify()
+                window.present()
+            except Exception:
+                pass
+        return False
 
     def highlight_selected_object(self) -> None:
         component_id = self._selected(self.object_tree)
@@ -666,7 +657,7 @@ class AuthoringApp:
         definition = self.repository.get(component_id)
         if not any(strategy.type in {"atspi", "java_accessibility", "javafx"} for strategy in definition.strategies):
             return self._error("Click", "The selected object has no interactive accessibility strategy.")
-        self._set_status("Clicking %s…" % component_id)
+        self._set_status("Opening transient target state via %s…" % component_id)
         threading.Thread(
             target=self._click_selected_worker,
             args=(definition,),
@@ -700,14 +691,23 @@ class AuthoringApp:
         )
 
     def _finish_selected_click(self, component_id, result=None, error=None):
+        # A simulated click is an authoring aid, not ordinary playback. It exists to
+        # put the target application into a transient state (open menu/context popup),
+        # then immediately return control to the editor/workbench so the user can
+        # start a capture while that transient state still exists.
+        self._resurface_authoring_windows()
         if error is not None:
-            self._set_status("Click failed")
-            self._error("Click failed", "%s: %s" % (type(error).__name__, error))
+            self._set_status("Simulated click failed")
+            self._error("Simulated click failed", "%s: %s" % (type(error).__name__, error))
             return False
-        self._set_status("Clicked %s" % component_id)
+        self._set_status("Opened transient target state from %s — capture the exposed item now" % component_id)
         self._set_text(
             self.object_detail,
-            json.dumps({"component_id": component_id, "click": result}, indent=2, default=str),
+            json.dumps({
+                "component_id": component_id,
+                "simulated_click": result,
+                "purpose": "open transient target state for immediate capture",
+            }, indent=2, default=str),
         )
         return False
 
@@ -1057,8 +1057,7 @@ class AuthoringApp:
             self.recording_stop_window.destroy()
             self.recording_stop_window = None
         self.recording_stop_button = None
-        self.window.show_all()
-        self.window.present()
+        self._resurface_authoring_windows()
 
     def stop_recording(self) -> None:
         if self.recording_session is None or self._recording_stop_active:
@@ -1098,11 +1097,9 @@ class AuthoringApp:
         self.recorded_interactions = list(interactions or ())
         self._recorded_plan_indices = set()
         self.refresh_recorded_interactions()
-        self._append_resolved_recorded_steps()
-        new_count = sum(item.repository_match.status == "new_candidate" for item in self.recorded_interactions)
-        self._set_status("Recording stopped: %d interactions, %d new component candidates" % (len(self.recorded_interactions), new_count))
         interacted = tuple(
-            item.target for item in self.recorded_interactions if item.target is not None
+            item.target for item in self.recorded_interactions
+            if item.target is not None and item.action not in {"window_focus", "window_activate"}
         )
         if interacted:
             from automation_harness.authoring.object_identity_workbench import open_capture_workbench
@@ -1111,92 +1108,57 @@ class AuthoringApp:
             )
         return False
 
-    def recorded_capture_saved(self, captured, component_id) -> None:
-        """Bind reviewed captures and materialize their recorded actions."""
-        updated = []
-        for interaction in self.recorded_interactions:
-            if interaction.target == captured:
-                interaction = replace(
-                    interaction,
-                    repository_match=RepositoryMatch("known_unique", (component_id,)),
-                )
-            updated.append(interaction)
-        self.recorded_interactions = updated
-        self.refresh_recorded_interactions()
-        self._append_resolved_recorded_steps()
-
-    def _append_resolved_recorded_steps(self) -> None:
-        changed = False
-        for index, interaction in enumerate(self.recorded_interactions):
-            if index in self._recorded_plan_indices:
-                continue
-            if interaction.repository_match.component_id is None:
-                continue
-            call = interactions_to_steps(
-                (interaction,), start_index=len(self.plan.steps) + 1,
-            )[0]
-            call = replace(call, group="Recorded session")
-            self.plan = replace(self.plan, steps=(*self.plan.steps, call))
-            self._recorded_plan_indices.add(index)
-            changed = True
-        if changed:
-            self.refresh_plan()
-            self.refresh_state()
-
     def refresh_recorded_interactions(self) -> None:
         self.recording_store.clear()
         for index, interaction in enumerate(self.recorded_interactions):
-            target_name = _recorded_target_label(interaction)
-            match = interaction.repository_match
-            self.recording_store.append((str(index), interaction.action.value, target_name, json.dumps(dict(interaction.parameters), separators=(",", ":")), match.component_id or match.status.replace("_", " "), "%.0f%%" % (interaction.confidence * 100)))
+            label = _recorded_target_label(interaction)
+            self.recording_store.append((str(index + 1), interaction.action, label, json.dumps(dict(interaction.parameters), separators=(",", ":")), interaction.repository_match.status, "%.2f" % interaction.confidence))
 
-    def _save_recorded_objects_dialog(self) -> None:
+    def recorded_capture_saved(self, captured, component_id) -> None:
+        updated = []
+        for interaction in self.recorded_interactions:
+            target = interaction.target
+            if target is not None and _same_recorded_capture(target, captured):
+                interaction = replace(interaction, repository_match=RepositoryMatch("known_unique", (component_id,)))
+            updated.append(interaction)
+        self.recorded_interactions = updated
+        self.refresh_recorded_interactions()
+
+    def save_recorded_objects(self) -> None:
         if self._recorded_object_save_active:
             return
-        dialog = Gtk.Dialog(title="Save recorded objects", transient_for=self.window, modal=True)
-        dialog.add_buttons(
-            "Later", Gtk.ResponseType.CANCEL,
-            "Existing Repository", 1,
-            "Current Test Plan", 2,
-            "New Repository", 3,
-        )
-        box = dialog.get_content_area(); box.set_spacing(8); box.set_border_width(10)
-        label = Gtk.Label(label="Where should newly discovered objects be saved?")
-        label.set_xalign(0); box.pack_start(label, False, False, 0)
-        dialog.show_all(); response = dialog.run(); dialog.destroy()
-        if response == Gtk.ResponseType.CANCEL:
-            return
+        candidates = [
+            item for item in self.recorded_interactions
+            if item.repository_match.status == "new_candidate" and item.target is not None
+        ]
+        if not candidates:
+            return self._info("Save recorded objects", "There are no new recorded objects to save.")
         destination = self.repository_path
-        mode = "current"
-        if response == 1:
-            mode = "existing"
-        elif response == 3:
-            mode = "new"
-        elif response == 2:
-            destination = None
-            mode = "plan"
-        if mode == "existing":
-            filename = self._choose_file(yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Select Existing Object Repository")
-            if not filename: return
-            destination = Path(filename)
-        elif mode == "new":
-            filename = self._choose_file(save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX, title="Save New Object Repository")
-            if not filename: return
-            destination = Path(filename)
+        mode = "repository"
+        if destination is None:
+            response = self._confirm(
+                "Save recorded objects",
+                "No object repository is loaded. Save the new objects inline in the current test plan?",
+            )
+            if response:
+                mode = "plan"
+            else:
+                path = self._choose_file(
+                    save=True, yaml=True, artifact_suffix=REPOSITORY_SUFFIX,
+                    title="Save Object Repository",
+                )
+                if not path:
+                    return
+                destination = Path(path)
         self._recorded_object_save_active = True
-        self._set_status("Saving recorded objects…")
-        interactions = tuple(self.recorded_interactions)
+        self._set_status("Saving %d recorded object(s)…" % len(candidates))
 
         def worker():
             try:
-                repository = (
-                    ComponentRepository.load([destination]) if mode == "existing"
-                    else ComponentRepository({}) if mode == "new"
-                    else self.repository
-                )
-                result = self._build_recorded_objects(repository, interactions)
-                if destination is not None:
-                    result[0].save(Path(destination))
+                repository, updated, saved_ids = self._build_recorded_objects(self.repository, self.recorded_interactions)
+                if mode == "repository" and destination is not None:
+                    repository.save(destination)
+                result = (repository, updated, saved_ids)
             except Exception as exc:
                 GLib.idle_add(self._finish_recorded_object_save, None, destination, mode, exc)
             else:
@@ -1413,10 +1375,12 @@ class AuthoringApp:
 
     def _present_run_error(self, error):
         self._run_active = False; self.run_reference_button.set_sensitive(True); self._set_status("Test run failed to start")
+        self._resurface_authoring_windows()
         self._error("Test run", "%s: %s" % (type(error).__name__, error)); return False
 
     def _present_reference_result(self, result):
         self._run_active = False; self.run_reference_button.set_sensitive(True); self.last_run_dir = result.artifact_dir
+        self._resurface_authoring_windows()
         status = "PASS" if result.exit_code == 0 else "FAIL"; self._set_status("%s: test run %s" % (status, result.run_id))
         detail = "Passed: %s\nFailed: %s\nExit code: %s" % (result.passed, result.failed, result.exit_code)
         if result.validation_errors: detail += "\n\n" + "\n".join(result.validation_errors)
@@ -1466,6 +1430,31 @@ class AuthoringApp:
             filename = str(with_artifact_suffix(Path(filename), artifact_suffix))
         return filename
 
+    @staticmethod
+    def _selected(tree, column=0):
+        model, iterator = tree.get_selection().get_selected()
+        return model.get_value(iterator, column) if iterator is not None else None
+
+    @staticmethod
+    def _select_value(tree, value, column=0):
+        if value is None:
+            return
+        model = tree.get_model(); iterator = model.get_iter_first()
+        while iterator is not None:
+            if model.get_value(iterator, column) == value:
+                tree.get_selection().select_iter(iterator); tree.scroll_to_cell(model.get_path(iterator)); return
+            iterator = model.iter_next(iterator)
+
+    @staticmethod
+    def _set_text(widget, value):
+        widget.get_buffer().set_text(str(value))
+
+    @staticmethod
+    def _get_text(widget):
+        buffer = widget.get_buffer(); start, end = buffer.get_bounds(); return buffer.get_text(start, end, True)
+
+    def _set_status(self, value): self.status.set_text(value)
+
 
 def _encode_gui(value: Any) -> Any:
     if isinstance(value, PlanVariableRef): return {"$var": value.path}
@@ -1511,61 +1500,52 @@ def _recorded_target_label(interaction):
         return match.component_id
     target = interaction.target
     if target is None:
-        return "Unresolved target"
-    physical = target.backend_properties.get("physical_target", {})
-    if isinstance(physical, dict):
-        for key in ("accessible_id", "name", "text"):
-            value = physical.get(key)
-            if value and str(value).casefold() != "main":
-                return str(value)
-    for value in (target.accessible_id, target.name):
-        if value and str(value).casefold() != "main":
-            return str(value)
-    return "%s (%s)" % (target.role or "object", target.native_class or target.framework or "unknown")
+        return "unresolved"
+    return target.accessible_id or target.name or target.role or target.native_class or "captured object"
+
+
+def _same_recorded_capture(left, right):
+    if left is right:
+        return True
+    left_props = getattr(left, "backend_properties", {}) or {}
+    right_props = getattr(right, "backend_properties", {}) or {}
+    left_ref = left_props.get("node_ref") or left_props.get("ref")
+    right_ref = right_props.get("node_ref") or right_props.get("ref")
+    if left_ref and right_ref:
+        return str(left_ref) == str(right_ref)
+    return (
+        getattr(left, "framework", None), getattr(left, "accessible_id", None),
+        getattr(left, "name", None), getattr(left, "role", None), getattr(left, "bounds", None),
+    ) == (
+        getattr(right, "framework", None), getattr(right, "accessible_id", None),
+        getattr(right, "name", None), getattr(right, "role", None), getattr(right, "bounds", None),
+    )
 
 
 def _recorded_component_id(target, repository):
-    parts = [target.application, target.name, target.accessible_id, target.role]
-    normalized = []
-    for part in parts:
-        if not part or str(part).casefold() == "main":
-            continue
-        value = "".join(character.casefold() if character.isalnum() else "_" for character in str(part))
-        value = "_".join(item for item in value.split("_") if item)
-        if value and value not in normalized:
-            normalized.append(value)
-    base = ".".join(normalized[:2]) or "recorded.object"
+    raw = target.accessible_id or target.name or target.role or target.native_class or "recorded_object"
+    base = "".join(character.lower() if character.isalnum() else "_" for character in str(raw)).strip("_") or "recorded_object"
     candidate = base
-    serial = 2
-    while repository.contains(candidate):
-        candidate = "%s_%d" % (base, serial); serial += 1
+    index = 2
+    while candidate in repository.components:
+        candidate = "%s_%d" % (base, index)
+        index += 1
     return candidate
 
 
 def _highlight_rectangles(bounds, thickness=4):
-    x, y, width, height = bounds
-    if width <= 0 or height <= 0: raise ValueError("highlight bounds require positive width and height")
-    edge = max(1, min(thickness, width, height))
-    return ((x, y, width, edge), (x, y + height - edge, width, edge), (x, y, edge, height), (x + width - edge, y, edge, height))
+    x, y, width, height = (int(v) for v in bounds)
+    width = max(1, width); height = max(1, height); t = max(1, min(thickness, width, height))
+    return ((x, y, width, t), (x, y + height - t, width, t), (x, y, t, height), (x + width - t, y, t, height))
 
 
-def main(argv=None): return _launch(argv, mode="author", prog="automation-author", description="Local automation authoring GUI")
-def capture_main(argv=None): return _launch(argv, mode="capture", prog="automation-capture", description="Object Capture / Object Spy GUI")
-def repository_main(argv=None): return _launch(argv, mode="repository", prog="automation-repository", description="Object Repository editor GUI")
-
-
-def _launch(argv, *, mode, prog, description):
+def main(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(prog=prog, description=description)
+    parser = argparse.ArgumentParser(description="Automation Harness GTK authoring tool")
     parser.add_argument("--repository", type=Path)
-    parser.add_argument("--project", type=Path, help="authoring project manifest")
-    parser.add_argument("--smoke-test", action="store_true", help="construct and render the GTK GUI once, then exit")
+    parser.add_argument("--project", type=Path)
+    parser.add_argument("--mode", choices=("author", "capture", "repository"), default="author")
     args = parser.parse_args(argv)
-    app = AuthoringApp(args.repository, mode=mode, project_path=args.project)
-    if args.smoke_test:
-        while Gtk.events_pending(): Gtk.main_iteration_do(False)
-        app.window.destroy(); return 0
-    Gtk.main(); return 0
-
-
-if __name__ == "__main__": raise SystemExit(main())
+    AuthoringApp(args.repository, mode=args.mode, project_path=args.project)
+    Gtk.main()
+    return 0
