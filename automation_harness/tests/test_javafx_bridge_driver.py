@@ -233,7 +233,7 @@ def test_user_data_is_used_before_class_when_no_explicit_id_or_text(tmp_path):
         server.close()
 
 
-def test_capture_infers_ordinal_only_for_still_ambiguous_javafx_node(tmp_path):
+def test_internal_javafx_menu_skin_class_is_not_persisted(tmp_path):
     target = {
         "ref": "n22",
         "class": "com.sun.javafx.scene.control.MenuBarButton",
@@ -281,7 +281,8 @@ def test_capture_infers_ordinal_only_for_still_ambiguous_javafx_node(tmp_path):
         captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
         identity = captured.candidate_strategy().options["identification"]
         assert identity["mandatory"] == {"accessible_role": "MENU"}
-        assert identity["assistive"]["class"] == "com.sun.javafx.scene.control.MenuBarButton"
+        assert "class" not in identity["assistive"]
+        assert "hierarchy" not in identity["assistive"]
         assert identity["assistive"]["lineage"][1]["id"] == "topMenuBar"
         assert identity["ordinal"] == 1
     finally:
@@ -315,8 +316,6 @@ def test_stale_discovery_record_is_ignored(tmp_path):
         encoding="utf-8",
     )
     assert discover_javafx_endpoints(tmp_path) == ()
-
-
 
 
 def test_javafx_window_activation_uses_distinct_bridge_operation(tmp_path):
