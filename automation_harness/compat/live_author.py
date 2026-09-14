@@ -34,6 +34,12 @@ def _install_object_identity_sync():
     install()
 
 
+def _install_repository_lineage_editing():
+    from automation_harness.authoring.repository_lineage_runtime import install
+
+    install()
+
+
 def _prepare_legacy():
     from automation_harness.compat.python36 import install
 
@@ -43,6 +49,7 @@ def _prepare_legacy():
     _install_javafx_resolution_policy()
     _install_logical_menu_workbench()
     _install_object_identity_sync()
+    _install_repository_lineage_editing()
     from automation_harness.authoring import (
         app,
         live_runtime,
@@ -74,6 +81,7 @@ def run_author():
     _install_javafx_resolution_policy()
     _install_logical_menu_workbench()
     _install_object_identity_sync()
+    _install_repository_lineage_editing()
     from automation_harness.authoring.gui.launcher import main
 
     return main()
