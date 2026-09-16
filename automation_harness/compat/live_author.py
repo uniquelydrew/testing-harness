@@ -88,20 +88,43 @@ def run_author():
 
 
 def _run_legacy_mode(mode):
-    """Launch a legacy specialized surface through the surviving app.main API.
+    """Launch a specialized surface through the surviving AuthoringApp API.
 
     The artifact-aware GUI migration removed app.capture_main/repository_main,
     but the installed automation-capture and automation-repository console
-    scripts still target this compatibility module.  Keep those public CLI
+    scripts still target this compatibility module. Keep those public CLI
     contracts working without resurrecting duplicate application entry points.
     """
+    import argparse
     import sys
+    from pathlib import Path
 
     app = _prepare_legacy()
-    argv = list(sys.argv[1:])
-    if "--mode" not in argv:
-        argv.extend(("--mode", mode))
-    return app.main(argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repository", type=Path)
+    parser.add_argument("--project", type=Path)
+    parser.add_argument("--smoke-test", action="store_true")
+    args = parser.parse_args(sys.argv[1:])
+
+    instance = app.AuthoringApp(
+        args.repository,
+        mode=mode,
+        project_path=args.project,
+    )
+    if args.smoke_test:
+        from gi.repository import Gtk
+
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        instance.window.destroy()
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        return 0
+
+    from gi.repository import Gtk
+
+    Gtk.main()
+    return 0
 
 
 def run_capture():
