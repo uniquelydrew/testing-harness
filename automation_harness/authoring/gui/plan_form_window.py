@@ -22,15 +22,17 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         row = Gtk.Box(spacing=6)
         box.pack_start(row, False, False, 0)
         row.pack_start(Gtk.Label(label="TEST FLOW"), False, False, 0)
-        self.button("Move Up", lambda: self.move_selected(-1), parent=row)
-        self.button("Move Down", lambda: self.move_selected(1), parent=row)
-        self.button("Remove", self.remove_selected, parent=row)
         self.flow_tree, self.flow_store = self.list_tree(
             (("Group", 150), ("Node", 110), ("Step", 230), ("Parameters / Outputs", 420))
         )
         selection = self.flow_tree.get_selection()
         selection.set_mode(Gtk.SelectionMode.MULTIPLE)
         selection.connect("changed", lambda *_args: self.show_flow_detail())
+        self.flow_tree.connect("row-activated", lambda *_args: self.edit_selected_call())
+        self.flow_tree.connect("button-press-event", self._flow_button_press)
+        self.flow_tree.connect("key-press-event", self._flow_key_press)
+        self.flow_tree.set_reorderable(True)
+        self.flow_store.connect("rows-reordered", lambda *_args: self._flow_reordered())
         box.pack_start(self.scrolled(self.flow_tree), True, True, 0)
 
     def refresh_flow(self):

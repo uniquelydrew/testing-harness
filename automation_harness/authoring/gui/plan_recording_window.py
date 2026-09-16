@@ -7,7 +7,7 @@ from dataclasses import replace
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.plan_authoring_window import TestPlanAuthoringWindow
 from automation_harness.authoring.gui.preferences import recording_highlights_enabled
@@ -24,6 +24,10 @@ from automation_harness.recording import RecordedInteraction, RecordingSession, 
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
 from automation_harness.recording.observations import PointerInteraction
+
+
+_ACTIVE_RECORDING_WINDOW = None
+_ACTIVE_RECORDING_LOCK = threading.RLock()
 
 
 class _ObservedRecordingAdapter:
@@ -50,10 +54,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         super().__init__(*args, **kwargs)
         self.recording_session = None
         self.recording_stop_window = None
+        self._recording_stop_pending = False
         self._recording_highlights = []
-        self.start_recording_button = self.button("Start Recording", self.start_recording)
-        self.stop_recording_button = self.button("Stop Recording", self.stop_recording)
-        self.stop_recording_button.set_sensitive(False)
+        self.recording_toggle_button = self.button("Start Recording", self.toggle_recording)
+        self.recording_toggle_button.set_tooltip_text(
+            "Start or stop the single active recording session"
+        )
+        self.window.connect("destroy", lambda *_args: self._release_recording_owner())
         self.window.show_all()
 
     def _recording_adapters(self):
@@ -124,34 +131,105 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self._recording_highlights = []
         return False
 
-    def start_recording(self):
+    def _set_recording_toggle_state(self, *, active=False, stopping=False):
+        if stopping:
+            self.recording_toggle_button.set_label("Stopping…")
+            self.recording_toggle_button.set_sensitive(False)
+        else:
+            self.recording_toggle_button.set_label("Stop Recording" if active else "Start Recording")
+            self.recording_toggle_button.set_sensitive(True)
+
+    def _release_recording_owner(self):
+        global _ACTIVE_RECORDING_WINDOW
+        with _ACTIVE_RECORDING_LOCK:
+            # A destroyed window cannot release a session that is still active;
+            # retaining the owner prevents another window from recording over it.
+            if _ACTIVE_RECORDING_WINDOW is self and self.recording_session is None:
+                _ACTIVE_RECORDING_WINDOW = None
+
+    def toggle_recording(self):
         if self.recording_session is not None:
+            return self.stop_recording()
+        return self.start_recording()
+
+    def start_recording(self):
+        global _ACTIVE_RECORDING_WINDOW
+        if self.recording_session is not None or self._recording_stop_pending:
             return
         adapters = self._recording_adapters()
         if not adapters:
             return self.error("Recording", "No AT-SPI desktop session or configured JavaFX recording agent is available.")
         session = RecordingSession(adapters, repository=self.repository)
         try:
-            session.start()
+            with _ACTIVE_RECORDING_LOCK:
+                if _ACTIVE_RECORDING_WINDOW is not None and _ACTIVE_RECORDING_WINDOW is not self:
+                    return self.info(
+                        "Recording",
+                        "Another Test Plan is already recording. Stop that recording before starting a new one.",
+                    )
+                session.start()
+                self.recording_session = session
+                _ACTIVE_RECORDING_WINDOW = self
         except Exception as exc:
             return self.error("Recording", "%s: %s" % (type(exc).__name__, exc))
-        self.recording_session = session
-        self.start_recording_button.set_sensitive(False); self.stop_recording_button.set_sensitive(True)
+        self._set_recording_toggle_state(active=True)
         self._show_recording_stop_window()
         self.set_status("Recording — hold targets until semantic resolution completes, then release")
 
     def _show_recording_stop_window(self):
         self.window.hide()
-        stop = Gtk.Window(type=Gtk.WindowType.TOPLEVEL); stop.set_title("Automation Harness Recording"); stop.set_keep_above(True); stop.set_decorated(False); stop.set_border_width(10)
-        button = Gtk.Button(label="Stop Recording"); button.set_size_request(190, 54); button.connect("clicked", lambda *_args: self.stop_recording())
-        stop.add(button); stop.connect("delete-event", lambda *_args: (self.stop_recording(), True)[1]); stop.set_position(Gtk.WindowPosition.CENTER); stop.show_all()
+        stop = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        stop.set_title("Automation Harness Recording")
+        stop.set_keep_above(True)
+        stop.set_decorated(False)
+        stop.set_border_width(8)
+        stop.set_resizable(False)
+        stop.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+
+        # The overlay is intentionally undecorated so it does not compete with
+        # the application under test. Give it an explicit drag handle instead
+        # of forcing the user to sacrifice screen real estate or hunt for a
+        # window-manager border.
+        surface = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        surface.set_border_width(4)
+        handle = Gtk.EventBox()
+        handle.set_visible_window(False)
+        handle.set_tooltip_text("Drag to move the recording control")
+        handle_label = Gtk.Label(label="● Recording")
+        handle_label.set_xalign(0.0)
+        handle.add(handle_label)
+        handle.connect(
+            "button-press-event",
+            lambda _widget, event: (
+                stop.begin_move_drag(1, int(event.x_root), int(event.y_root), event.time),
+                True,
+            )[1] if event.button == 1 else False,
+        )
+        surface.pack_start(handle, True, True, 0)
+
+        button = Gtk.Button(label="Stop Recording")
+        button.set_size_request(190, 54)
+        button.set_tooltip_text("Stop recording and return to the Test Plan")
+        button.connect("clicked", lambda *_args: self.toggle_recording())
+        surface.pack_start(button, False, False, 0)
+        stop.add(surface)
+        stop.connect("delete-event", lambda *_args: (self.stop_recording(), True)[1])
+        stop.set_position(Gtk.WindowPosition.CENTER)
+        stop.show_all()
         self.recording_stop_window = stop
 
     def stop_recording(self):
-        if self.recording_session is None:
+        global _ACTIVE_RECORDING_WINDOW
+        if self.recording_session is None or self._recording_stop_pending:
             return
-        session = self.recording_session; self.recording_session = None
-        self.stop_recording_button.set_sensitive(False); self._clear_recording_highlights()
+        with _ACTIVE_RECORDING_LOCK:
+            session = self.recording_session
+            self.recording_session = None
+            self._recording_stop_pending = True
+            # Retain the global owner until session.stop() completes so another
+            # Test Plan cannot begin recording during adapter shutdown.
+        self._set_recording_toggle_state(stopping=True)
+        self._clear_recording_highlights()
         if self.recording_stop_window is not None:
             self.recording_stop_window.destroy(); self.recording_stop_window = None
         self.window.show_all(); self.window.present(); self.set_status("Stopping recording…")
@@ -163,7 +241,12 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         threading.Thread(target=worker, name="automation-plan-recording-stop", daemon=True).start()
 
     def _recording_finished(self, interactions, error):
-        self.start_recording_button.set_sensitive(True)
+        global _ACTIVE_RECORDING_WINDOW
+        with _ACTIVE_RECORDING_LOCK:
+            self._recording_stop_pending = False
+            if _ACTIVE_RECORDING_WINDOW is self:
+                _ACTIVE_RECORDING_WINDOW = None
+        self._set_recording_toggle_state(active=False)
         if error is not None:
             self.set_status("Recording failed"); self.error("Recording", "%s: %s" % (type(error).__name__, error)); return False
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.plan_repository import assigned_repository_path
@@ -24,15 +24,15 @@ class ProjectWindow(ArtifactWindow):
         super().__init__(path, project_context=path, opener=opener)
         self.project = AuthoringProject.load(self.path)
         self.button("Save Project", self.save)
-        self.button("Open Selected", self.open_selected)
         self.button("Add Existing", self.add_existing)
-        self.button("New Artifact", self.new_artifact)
-        self.button("Remove from Project", self.remove_selected)
+        self.button("+ New Artifact", self.new_artifact)
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.root.pack_start(paned, True, True, 0)
         self.tree, self.store = self.list_tree((("Type", 170), ("Artifact", 300), ("Path", 520)))
         self.tree.connect("row-activated", lambda *_args: self.open_selected())
+        self.tree.connect("button-press-event", self._tree_button_press)
+        self.tree.connect("key-press-event", self._tree_key_press)
         paned.pack1(self.scrolled(self.tree), resize=True, shrink=False)
         self.detail = Gtk.TextView(); self.detail.set_editable(False); self.detail.set_monospace(True)
         paned.pack2(self.scrolled(self.detail), resize=True, shrink=False)
@@ -68,60 +68,65 @@ class ProjectWindow(ArtifactWindow):
             return
 
         artifact = Path(path_text)
-        lines = [artifact.stem, "", str(artifact), "", "Exists: %s" % artifact.is_file()]
         if not artifact.is_file():
-            self.detail.get_buffer().set_text("\n".join(lines))
+            self.detail.get_buffer().set_text("%s\n\nThe artifact file is missing." % artifact.stem)
             return
 
+        lines = [label.upper(), "", artifact.stem]
         try:
             if label == "Object Repository":
                 repository = ComponentRepository.load((artifact,))
-                resolver_counts = {}
                 type_counts = {}
-                roots = set()
-                for component_id, definition in repository.components.items():
-                    roots.add(component_id.split(".", 1)[0])
+                for definition in repository.components.values():
                     object_type = definition.object_type.value
                     type_counts[object_type] = type_counts.get(object_type, 0) + 1
-                    for strategy in definition.strategies:
-                        resolver_counts[strategy.type] = resolver_counts.get(strategy.type, 0) + 1
-                lines.extend((
-                    "Objects: %d" % len(repository.components),
-                    "Top-level object trees: %d" % len(roots),
-                    "Resolver alternatives: %d" % sum(resolver_counts.values()),
-                ))
-                if resolver_counts:
-                    lines.append("Resolvers: %s" % ", ".join(
-                        "%s (%d)" % item for item in sorted(resolver_counts.items())
-                    ))
+                lines.append("%d objects" % len(repository.components))
                 if type_counts:
-                    lines.append("Object types: %s" % ", ".join(
-                        "%s (%d)" % item for item in sorted(type_counts.items())
-                    ))
+                    lines.append("Types: %s" % ", ".join("%s (%d)" % item for item in sorted(type_counts.items())))
 
             elif label == "Test Plan":
                 plan = load_plan(artifact)
-                embedded = repository_from_plan(plan)
                 assigned = assigned_repository_path(plan, artifact)
                 lines.extend((
-                    "Steps: %d" % len(plan.steps),
-                    "Variables: %d" % len(plan.variables),
-                    "Embedded objects: %d" % len(embedded.components),
-                    "Assigned Object Repository: %s" % (assigned if assigned is not None else "none"),
+                    "%d steps · %d variables" % (len(plan.steps), len(plan.variables)),
+                    "Object repository: %s" % (assigned.stem if assigned is not None else "embedded"),
                 ))
 
             elif label == "Step Registry":
                 registry = AuthoringStepRegistry.load(artifact)
-                repository = ComponentRepository.load((registry.repository,))
                 lines.extend((
-                    "Reusable steps: %d" % len(registry.steps),
-                    "Object Repository: %s" % registry.repository,
-                    "Repository objects: %d" % len(repository.components),
+                    "%d reusable steps" % len(registry.steps),
+                    "Object repository: %s" % Path(registry.repository).stem,
                 ))
         except Exception as exc:
             lines.extend(("", "Unable to inspect artifact:", "%s: %s" % (type(exc).__name__, exc)))
 
         self.detail.get_buffer().set_text("\n".join(lines))
+
+    def _tree_button_press(self, _tree, event):
+        if event.button != 3:
+            return False
+        path_info = self.tree.get_path_at_pos(int(event.x), int(event.y))
+        if path_info is None:
+            return False
+        path, _column, _cell_x, _cell_y = path_info
+        self.tree.get_selection().select_path(path)
+        menu = Gtk.Menu()
+        open_item = Gtk.MenuItem(label="Open")
+        open_item.connect("activate", lambda *_args: self.open_selected())
+        menu.append(open_item)
+        remove_item = Gtk.MenuItem(label="Remove from Project")
+        remove_item.connect("activate", lambda *_args: self.remove_selected())
+        menu.append(remove_item)
+        menu.show_all()
+        menu.popup_at_pointer(None)
+        return True
+
+    def _tree_key_press(self, _tree, event):
+        if event.keyval == Gdk.KEY_Delete:
+            self.remove_selected()
+            return True
+        return False
 
     def save(self):
         save_authoring_project(self.path, self.project)

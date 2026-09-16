@@ -1,3 +1,4 @@
+"""Project-first artifact launcher window."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,49 +24,112 @@ class StartWindow(ArtifactWindow):
         super().__init__(None, opener=opener)
         self.window.set_default_size(760, 520)
         self.toolbar.hide()
+
         heading = Gtk.Label(label="Automation Harness")
         heading.set_xalign(0)
         heading.set_markup("<span size='xx-large' weight='bold'>Automation Harness</span>")
         self.root.pack_start(heading, False, False, 8)
-        subtitle = Gtk.Label(label="Open or create an authoring artifact. Each artifact opens in its dedicated workflow.")
-        subtitle.set_xalign(0); self.root.pack_start(subtitle, False, False, 4)
 
-        grid = Gtk.Grid(column_spacing=12, row_spacing=12); self.root.pack_start(grid, False, False, 18)
-        actions = (
-            ("Open Artifact…", self.open_existing),
-            ("New Project", lambda: self.create_artifact("project")),
-            ("New Test Plan", lambda: self.create_artifact("plan")),
-            ("New Step Registry", lambda: self.create_artifact("registry")),
-            ("New Object Repository", lambda: self.create_artifact("repository")),
-            ("Preferences", self.preferences_dialog),
+        subtitle = Gtk.Label(
+            label="Open a Project to organize your automation work, or create a new one to get started."
         )
-        for index, (label, callback) in enumerate(actions):
-            button = Gtk.Button(label=label); button.set_size_request(260, 54); button.connect("clicked", lambda _button, fn=callback: fn()); grid.attach(button, index % 2, index // 2, 1, 1)
-        note = Gtk.Label(label="Projects organize artifacts; Test Plans, Step Registries, and Object Repositories remain independently openable.")
-        note.set_line_wrap(True); note.set_xalign(0); self.root.pack_start(note, False, False, 12)
+        subtitle.set_xalign(0)
+        subtitle.set_line_wrap(True)
+        self.root.pack_start(subtitle, False, False, 4)
+
+        primary = Gtk.Box(spacing=12)
+        self.root.pack_start(primary, False, False, 18)
+        for label, callback in (
+            ("Open Project", self.open_project),
+            ("New Project", lambda: self.create_artifact("project")),
+        ):
+            button = Gtk.Button(label=label)
+            button.set_size_request(300, 72)
+            button.connect("clicked", lambda _button, fn=callback: fn())
+            primary.pack_start(button, True, True, 0)
+
+        secondary = Gtk.Box(spacing=12)
+        self.root.pack_start(secondary, False, False, 0)
+
+        open_artifact = Gtk.Button(label="Open Artifact…")
+        open_artifact.set_size_request(210, 48)
+        open_artifact.connect("clicked", lambda *_args: self.open_existing())
+        secondary.pack_start(open_artifact, True, True, 0)
+
+        new_menu = Gtk.Menu()
+        for label, kind in (
+            ("New Test Plan", "plan"),
+            ("New Step Registry", "registry"),
+            ("New Object Repository", "repository"),
+        ):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, selected_kind=kind: self.create_artifact(selected_kind))
+            new_menu.append(item)
+        new_menu.show_all()
+
+        new_button = Gtk.MenuButton(label="New ▾")
+        new_button.set_popup(new_menu)
+        new_button.set_size_request(210, 48)
+        secondary.pack_start(new_button, True, True, 0)
+
+        preferences = Gtk.Button(label="Preferences")
+        preferences.set_size_request(210, 48)
+        preferences.connect("clicked", lambda *_args: self.preferences_dialog())
+        self.root.pack_start(preferences, False, False, 0)
+
+        note = Gtk.Label(
+            label="Projects organize Test Plans, Step Registries, and Object Repositories so related artifacts can be managed together."
+        )
+        note.set_line_wrap(True)
+        note.set_xalign(0)
+        self.root.pack_start(note, False, False, 18)
+
+    def open_project(self):
+        path = self.choose_file(title="Open Automation Harness Project", suffix=PROJECT_SUFFIX)
+        if path is None:
+            return
+        try:
+            self.open_artifact(path)
+        except Exception as exc:
+            self.error("Open Project", "%s: %s" % (type(exc).__name__, exc))
 
     def open_existing(self):
         path = self.choose_file(title="Open Automation Harness artifact")
-        if path is None: return
-        try: self.open_artifact(path)
-        except Exception as exc: self.error("Open Artifact", "%s: %s" % (type(exc).__name__, exc))
+        if path is None:
+            return
+        try:
+            self.open_artifact(path)
+        except Exception as exc:
+            self.error("Open Artifact", "%s: %s" % (type(exc).__name__, exc))
 
     def create_artifact(self, kind):
-        if kind == "project": suffix, title = PROJECT_SUFFIX, "Create Project"
-        elif kind == "plan": suffix, title = PLAN_SUFFIX, "Create Test Plan"
-        elif kind == "registry": suffix, title = STEP_REGISTRY_SUFFIX, "Create Step Registry"
-        else: suffix, title = REPOSITORY_SUFFIX, "Create Object Repository"
+        if kind == "project":
+            suffix, title = PROJECT_SUFFIX, "Create Project"
+        elif kind == "plan":
+            suffix, title = PLAN_SUFFIX, "Create Test Plan"
+        elif kind == "registry":
+            suffix, title = STEP_REGISTRY_SUFFIX, "Create Step Registry"
+        else:
+            suffix, title = REPOSITORY_SUFFIX, "Create Object Repository"
+
         path = self.choose_file(title=title, save=True, suffix=suffix)
-        if path is None: return
+        if path is None:
+            return
         name = self.ask_text(title, "Name:", path.stem)
-        if not name: return
+        if not name:
+            return
         try:
-            if kind == "project": create_authoring_project(path, name)
-            elif kind == "plan": save_plan(TestPlan(name=name), path)
-            elif kind == "registry": create_step_registry(path, name)
-            else: ComponentRepository({}).save(path)
+            if kind == "project":
+                create_authoring_project(path, name)
+            elif kind == "plan":
+                save_plan(TestPlan(name=name), path)
+            elif kind == "registry":
+                create_step_registry(path, name)
+            else:
+                ComponentRepository({}).save(path)
             self.open_artifact(path)
-        except Exception as exc: self.error(title, "%s: %s" % (type(exc).__name__, exc))
+        except Exception as exc:
+            self.error(title, "%s: %s" % (type(exc).__name__, exc))
 
     def save(self):
         return None
