@@ -10,6 +10,7 @@ from automation_harness.authoring.capture_context import (
     node_label,
     suggested_name,
     build_capture_context,
+    _fallback_context_labels,
 )
 
 
@@ -44,6 +45,43 @@ def _javafx_capture():
             "style_classes": ["menu"],
         },
     )
+
+
+def test_fallback_capture_condenses_swing_and_javafx_wrapper_ancestry():
+    from automation_harness.models.component import CapturedComponent, ComponentState
+
+    captured = CapturedComponent(
+        name="Follow Swing", role="push button", description=None,
+        accessible_id="follow-swing", application="DesktopDemo",
+        window="Automation Harness Java Desktop Demo",
+        hierarchy=(
+            "Automation Harness Java Desktop Demo", "JPanel", "JPanel",
+            "Swing controls", "JPanel", "Follow Swing",
+        ),
+        actions=("click",), bounds=(10, 10, 120, 28),
+        state=ComponentState(present=True), framework="atspi",
+        native_class="javax.swing.JButton",
+    )
+
+    context = build_capture_context(captured)
+
+    assert [node.label for node in context.root.walk()] == [
+        "Automation Harness Java Desktop Demo", "Swing controls", "Follow Swing",
+    ]
+    assert context.root.children[0].is_semantic is False
+    assert context.root.children[0].children[0].is_target is True
+
+
+def test_fallback_context_label_policy_preserves_named_javafx_host_region():
+    labels = _fallback_context_labels(
+        (
+            "Automation Harness Java Desktop Demo", "JPanel",
+            "JavaFX visual region", "JFXPanel", "Demo visual map",
+        ),
+        "Automation Harness Java Desktop Demo",
+    )
+
+    assert labels == ["JavaFX visual region", "Demo visual map"]
 
 
 def test_javafx_capture_remains_usable_when_bridge_endpoint_disappears():
@@ -93,6 +131,61 @@ def test_semantic_tree_collapses_redundant_javafx_containers():
     assert children[0].is_semantic is False
     assert [item.key for item in children[0].children] == ["target"]
     assert children[0].children[0].is_target is True
+
+
+def test_named_javafx_visual_region_is_structural_context():
+    node = _node(
+        "map", "javafx.scene.layout.Pane",
+        accessible_text="Demo visual map",
+    )
+
+    assert is_structural_context_node(node) is True
+    assert is_semantic_node(node) is False
+
+
+def test_javafx_demo_tree_keeps_named_controls_and_visual_anchor():
+    heading = _node(
+        "heading", "javafx.scene.control.Label",
+        accessible_text="JavaFX controls heading",
+    )
+    follow = _node(
+        "follow", "javafx.scene.control.Button",
+        accessible_text="Follow JavaFX", accessible_role="BUTTON",
+    )
+    progress = _node(
+        "progress", "javafx.scene.control.ProgressBar",
+        accessible_text="Demo progress", accessible_role="PROGRESS_BAR",
+    )
+    marker = _node(
+        "marker", "javafx.scene.shape.Circle",
+        accessible_text="Demo map marker",
+    )
+    visual_map = _node(
+        "map", "javafx.scene.layout.Pane",
+        accessible_text="Demo visual map", children=[marker],
+    )
+    root = _node(
+        "root", "javafx.scene.layout.VBox",
+        children=[heading, follow, progress, visual_map],
+    )
+
+    children = _semantic_children(root, "marker")
+
+    assert [item.label for item in children] == [
+        "JavaFX controls heading", "Follow JavaFX", "Demo progress", "Demo visual map",
+    ]
+    assert children[-1].is_semantic is False
+    assert [item.label for item in children[-1].children] == ["Demo map marker"]
+
+
+def test_progress_bar_is_a_semantic_javafx_object():
+    node = _node(
+        "progress", "javafx.scene.control.ProgressBar",
+        accessible_role="PROGRESS_BAR",
+        accessible_text="Demo progress",
+    )
+
+    assert is_semantic_node(node) is True
 
 
 def test_application_classes_are_not_implicitly_interaction_boundaries():

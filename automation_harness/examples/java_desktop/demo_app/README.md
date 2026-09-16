@@ -14,6 +14,10 @@ java --module-path /usr/share/openjfx/lib --add-modules javafx.controls,javafx.s
   -cp build/classes com.automationharness.demo.DesktopDemo
 ```
 
+Current qualification scope is Swing and JavaFX desktop interaction. Browser
+applications remain a supported future backend, but are not part of the current
+visual or object-tree acceptance pass.
+
 The harness must launch it with its Java ATK bridge enabled, rather than rely
 on a test API inside the application.
 
@@ -29,4 +33,26 @@ that launch in a contract-backed setup step before `live-desktop` actions run.
 `JFXPanel` content; Ubuntu's packaged OpenJFX 11 does not expose individual
 JavaFX nodes through AT-SPI, so validate those by capturing the named host
 region and using anchored visual checks or a masked baseline. `FxOnlyDemo` is
-included as a standalone JavaFX diagnostic target for future runtime upgrades.
+included as a standalone JavaFX target for native bridge tree and interaction qualification.
+
+The intended condensed object-tree view is:
+
+```text
+Automation Harness Java Desktop Demo
+├── Swing controls
+│   ├── Follow Swing
+│   └── Tracking enabled
+└── JavaFX visual region
+
+Automation Harness JavaFX Demo
+├── JavaFX controls heading
+├── Follow JavaFX
+├── Demo progress
+└── Demo visual map
+    └── Demo map marker
+```
+
+Toolkit-only JPanel, VBox, BorderPane, skin, filler, and rendered-text wrappers
+should not appear as separate authoring nodes. Named regions remain visible as
+non-saveable structural context; controls and visual targets remain saveable
+semantic objects or visual anchors.

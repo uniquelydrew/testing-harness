@@ -615,7 +615,8 @@ public final class AutomationHarnessJavaFxAgent {
                     throw new IllegalArgumentException("menu path must not be empty");
                 }
                 NodeMatch root = unique(resolve(identification, true), identification);
-                Object current = root.node;
+                Object current = logicalMenuObject(root.node);
+                if (current == null) current = root.node;
                 List<Object> traversed = new ArrayList<Object>();
                 for (int index = 0; index < selectors.size(); index++) {
                     if (!(selectors.get(index) instanceof Map)) {
@@ -647,21 +648,97 @@ public final class AutomationHarnessJavaFxAgent {
             Map<String, Object> criteria = mapValueOrEmpty(selector.get("criteria"));
             Integer ordinal = selector.get("ordinal") instanceof Number
                     ? ((Number) selector.get("ordinal")).intValue() : null;
-            if (ordinal != null && ordinal >= 0 && ordinal < children.size()
-                    && payloadMatches(menuSnapshot(children.get(ordinal)), criteria)) {
-                return children.get(ordinal);
-            }
             List<Object> matches = new ArrayList<Object>();
             for (Object child : children) {
                 if (payloadMatches(menuSnapshot(child), criteria)) {
                     matches.add(child);
                 }
             }
-            if (matches.size() != 1) {
-                throw new IllegalArgumentException(
-                        "JavaFX menu selector matched " + matches.size() + " children: " + criteria);
+            if (matches.size() == 1) {
+                return matches.get(0);
             }
-            return matches.get(0);
+
+            // Geometry is a better scoped fallback when duplicate labels or
+            // selector-light menus were captured from a visible popup.
+            Object positioned = positionedMenuChild(parent, matches, selector);
+            if (positioned != null) {
+                return positioned;
+            }
+
+            // Ordinal is deliberately last: it tolerates missing semantic
+            // metadata, but should not override a durable identity match.
+            if (ordinal != null && ordinal >= 0 && ordinal < children.size()
+                    && payloadMatches(menuSnapshot(children.get(ordinal)), criteria)) {
+                return children.get(ordinal);
+            }
+            throw new IllegalArgumentException(
+                    "JavaFX menu selector matched " + matches.size() + " children: " + criteria);
+        }
+
+        private static Object positionedMenuChild(
+                Object parent, List<Object> semanticMatches, Map<String, Object> selector) throws Exception {
+            Map<String, Object> offset = mapValueOrEmpty(selector.get("relative_offset"));
+            Object rawX = offset.get("x");
+            Object rawY = offset.get("y");
+            if (!(rawX instanceof Number) || !(rawY instanceof Number)) {
+                return null;
+            }
+            double[] parentBounds = menuBounds(parent);
+            if (parentBounds == null) {
+                return null;
+            }
+            double expectedX = parentBounds[0] + ((Number) rawX).doubleValue();
+            double expectedY = parentBounds[1] + ((Number) rawY).doubleValue();
+            double tolerance = offset.get("tolerance") instanceof Number
+                    ? Math.max(1.0, ((Number) offset.get("tolerance")).doubleValue()) : 16.0;
+            List<Object> candidates = semanticMatches.isEmpty() ? menuChildren(parent) : semanticMatches;
+            Object best = null;
+            double bestDistance = Double.MAX_VALUE;
+            boolean tied = false;
+            for (Object candidate : candidates) {
+                double[] bounds = menuBounds(candidate);
+                if (bounds == null) continue;
+                double distance = Math.hypot(bounds[0] - expectedX, bounds[1] - expectedY);
+                if (distance > tolerance) continue;
+                if (distance < bestDistance - 0.5) {
+                    best = candidate;
+                    bestDistance = distance;
+                    tied = false;
+                } else if (Math.abs(distance - bestDistance) <= 0.5) {
+                    tied = true;
+                }
+            }
+            return best != null && !tied ? best : null;
+        }
+
+        private static double[] menuBounds(Object logical) throws Exception {
+            double[] direct = boundsOnScreen(logical);
+            if (direct != null) return direct;
+            for (Object window : windows()) {
+                if (!boolCall(window, "isShowing", true)) continue;
+                Object scene = call(window, "getScene");
+                Object found = findMenuVisual(call(scene, "getRoot"), logical, 0);
+                if (found != null) {
+                    double[] bounds = boundsOnScreen(found);
+                    if (bounds != null) return bounds;
+                }
+            }
+            return null;
+        }
+
+        private static Object findMenuVisual(Object node, Object logical, int depth) throws Exception {
+            if (node == null || depth > 64) return null;
+            String className = node.getClass().getName();
+            if (className.startsWith("com.sun.javafx.scene.control.")) {
+                Object item = call(node, "getItem");
+                if (item == null) item = call(node, "getMenu");
+                if (item == logical) return node;
+            }
+            for (Object child : children(node)) {
+                Object found = findMenuVisual(child, logical, depth + 1);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         private static List<Object> menuChildren(Object parent) throws Exception {
@@ -677,6 +754,11 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static Map<String, Object> menuSnapshot(Object item) throws Exception {
+            return menuSnapshotWithSelector(item, null, null);
+        }
+
+        private static Map<String, Object> menuSnapshotWithSelector(
+                Object item, Object parent, Integer ordinal) throws Exception {
             Map<String, Object> payload = new LinkedHashMap<String, Object>();
             payload.put("class", item.getClass().getName());
             payload.put("simple_class", item.getClass().getSimpleName());
@@ -684,19 +766,189 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("accessible_id", stringOrNull(call(item, "getId")));
             payload.put("text", optionalNoArgString(item, "getText"));
             payload.put("name", optionalNoArgString(item, "getText"));
-            String simple = item.getClass().getSimpleName();
-            String role = "Menu".equals(simple) ? "menu"
-                    : "CheckMenuItem".equals(simple) ? "check menu item"
-                    : "RadioMenuItem".equals(simple) ? "radio menu item" : "menu item";
+            String role = menuRole(item);
             payload.put("role", role);
             payload.put("accessible_role", role);
+            if (ordinal != null) payload.put("ordinal", ordinal);
+            Map<String, Object> offset = relativeOffset(item, parent);
+            if (offset != null) payload.put("relative_offset", offset);
+            double[] bounds = menuBounds(item);
+            if (bounds != null) payload.put("bounds", boundsList(bounds));
             List<Object> children = menuChildrenIfPresent(item);
             if (!children.isEmpty()) {
                 List<Object> snapshots = new ArrayList<Object>();
-                for (Object child : children) snapshots.add(menuSnapshot(child));
+                int childOrdinal = 0;
+                for (Object child : children) {
+                    snapshots.add(menuSnapshotWithSelector(child, item, childOrdinal));
+                    childOrdinal++;
+                }
                 payload.put("menu_children", snapshots);
             }
             return payload;
+        }
+
+        private static String menuRole(Object item) {
+            String accessibleRole = enumName(callQuiet(item, "getAccessibleRole"));
+            if (accessibleRole != null) {
+                String normalized = accessibleRole.replace('_', ' ').toLowerCase(java.util.Locale.ROOT);
+                if ("menu".equals(normalized) || "menu item".equals(normalized)
+                        || "check menu item".equals(normalized) || "radio menu item".equals(normalized)) {
+                    return normalized;
+                }
+            }
+            String simple = item.getClass().getSimpleName();
+            return "MenuBar".equals(simple) ? "menu bar"
+                    : "ContextMenu".equals(simple) ? "context menu"
+                    : "Menu".equals(simple) ? "menu"
+                    : "CheckMenuItem".equals(simple) ? "check menu item"
+                    : "RadioMenuItem".equals(simple) ? "radio menu item" : "menu item";
+        }
+
+        private static Object callQuiet(Object target, String method) {
+            try {
+                return call(target, method);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        private static Map<String, Object> logicalMenuMetadata(Object semantic) throws Exception {
+            Object logical = logicalMenuObject(semantic);
+            if (logical == null) return Collections.emptyMap();
+            semantic = logical;
+            String semanticRole = menuRole(semantic);
+            if (!"menu".equals(semanticRole) && !"menu item".equals(semanticRole)
+                    && !"check menu item".equals(semanticRole) && !"radio menu item".equals(semanticRole)) {
+                return Collections.emptyMap();
+            }
+
+            List<Object> path = new ArrayList<Object>();
+            Object current = semantic;
+            Object top = semantic;
+            int guard = 0;
+            while (current != null && guard++ < 32) {
+                Object parentMenu = call(current, "getParentMenu");
+                if (parentMenu == null) parentMenu = findMenuBarForMenu(current);
+                path.add(0, menuSelector(current, parentMenu));
+                top = current;
+                if (parentMenu == null || "menu bar".equals(menuRole(parentMenu))) break;
+                current = parentMenu;
+            }
+
+            Object parentPopup = callQuiet(semantic, "getParentPopup");
+            if (parentPopup == null) parentPopup = callQuiet(top, "getParentPopup");
+            Map<String, Object> owner = new LinkedHashMap<String, Object>();
+            if (parentPopup != null) {
+                owner.put("kind", "context menu");
+                owner.put("popup", menuSnapshot(parentPopup));
+            } else if (top != semantic && "menu".equals(menuRole(top))) {
+                owner.put("kind", "menu");
+                owner.put("logical", menuSelector(top, null));
+            } else {
+                owner.put("kind", "menu");
+                owner.put("logical", menuSelector(top, null));
+            }
+
+            Map<String, Object> result = new LinkedHashMap<String, Object>();
+            result.put("path", path);
+            result.put("owner", owner);
+            return result;
+        }
+
+        private static Object logicalMenuObject(Object candidate) throws Exception {
+            if (candidate == null) return null;
+            if (isInstance("javafx.scene.control.MenuBar", candidate)
+                    || isInstance("javafx.scene.control.Menu", candidate)
+                    || isInstance("javafx.scene.control.MenuItem", candidate)
+                    || isInstance("javafx.scene.control.ContextMenu", candidate)) {
+                return candidate;
+            }
+            Object current = candidate;
+            for (int depth = 0; current != null && depth < 16; depth++) {
+                Object item = callQuiet(current, "getItem");
+                if (item == null) item = callQuiet(current, "getMenu");
+                if (item == null) item = callQuiet(current, "getContextMenu");
+                if (item != null && (isInstance("javafx.scene.control.Menu", item)
+                        || isInstance("javafx.scene.control.MenuItem", item)
+                        || isInstance("javafx.scene.control.ContextMenu", item))) {
+                    return item;
+                }
+                current = callQuiet(current, "getParent");
+            }
+            return null;
+        }
+
+        private static Map<String, Object> menuSelector(Object item, Object parent) throws Exception {
+            Map<String, Object> selector = new LinkedHashMap<String, Object>();
+            selector.put("kind", menuRole(item));
+            Map<String, Object> criteria = new LinkedHashMap<String, Object>();
+            String id = stringOrNull(callQuiet(item, "getId"));
+            String text = optionalNoArgStringQuiet(item, "getText");
+            if (id != null && !id.trim().isEmpty()) criteria.put("id", id);
+            if (text != null && !text.trim().isEmpty()) criteria.put("text", text);
+            selector.put("criteria", criteria);
+            Integer ordinal = menuOrdinal(parent, item);
+            if (ordinal != null) selector.put("ordinal", ordinal);
+            Map<String, Object> offset = relativeOffset(item, parent);
+            if (offset != null) selector.put("relative_offset", offset);
+            return selector;
+        }
+
+        private static String optionalNoArgStringQuiet(Object target, String method) {
+            try {
+                return optionalNoArgString(target, method);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        private static Integer menuOrdinal(Object parent, Object item) {
+            if (parent == null) return null;
+            try {
+                List<Object> children = menuChildrenIfPresent(parent);
+                for (int index = 0; index < children.size(); index++) {
+                    if (children.get(index) == item) return index;
+                }
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
+
+        private static Object findMenuBarForMenu(Object target) throws Exception {
+            for (Object window : windows()) {
+                if (!boolCall(window, "isShowing", true)) continue;
+                Object scene = call(window, "getScene");
+                Object root = scene == null ? null : call(scene, "getRoot");
+                Object found = findMenuBar(root, target, 0);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static Object findMenuBar(Object node, Object target, int depth) throws Exception {
+            if (node == null || depth > 64) return null;
+            if (isInstance("javafx.scene.control.MenuBar", node)) {
+                for (Object child : menuChildrenIfPresent(node)) {
+                    if (child == target) return node;
+                }
+            }
+            for (Object child : children(node)) {
+                Object found = findMenuBar(child, target, depth + 1);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static Map<String, Object> relativeOffset(Object item, Object parent) throws Exception {
+            if (parent == null) return null;
+            double[] childBounds = menuBounds(item);
+            double[] parentBounds = menuBounds(parent);
+            if (childBounds == null || parentBounds == null) return null;
+            Map<String, Object> result = new LinkedHashMap<String, Object>();
+            result.put("x", childBounds[0] - parentBounds[0]);
+            result.put("y", childBounds[1] - parentBounds[1]);
+            result.put("tolerance", Math.max(8.0, Math.min(childBounds[2], childBounds[3]) * 0.5));
+            return result;
         }
 
         private static List<Object> menuChildrenIfPresent(Object parent) throws Exception {
@@ -938,7 +1190,13 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("hierarchy", hierarchy(node));
             payload.put("stable_ancestors", stableAncestors(node));
             payload.put("user_data", scalarValue(call(node, "getUserData")));
-            payload.put("properties", scalarProperties(node));
+            Map<String, Object> nodeProperties = scalarProperties(node);
+            Map<String, Object> logicalMenu = logicalMenuMetadata(node);
+            if (!logicalMenu.isEmpty()) {
+                payload.put("logical_menu", logicalMenu);
+                nodeProperties.put("logical_menu", logicalMenu);
+            }
+            payload.put("properties", nodeProperties);
             payload.put("layout", layoutConstraints(node));
             payload.put("sibling_index", siblingIndex(node));
             payload.put("sibling_count", siblingCount(node));
@@ -947,10 +1205,14 @@ public final class AutomationHarnessJavaFxAgent {
             if (parent != null) {
                 payload.put("parent", briefPayload(parent));
             }
-            List<Object> menuChildren = menuChildrenIfPresent(node);
+            Object logicalMenuNode = logicalMenuObject(node);
+            if (logicalMenuNode == null) logicalMenuNode = node;
+            List<Object> menuChildren = menuChildrenIfPresent(logicalMenuNode);
             if (!menuChildren.isEmpty()) {
                 List<Object> snapshots = new ArrayList<Object>();
-                for (Object child : menuChildren) snapshots.add(menuSnapshot(child));
+                for (int index = 0; index < menuChildren.size(); index++) {
+                    snapshots.add(menuSnapshotWithSelector(menuChildren.get(index), logicalMenuNode, index));
+                }
                 payload.put("menu_children", snapshots);
             }
             return payload;

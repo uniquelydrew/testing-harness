@@ -55,6 +55,7 @@ class ObjectIdentityWorkbench:
         self.window.add(outer)
 
         toolbar = Gtk.Box(spacing=6)
+        self.toolbar = toolbar
         outer.pack_start(toolbar, False, False, 0)
         self._button(toolbar, "Highlight", self.highlight_selected)
         self._button(toolbar, "Check Siblings", self.check_siblings)
@@ -73,7 +74,7 @@ class ObjectIdentityWorkbench:
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         left.set_size_request(390, -1)
         pane.pack1(left, resize=True, shrink=False)
-        caption = Gtk.Label(label="Capture Scope")
+        caption = Gtk.Label(label="Semantic Object Tree")
         caption.set_halign(Gtk.Align.START)
         left.pack_start(caption, False, False, 0)
 

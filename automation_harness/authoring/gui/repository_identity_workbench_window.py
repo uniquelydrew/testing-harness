@@ -137,6 +137,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         return result
 
     def _configure_repository_toolbar(self):
+        self._button(self.toolbar, "Recapture Selected", self.recapture_selected)
         hide = {
             "Check Siblings", "Check Branch", "Clear Checks",
             "Save Selected", "Save Checked",
@@ -157,6 +158,118 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         for widget in _walk_widgets(self.window):
             if isinstance(widget, Gtk.Button) and widget.get_label() in hide:
                 widget.hide()
+
+    def recapture_selected(self):
+        node = self._selected_node()
+        definition = self._definition_by_key.get(node.key) if node is not None else None
+        if node is None or definition is None:
+            return self.app._info("Recapture object", "Select a repository object first.")
+        dialog = Gtk.Dialog(title="Recapture %s" % definition.component_id, transient_for=self.window, modal=True)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Capture", Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(10)
+        box.pack_start(Gtk.Label(label="Capture on click number:"), False, False, 0)
+        count = Gtk.SpinButton.new_with_range(1, 9, 1)
+        count.set_value(1)
+        box.pack_start(count, False, False, 0)
+        note = Gtk.Label(label="1 captures the next click; higher values discard earlier clicks.")
+        note.set_halign(Gtk.Align.START)
+        note.set_line_wrap(True)
+        box.pack_start(note, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        click_count = count.get_value_as_int()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+
+        self._set_status("Recapture %s: click %d of %d…" % (definition.component_id, click_count, click_count))
+        self.window.hide()
+
+        def worker():
+            try:
+                captured = self.app.capture.capture_next_click(click_count=click_count, timeout=30.0)
+                proposed, comparison = self.app.capture.recapture_definition(definition, captured)
+            except Exception as exc:
+                GLib.idle_add(self._recapture_finished, node.key, None, None, None, exc)
+            else:
+                GLib.idle_add(self._recapture_finished, node.key, proposed, comparison, captured, None)
+
+        import threading
+        threading.Thread(target=worker, name="repository-object-recapture", daemon=True).start()
+
+    def _recapture_finished(self, key, proposed, comparison, captured, error):
+        if error is not None:
+            self.window.show_all()
+            self.window.present()
+            self._set_status("Recapture failed")
+            self.app._error("Recapture object", "%s: %s" % (type(error).__name__, error))
+            return False
+        bounds = getattr(captured, "bounds", None)
+        if bounds:
+            self.window.hide()
+            self._repository_host._show_highlight(bounds)
+            GLib.timeout_add(1200, self._finish_recapture_review, key, proposed, comparison, captured)
+        else:
+            self._finish_recapture_review(key, proposed, comparison, captured)
+        return False
+
+    def _finish_recapture_review(self, key, proposed, comparison, captured=None):
+        self._repository_host._clear_highlight()
+        self.window.show_all()
+        self.window.present()
+        changes = comparison.get("changed", {})
+        lines = [
+            "Object: %s" % comparison["component_id"],
+            "Immutable object ID: %s" % comparison["object_id"],
+            "Revision: %s → %s" % (comparison["previous_revision"], comparison["proposed_revision"]),
+            "",
+            "Stable identity changes: %d" % len(comparison.get("stable_changes", {})),
+            "Mutable/runtime changes: %d" % len(comparison.get("mutable_changes", {})),
+            "Other changes requiring review: %d" % len(comparison.get("review_changes", {})),
+        ]
+        if changes:
+            lines.append("")
+            for path, item in list(changes.items())[:12]:
+                lines.append("%s [%s]: %s → %s" % (
+                    path, item["classification"], item.get("before"), item.get("after"),
+                ))
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.CANCEL,
+            text="Review recaptured object",
+        )
+        dialog.add_button("Use Capture", Gtk.ResponseType.OK)
+        dialog.format_secondary_text("\n".join(lines))
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            self._set_status("Recapture discarded; repository unchanged")
+            return False
+
+        definition = self._definition_by_key.get(key)
+        if definition is None:
+            return False
+        updated = self._repository_host.repository.with_component(proposed)
+        self._repository_host.repository = updated
+        self.app.repository = updated
+        self._definition_by_key[key] = proposed
+        identity = _definition_identity(proposed)
+        if identity is not None:
+            self.identity_overrides[key] = identity
+        if self.context is not None and isinstance(self.context.captured_by_key, dict):
+            # Replace the synthetic old capture so the next highlight/edit is
+            # based on the fresh live object.
+            self.context.captured_by_key[key] = proposed_capture = _capture_from_definition(proposed)
+        self.app._mark_repository_dirty(True)
+        self._render_properties(self.nodes[key])
+        self._set_status("Recaptured %s at revision %s — Save Repository to persist" % (
+            proposed.component_id, proposed.revision,
+        ))
+        return False
 
     def _selection_summary(self, node):
         if node.key in self._definition_by_key:

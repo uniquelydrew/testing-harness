@@ -96,8 +96,18 @@ def _new_file_menu_item_capture():
         "backend_properties": {
             "logical_menu": {
                 "path": [
-                    {"kind": "menu", "criteria": {"id": "fileMenu", "text": "File"}},
-                    {"kind": "menu item", "criteria": {"id": "openRecordingMenuItem", "text": "Open Recording"}},
+                    {
+                        "kind": "menu",
+                        "criteria": {"id": "fileMenu", "text": "File"},
+                        "ordinal": 1,
+                        "relative_offset": {"x": 15.0, "y": 5.0, "tolerance": 8.0},
+                    },
+                    {
+                        "kind": "menu item",
+                        "criteria": {"id": "openRecordingMenuItem", "text": "Open Recording"},
+                        "ordinal": 2,
+                        "relative_offset": {"x": 15.0, "y": 35.0, "tolerance": 8.0},
+                    },
                 ],
                 "owner": {
                     "kind": "menu",
@@ -144,6 +154,23 @@ def test_normalize_menu_subobjects_accepts_legacy_and_runtime_shapes():
     assert normalized["camera"]["subobjects"]["camera_selector"]["criteria"]["id"] == "cameraSelectorMenuItem"
 
 
+def test_normalize_preserves_ordinal_and_relative_offset_from_legacy_selector():
+    normalized = normalize_menu_subobjects({
+        "open": {
+            "kind": "menu_item",
+            "selector": {
+                "criteria": {"text": "Open"},
+                "ordinal": 2,
+                "relative_offset": {"x": 15.0, "y": 35.0, "tolerance": 8.0},
+            },
+        }
+    })
+    assert normalized["open"]["ordinal"] == 2
+    assert normalized["open"]["relative_offset"] == {
+        "x": 15.0, "y": 35.0, "tolerance": 8.0,
+    }
+
+
 def test_duplicate_live_skin_capture_still_maps_to_one_logical_item():
     owner = _owner()
     first = _live_camera_selector_capture()
@@ -161,6 +188,8 @@ def test_new_menu_item_is_attached_under_existing_logical_menu_owner():
     assert owner.subobjects["openrecordingmenuitem"] == {
         "kind": "menu_item",
         "criteria": {"id": "openRecordingMenuItem", "text": "Open Recording"},
+        "ordinal": 2,
+        "relative_offset": {"x": 15.0, "y": 35.0, "tolerance": 8.0},
     }
 
 

@@ -6,7 +6,7 @@ from dataclasses import replace
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
@@ -34,11 +34,29 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             self.repository = repository_from_plan(self.plan).overlay(assigned)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
-        self.button("Add Object Action", self.add_object_action)
-        self.button("Assign Object Repository", self.assign_object_repository)
-        self.button("Merge / Assign Central Repository", self.merge_assign_central_repository)
-        self.button("Open Object Repository", self.open_assigned_repository)
+        self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
+
+    def show_objects_menu(self):
+        menu = Gtk.Menu()
+
+        def add_item(label, callback, sensitive=True):
+            item = Gtk.MenuItem(label=label)
+            item.set_sensitive(sensitive)
+            item.connect("activate", lambda *_args: callback())
+            menu.append(item)
+
+        add_item("Add Object Action", self.add_object_action)
+        menu.append(Gtk.SeparatorMenuItem())
+        add_item("Assign Repository…", self.assign_object_repository)
+        add_item("Merge Repository…", self.merge_assign_central_repository)
+        add_item(
+            "Open Repository",
+            self.open_assigned_repository,
+            assigned_repository_path(self.plan, self.path) is not None,
+        )
+        menu.show_all()
+        menu.popup_at_widget(self.objects_button, Gdk.Gravity.SOUTH, Gdk.Gravity.NORTH, None)
 
     def assign_object_repository(self):
         selected = self.choose_file(title="Assign Object Repository", suffix=REPOSITORY_SUFFIX)
@@ -150,7 +168,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.mark_dirty(False)
         self.set_status("Saved portable test plan")
 
-    def add_object_action(self):
+    def add_object_action(self, component_id=None, action_id=None):
         if not self.repository.components:
             return self.info(
                 "Object Action",
@@ -163,10 +181,14 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         box.set_border_width(10)
 
         object_combo = Gtk.ComboBoxText()
-        for component_id in sorted(self.repository.components):
-            object_combo.append(component_id, component_id)
-        object_combo.set_active(0)
+        for known_component_id in sorted(self.repository.components):
+            object_combo.append(known_component_id, known_component_id)
+        if component_id and component_id in self.repository.components:
+            object_combo.set_active_id(component_id)
+        else:
+            object_combo.set_active(0)
         action_combo = Gtk.ComboBoxText()
+        preferred_action_id = action_id
         inputs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         input_entries = {}
 
@@ -179,7 +201,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             for definition in definitions:
                 action_combo.append(definition.action_id, "%s — %s" % (definition.name, definition.category))
             if definitions:
-                action_combo.set_active(0)
+                if preferred_action_id and any(item.action_id == preferred_action_id for item in definitions):
+                    action_combo.set_active_id(preferred_action_id)
+                else:
+                    action_combo.set_active(0)
 
         def rebuild_inputs(*_args):
             for child in inputs_box.get_children():

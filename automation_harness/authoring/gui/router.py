@@ -61,7 +61,16 @@ def _detect_schema(raw: Mapping):
         return ArtifactType.STEP_REGISTRY
     if "components" in raw:
         return ArtifactType.OBJECT_REPOSITORY
-    if "steps" in raw and "name" in raw and ("variables" in raw or "objects" in raw or "step_definitions" in raw):
+    plan_steps = any(key in raw for key in ("steps", "calls", "test_steps", "plan_steps"))
+    plan_name = any(key in raw for key in ("name", "title", "plan_name", "display_name"))
+    plan_payload = any(
+        key in raw for key in (
+            "variables", "vars", "parameters", "objects", "components",
+            "object_repository", "step_definitions", "reusable_steps",
+            "registry_steps", "stepDefinitions",
+        )
+    )
+    if plan_steps and plan_name and plan_payload:
         return ArtifactType.TEST_PLAN
     if raw.get("version") == 1 and "repository" in raw and "name" in raw:
         return ArtifactType.PROJECT

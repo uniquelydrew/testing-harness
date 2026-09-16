@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.object_hierarchy import hierarchy_contract, recapture_comparison
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
@@ -120,9 +121,16 @@ class ObjectCaptureService:
         self._log("capture_scoped_at_point_succeeded", x=x, y=y, capture=captured.to_dict())
         return captured
 
-    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
-        """Capture the next accessible object selected by a desktop click."""
-        self._log("capture_next_click_started", timeout=timeout)
+    def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
+        """Capture the object selected by desktop click number 1 through 9."""
+        _validate_click_count(click_count)
+        if click_count != 1:
+            captured = None
+            for _index in range(click_count):
+                captured = self.capture_next_click(timeout=timeout, click_count=1)
+            assert captured is not None
+            return captured
+        self._log("capture_next_click_started", timeout=timeout, click_count=click_count)
         try:
             captured = self.driver.capture_next_click(timeout=timeout)
         except Exception as exc:
@@ -218,6 +226,7 @@ class ObjectCaptureService:
                 actions=frozenset({"resolve"}),
                 expected_states={"visible": True},
                 revision=revision,
+                scope=hierarchy_contract(captured),
             )
         if criteria is not None and identification is not None:
             raise ValueError("supply criteria or identification, not both")
@@ -288,8 +297,27 @@ class ObjectCaptureService:
             framework=captured.framework,
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,
+            scope=hierarchy_contract(captured),
         )
 
+    def recapture_definition(
+        self,
+        existing: ComponentDefinition,
+        captured: CapturedComponent,
+        *,
+        validate_live: bool = True,
+    ) -> tuple[ComponentDefinition, dict[str, Any]]:
+        """Re-reference an existing logical object to a fresh live capture."""
+        proposed = self.definition_from_capture(
+            existing.component_id,
+            captured,
+            description=existing.description,
+            revision=existing.revision + 1,
+            validate_live=validate_live,
+        )
+        proposed = replace(proposed, object_id=existing.object_id)
+        comparison = recapture_comparison(existing, captured, proposed)
+        return proposed, comparison
     def save_capture(
         self,
         path: Path,
@@ -403,6 +431,10 @@ class ObjectCaptureService:
             # Diagnostics must never change capture behavior.
             pass
 
+
+def _validate_click_count(click_count: int) -> None:
+    if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
+        raise ValueError("click_count must be an integer from 1 through 9")
 
 def _atspi_point_snapshot(x: int, y: int) -> dict[str, Any]:
     """Return a bounded AT-SPI tree snapshot useful for failed hit-tests."""

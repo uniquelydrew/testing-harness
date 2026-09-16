@@ -26,16 +26,20 @@ from automation_harness.models.plan import StepCall
 class VisualTestPlanWindow(RecordingTestPlanWindow):
     """Recording-capable Test Plan editor with explicit repository visual assertions."""
 
-    def add_object_action(self):
+    def add_object_action(self, component_id=None, action_id=None):
         if not self.repository.components:
             return self.info("Object Action", "No objects are available. Open or capture objects in an Object Repository first.")
         dialog = Gtk.Dialog(title="Add Object Action", transient_for=self.window, modal=True)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
         box = dialog.get_content_area(); box.set_spacing(8); box.set_border_width(10)
         object_combo = Gtk.ComboBoxText()
-        for component_id in sorted(self.repository.components): object_combo.append(component_id, component_id)
-        object_combo.set_active(0)
-        action_combo = Gtk.ComboBoxText(); inputs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for known_component_id in sorted(self.repository.components): object_combo.append(known_component_id, known_component_id)
+        if component_id and component_id in self.repository.components:
+            object_combo.set_active_id(component_id)
+        else:
+            object_combo.set_active(0)
+        action_combo = Gtk.ComboBoxText(); preferred_action_id = action_id
+        inputs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         input_entries = {}; visual_combo = Gtk.ComboBoxText(); add_match_button = Gtk.Button(label="Add New Match Image…")
         match_percentage = Gtk.SpinButton.new_with_range(0.0, 100.0, 0.1)
         match_percentage.set_digits(1)
@@ -89,9 +93,14 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
         def rebuild_actions(*_args):
             action_combo.remove_all(); definition = selected_definition()
             if definition is None: return
-            for action in actions_for(definition): action_combo.append(action.action_id, "%s — %s" % (action.name, action.category))
+            definitions = actions_for(definition)
+            for action in definitions: action_combo.append(action.action_id, "%s — %s" % (action.name, action.category))
             action_combo.append("assert_match", "Assert Match — Assertion")
-            action_combo.set_active(0); rebuild_visuals()
+            if preferred_action_id and any(item.action_id == preferred_action_id for item in definitions):
+                action_combo.set_active_id(preferred_action_id)
+            else:
+                action_combo.set_active(0)
+            rebuild_visuals()
 
         def rebuild_inputs(*_args):
             for child in inputs_box.get_children(): child.destroy()

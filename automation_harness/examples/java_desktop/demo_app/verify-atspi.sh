@@ -14,6 +14,8 @@ cleanup() { kill "$java_pid" "$xvfb_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 sleep 6
 
+DEMO_CLASS="$DEMO_CLASS" python3 probe-live-atspi.py
+
 python3 - <<'PY'
 import os
 import pyatspi
@@ -29,8 +31,6 @@ def walk(node, depth=0):
         role = node.getRoleName()
     except Exception:
         return
-    if depth < 4:
-        print(f"NODE depth={depth} name={name!r} role={role!r}")
     if name in required:
         try:
             bounds = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)

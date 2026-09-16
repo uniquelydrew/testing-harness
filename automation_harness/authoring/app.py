@@ -36,6 +36,26 @@ from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.formats import PLAN_SUFFIX, PROJECT_SUFFIX, REPOSITORY_SUFFIX, artifact_stem, with_artifact_suffix
 
 
+def _choose_capture_click_count(app):
+    dialog = Gtk.Dialog(title="Capture on Click", transient_for=app.window, modal=True)
+    dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Capture", Gtk.ResponseType.OK)
+    box = dialog.get_content_area()
+    box.set_spacing(8)
+    box.set_border_width(10)
+    box.pack_start(Gtk.Label(label="Capture on click number:"), False, False, 0)
+    count = Gtk.SpinButton.new_with_range(1, 9, 1)
+    count.set_value(1)
+    box.pack_start(count, False, False, 0)
+    note = Gtk.Label(label="1 captures the next click. Higher values discard earlier clicks.")
+    note.set_halign(Gtk.Align.START)
+    box.pack_start(note, False, False, 0)
+    dialog.show_all()
+    response = dialog.run()
+    value = count.get_value_as_int()
+    dialog.destroy()
+    return value if response == Gtk.ResponseType.OK else None
+
+
 class AuthoringApp:
     """GTK3 authoring/Object Capture client for the RHEL deployment environment."""
 
@@ -431,13 +451,29 @@ class AuthoringApp:
 
     def capture_next_click(self) -> None:
         if not self.capture.available:
-            return self._error("AT-SPI unavailable", "pyatspi is not installed on this host.")
+            return self._error("Capture unavailable", "No supported live desktop capture backend is available.")
+        click_count = _choose_capture_click_count(self)
+        if click_count is None:
+            return
         if self._click_capture_active:
             return
         self._click_capture_active = True
-        self._set_status("Click the object within 30 seconds…")
+        self._set_status("Waiting for click %d of %d…" % (click_count, click_count))
         self.window.hide()
-        GLib.timeout_add(150, self._show_click_picker)
+
+        def worker():
+            try:
+                captured = self.capture.capture_next_click(timeout=30.0, click_count=click_count)
+            except Exception as exc:
+                GLib.idle_add(self._finish_next_click_capture, None, exc)
+            else:
+                GLib.idle_add(self._finish_next_click_capture, captured, None)
+
+        threading.Thread(
+            target=worker,
+            name="automation-desktop-click-capture",
+            daemon=True,
+        ).start()
 
     def _show_click_picker(self):
         if not self._click_capture_active:

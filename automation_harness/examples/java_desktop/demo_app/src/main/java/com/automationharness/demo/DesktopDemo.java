@@ -37,6 +37,7 @@ public final class DesktopDemo {
         frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
 
         JPanel swing = new JPanel();
+        swing.getAccessibleContext().setAccessibleName("Swing controls");
         JLabel label = new JLabel("Swing controls");
         label.getAccessibleContext().setAccessibleName("Swing controls heading");
         JButton follow = new JButton("Follow Swing");

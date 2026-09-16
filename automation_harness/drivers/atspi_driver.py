@@ -264,7 +264,15 @@ class AtspiDriver:
             raise LookupError("no live component matched the clicked point within its application")
         return _capture_semantic_accessible(target, desktop, pyatspi)
 
-    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
+    def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
+        if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
+            raise ValueError("click_count must be an integer from 1 through 9")
+        if click_count != 1:
+            captured = None
+            for _index in range(click_count):
+                captured = self.capture_next_click(timeout=timeout, click_count=1)
+            assert captured is not None
+            return captured
         """Wait for one desktop mouse press and capture its accessible source.
 
         AT-SPI dispatches global ``mouse:button:1p`` events on X11.  Wayland
