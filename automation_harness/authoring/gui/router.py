@@ -23,7 +23,6 @@ _SUFFIX_TYPES = {
     REPOSITORY_SUFFIX.casefold(): ArtifactType.OBJECT_REPOSITORY,
 }
 
-
 _OPEN_PROJECT_WINDOWS = {}
 
 
@@ -33,10 +32,7 @@ def detect_artifact(path: Path) -> ArtifactType:
     raw = _load_mapping(path)
     schema_type = _detect_schema(raw)
     if suffix_type is not None and schema_type is not None and suffix_type != schema_type:
-        raise ValueError(
-            "%s uses the %s extension but its document schema is %s" %
-            (path, suffix_type.value, schema_type.value)
-        )
+        raise ValueError("%s uses the %s extension but its document schema is %s" % (path, suffix_type.value, schema_type.value))
     if suffix_type is not None:
         return suffix_type
     if schema_type is not None:
@@ -63,13 +59,7 @@ def _detect_schema(raw: Mapping):
         return ArtifactType.OBJECT_REPOSITORY
     plan_steps = any(key in raw for key in ("steps", "calls", "test_steps", "plan_steps"))
     plan_name = any(key in raw for key in ("name", "title", "plan_name", "display_name"))
-    plan_payload = any(
-        key in raw for key in (
-            "variables", "vars", "parameters", "objects", "components",
-            "object_repository", "step_definitions", "reusable_steps",
-            "registry_steps", "stepDefinitions",
-        )
-    )
+    plan_payload = any(key in raw for key in ("variables", "vars", "parameters", "objects", "components", "object_repository", "step_definitions", "reusable_steps", "registry_steps", "stepDefinitions"))
     if plan_steps and plan_name and plan_payload:
         return ArtifactType.TEST_PLAN
     if raw.get("version") == 1 and "repository" in raw and "name" in raw:
@@ -88,25 +78,19 @@ def _present_existing_project(path: Path):
         return None
     window = getattr(existing, "window", None)
     if window is None:
-        _OPEN_PROJECT_WINDOWS.pop(key, None)
-        return None
+        _OPEN_PROJECT_WINDOWS.pop(key, None); return None
     try:
-        window.deiconify()
-        window.present()
+        window.deiconify(); window.present()
     except Exception:
-        _OPEN_PROJECT_WINDOWS.pop(key, None)
-        return None
+        _OPEN_PROJECT_WINDOWS.pop(key, None); return None
     return existing
 
 
 def _register_project_window(path: Path, project_window):
-    key = _project_key(path)
-    _OPEN_PROJECT_WINDOWS[key] = project_window
-
+    key = _project_key(path); _OPEN_PROJECT_WINDOWS[key] = project_window
     def unregister(*_args):
         if _OPEN_PROJECT_WINDOWS.get(key) is project_window:
             _OPEN_PROJECT_WINDOWS.pop(key, None)
-
     project_window.window.connect("destroy", unregister)
     return project_window
 
@@ -117,20 +101,20 @@ def _finish(window, launching_window):
 
 
 def open_window(path: Path, *, project_context=None, launching_window=None):
-    path = Path(path).resolve()
-    artifact_type = detect_artifact(path)
+    path = Path(path).resolve(); artifact_type = detect_artifact(path)
     if artifact_type is ArtifactType.PROJECT:
         existing = _present_existing_project(path)
         if existing is not None:
             return existing
         from automation_harness.authoring.gui.project_window import ProjectWindow
-        project_window = _finish(ProjectWindow(path, opener=open_window), launching_window)
-        return _register_project_window(path, project_window)
+        return _register_project_window(path, _finish(ProjectWindow(path, opener=open_window), launching_window))
     if artifact_type is ArtifactType.TEST_PLAN:
         from automation_harness.authoring.gui.plan_form_window import FormEditingTestPlanWindow
         return _finish(FormEditingTestPlanWindow(path, project_context=project_context, opener=open_window), launching_window)
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
         return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
+    from automation_harness.authoring.repository_direct_authoring_runtime import install as install_repository_authoring
+    install_repository_authoring()
     from automation_harness.authoring.gui.repository_identity_workbench_window import RepositoryIdentityWorkbenchWindow
     return _finish(RepositoryIdentityWorkbenchWindow(path, project_context=project_context, opener=open_window), launching_window)
