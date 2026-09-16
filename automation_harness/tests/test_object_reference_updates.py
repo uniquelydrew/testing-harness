@@ -36,6 +36,17 @@ def _plan(name, component_id):
     )
 
 
+def _reusable(component_id):
+    return ReusableStepDefinition(
+        step_id="shared.click",
+        name="Shared Click",
+        description="Click the shared object",
+        plan=_plan("Reusable", component_id),
+        inputs={},
+        outputs={},
+    )
+
+
 def _project(tmp_path, repository, plan_path, registry_path):
     project_path = tmp_path / "suite.ahproject"
     project = AuthoringProject(
@@ -64,13 +75,8 @@ def test_preview_finds_plan_and_registry_bound_to_repository(tmp_path: Path):
     save_plan(assign_repository(_plan("Flow", "A.Button"), plan_path, repository_path), plan_path)
 
     registry_path = tmp_path / "steps.ahregistry"
-    reusable = ReusableStepDefinition(
-        step_id="shared.click",
-        name="Shared Click",
-        plan=_plan("Reusable", "A.Button"),
-    )
     save_step_registry(registry_path, AuthoringStepRegistry(
-        name="Steps", root=tmp_path, repository=repository_path, steps=(reusable,),
+        name="Steps", root=tmp_path, repository=repository_path, steps=(_reusable("A.Button"),),
     ))
     project_path = _project(tmp_path, repository_path, plan_path, registry_path)
 
@@ -91,13 +97,8 @@ def test_apply_updates_repository_plan_and_registry_as_one_operation(tmp_path: P
     save_plan(assign_repository(_plan("Flow", "A.Button"), plan_path, repository_path), plan_path)
 
     registry_path = tmp_path / "steps.ahregistry"
-    reusable = ReusableStepDefinition(
-        step_id="shared.click",
-        name="Shared Click",
-        plan=_plan("Reusable", "A.Button"),
-    )
     save_step_registry(registry_path, AuthoringStepRegistry(
-        name="Steps", root=tmp_path, repository=repository_path, steps=(reusable,),
+        name="Steps", root=tmp_path, repository=repository_path, steps=(_reusable("A.Button"),),
     ))
     project_path = _project(tmp_path, repository_path, plan_path, registry_path)
 
