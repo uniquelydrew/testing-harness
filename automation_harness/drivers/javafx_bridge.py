@@ -146,7 +146,20 @@ class JavaFxBridgeDriver:
                     return True
         return False
 
-    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
+    def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
+        if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
+            raise ValueError("click_count must be an integer from 1 through 9")
+        if click_count != 1:
+            captured = None
+            for _index in range(click_count):
+                try:
+                    captured = self.capture_next_click(timeout=timeout, click_count=1)
+                except LookupError:
+                    if _index == click_count - 1:
+                        raise
+                    continue
+            assert captured is not None
+            return captured
         endpoints = self.endpoints()
         if not endpoints:
             raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered")
@@ -509,6 +522,11 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
             "focus_traversable": node.get("focus_traversable"),
         },
     )
+    node_properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
+    logical_menu = node.get("logical_menu")
+    if not isinstance(logical_menu, Mapping):
+        nested_logical_menu = node_properties.get("logical_menu")
+        logical_menu = nested_logical_menu if isinstance(nested_logical_menu, Mapping) else None
     properties = {
         "bridge_pid": endpoint.pid,
         "bridge_port": endpoint.port,
@@ -521,11 +539,13 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "hierarchy": list(node.get("hierarchy") or []),
         "stable_ancestors": list(node.get("stable_ancestors") or []),
         "user_data": node.get("user_data"),
-        "node_properties": dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {},
+        "node_properties": node_properties,
         "layout": dict(node.get("layout") or {}) if isinstance(node.get("layout"), Mapping) else {},
         "sibling_index": node.get("sibling_index"),
         "sibling_count": node.get("sibling_count"),
     }
+    if isinstance(logical_menu, Mapping):
+        properties["logical_menu"] = dict(logical_menu)
     return CapturedComponent(
         name=name,
         role=role,
@@ -792,6 +812,8 @@ def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
             },
             "ordinal": index,
         }
+        if isinstance(item.get("relative_offset"), Mapping):
+            selector["relative_offset"] = dict(item["relative_offset"])
         nested = _javafx_menu_subobjects(item.get("menu_children"))
         result[key] = {
             "kind": str(item.get("role") or "menu_item"),

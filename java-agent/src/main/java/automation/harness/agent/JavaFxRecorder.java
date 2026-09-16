@@ -187,10 +187,11 @@ final class JavaFxRecorder {
         Object top = semantic;
         int guard = 0;
         while (current != null && guard++ < 32) {
-            path.add(0, menuSelector(current));
-            top = current;
             Object parentMenu = invoke(current, "getParentMenu");
-            if (parentMenu == null) break;
+            if (parentMenu == null) parentMenu = findMenuBarForMenu(current);
+            path.add(0, menuSelector(current, parentMenu));
+            top = current;
+            if (parentMenu == null || "menu bar".equals(role(parentMenu))) break;
             current = parentMenu;
         }
 
@@ -223,6 +224,10 @@ final class JavaFxRecorder {
     }
 
     private static Map<String, Object> menuSelector(Object item) {
+        return menuSelector(item, null);
+    }
+
+    private static Map<String, Object> menuSelector(Object item, Object parent) {
         Map<String, Object> selector = new LinkedHashMap<>();
         selector.put("kind", role(item));
         Map<String, Object> criteria = new LinkedHashMap<>();
@@ -231,7 +236,73 @@ final class JavaFxRecorder {
         if (id != null && !String.valueOf(id).isBlank()) criteria.put("id", String.valueOf(id));
         if (text != null && !String.valueOf(text).isBlank()) criteria.put("text", String.valueOf(text));
         selector.put("criteria", criteria);
+        Integer ordinal = menuOrdinal(parent, item);
+        if (ordinal != null) selector.put("ordinal", ordinal);
+        Map<String, Object> offset = relativeOffset(item, parent);
+        if (offset != null) selector.put("relative_offset", offset);
         return selector;
+    }
+
+    private static Integer menuOrdinal(Object parent, Object item) {
+        if (parent == null) return null;
+        Object children = invoke(parent, "getMenus");
+        if (!(children instanceof Iterable<?>)) children = invoke(parent, "getItems");
+        if (!(children instanceof Iterable<?>)) return null;
+        int index = 0;
+        for (Object child : (Iterable<?>) children) {
+            if (child == item) return index;
+            index++;
+        }
+        return null;
+    }
+
+    private static Map<String, Object> relativeOffset(Object item, Object parent) {
+        if (parent == null) return null;
+        double[] childBounds = visualBounds(item);
+        double[] parentBounds = visualBounds(parent);
+        if (childBounds == null || parentBounds == null) return null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("x", childBounds[0] - parentBounds[0]);
+        result.put("y", childBounds[1] - parentBounds[1]);
+        result.put("tolerance", Math.max(8.0, Math.min(childBounds[2], childBounds[3]) * 0.5));
+        return result;
+    }
+
+    private static Object findMenuBarForMenu(Object target) {
+        try {
+            Object windows = Class.forName("javafx.stage.Window").getMethod("getWindows").invoke(null);
+            if (!(windows instanceof Iterable<?>)) return null;
+            for (Object window : (Iterable<?>) windows) {
+                if (!Boolean.TRUE.equals(invoke(window, "isShowing"))) continue;
+                Object scene = invoke(window, "getScene");
+                Object root = invoke(scene, "getRoot");
+                Object found = findMenuBar(root, target);
+                if (found != null) return found;
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+        return null;
+    }
+
+    private static Object findMenuBar(Object node, Object target) {
+        if (node == null) return null;
+        if ("MenuBar".equals(node.getClass().getSimpleName())) {
+            Object menus = invoke(node, "getMenus");
+            if (containsIdentity(menus, target)) return node;
+        }
+        Object children = invoke(node, "getChildrenUnmodifiable");
+        if (!(children instanceof Iterable<?>)) return null;
+        for (Object child : (Iterable<?>) children) {
+            Object found = findMenuBar(child, target);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static boolean containsIdentity(Object values, Object target) {
+        if (!(values instanceof Iterable<?>)) return false;
+        for (Object value : (Iterable<?>) values) if (value == target) return true;
+        return false;
     }
 
     private static Map<String, Object> menuOwnerSnapshot(Object owner) {
@@ -254,6 +325,73 @@ final class JavaFxRecorder {
         return null;
     }
 
+    private static double[] visualBounds(Object logical) {
+        if (logical == null) return null;
+        double[] direct = screenBounds(logical);
+        if (direct != null) return direct;
+        Object visual = findVisualMenuNode(logical);
+        return screenBounds(visual);
+    }
+
+    private static Object findVisualMenuNode(Object logical) {
+        try {
+            Object windows = Class.forName("javafx.stage.Window").getMethod("getWindows").invoke(null);
+            if (!(windows instanceof Iterable<?>)) return null;
+            for (Object window : (Iterable<?>) windows) {
+                if (!Boolean.TRUE.equals(invoke(window, "isShowing"))) continue;
+                Object scene = invoke(window, "getScene");
+                Object found = findVisualMenuNode(invoke(scene, "getRoot"), logical, 0);
+                if (found != null) return found;
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+        return null;
+    }
+
+    private static Object findVisualMenuNode(Object node, Object logical, int depth) {
+        if (node == null || depth > 64) return null;
+        String className = node.getClass().getName();
+        if (className.startsWith("com.sun.javafx.scene.control.")) {
+            Object candidate = invoke(node, "getItem");
+            if (candidate == null) candidate = invoke(node, "getMenu");
+            if (candidate == logical) return node;
+        }
+        Object children = invoke(node, "getChildrenUnmodifiable");
+        if (!(children instanceof Iterable<?>)) return null;
+        for (Object child : (Iterable<?>) children) {
+            Object found = findVisualMenuNode(child, logical, depth + 1);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static double[] screenBounds(Object node) {
+        if (node == null) return null;
+        try {
+            Object local = invoke(node, "getBoundsInLocal");
+            if (local == null) return null;
+            Object screen = null;
+            for (java.lang.reflect.Method method : node.getClass().getMethods()) {
+                if (!"localToScreen".equals(method.getName()) || method.getParameterCount() != 1) continue;
+                screen = method.invoke(node, local);
+                if (screen != null) break;
+            }
+            if (screen == null) return null;
+            Object minX = invoke(screen, "getMinX");
+            Object minY = invoke(screen, "getMinY");
+            Object width = invoke(screen, "getWidth");
+            Object height = invoke(screen, "getHeight");
+            if (!(minX instanceof Number) || !(minY instanceof Number)
+                    || !(width instanceof Number) || !(height instanceof Number)) return null;
+            return new double[]{
+                ((Number) minX).doubleValue(), ((Number) minY).doubleValue(),
+                ((Number) width).doubleValue(), ((Number) height).doubleValue()
+            };
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private static Map<String, Object> snapshot(Object node) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("class", node.getClass().getName());
@@ -266,16 +404,32 @@ final class JavaFxRecorder {
         String role = role(node);
         result.put("role", role);
         result.put("ref", Integer.toHexString(System.identityHashCode(node)));
+        double[] bounds = visualBounds(node);
+        if (bounds != null) {
+            result.put("bounds", boundsList(bounds));
+        }
         if (role.equals("menu") || role.equals("menu bar") || role.equals("context menu")) {
             Object children = invoke(node, "getItems");
             if (!(children instanceof Iterable<?>)) children = invoke(node, "getMenus");
             if (children instanceof Iterable<?> iterable) {
                 List<Map<String, Object>> snapshots = new java.util.ArrayList<>();
-                for (Object child : iterable) snapshots.add(snapshot(child));
+                int ordinal = 0;
+                for (Object child : iterable) {
+                    snapshots.add(menuSnapshotWithSelector(child, node, ordinal));
+                    ordinal++;
+                }
                 result.put("menu_children", snapshots);
             }
         }
         return result;
+    }
+
+    private static Map<String, Object> menuSnapshotWithSelector(Object item, Object parent, int ordinal) {
+        Map<String, Object> payload = snapshot(item);
+        payload.put("ordinal", ordinal);
+        Map<String, Object> offset = relativeOffset(item, parent);
+        if (offset != null) payload.put("relative_offset", offset);
+        return payload;
     }
 
     private static String role(Object node) {

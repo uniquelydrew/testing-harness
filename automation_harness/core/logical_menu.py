@@ -58,6 +58,8 @@ def normalize_menu_subobjects(
                 item["criteria"] = dict(selector["criteria"])
             if "ordinal" not in item and selector.get("ordinal") is not None:
                 item["ordinal"] = selector.get("ordinal")
+            if "relative_offset" not in item and isinstance(selector.get("relative_offset"), Mapping):
+                item["relative_offset"] = dict(selector["relative_offset"])
         nested = item.get("subobjects")
         if isinstance(nested, Mapping):
             item["subobjects"] = normalize_menu_subobjects(nested)
@@ -161,7 +163,10 @@ def _attach_recorded_menu_path(
         return None
 
     selectors = tuple(_canonical_selector(item) for item in raw_path if isinstance(item, Mapping))
-    selectors = tuple(item for item in selectors if item.get("criteria"))
+    selectors = tuple(
+        item for item in selectors
+        if item.get("criteria") or item.get("ordinal") is not None or item.get("relative_offset")
+    )
     if not selectors:
         return None
 
@@ -197,10 +202,13 @@ def _attach_recorded_menu_path(
             }
             if selector.get("ordinal") is not None:
                 raw["ordinal"] = selector["ordinal"]
+            if isinstance(selector.get("relative_offset"), Mapping):
+                raw["relative_offset"] = dict(selector["relative_offset"])
             current[key] = raw
         path.append(key)
         persisted_selectors.append({
-            k: v for k, v in raw.items() if k in {"kind", "criteria", "ordinal"}
+            k: v for k, v in raw.items()
+            if k in {"kind", "criteria", "ordinal", "relative_offset"}
         })
         if index < len(selectors) - 1:
             nested = raw.get("subobjects")
@@ -224,6 +232,16 @@ def _canonical_selector(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     if isinstance(value.get("ordinal"), int) and not isinstance(value.get("ordinal"), bool):
         result["ordinal"] = value["ordinal"]
+    offset = value.get("relative_offset")
+    if isinstance(offset, Mapping):
+        normalized_offset = {}
+        for key in ("x", "y", "tolerance"):
+            number = offset.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                normalized_offset[key] = float(number)
+        if "x" in normalized_offset and "y" in normalized_offset:
+            normalized_offset.setdefault("tolerance", 16.0)
+            result["relative_offset"] = normalized_offset
     return result
 
 
@@ -344,7 +362,7 @@ def _walk_subobjects(
         expected = expected if isinstance(expected, Mapping) else {}
         selector = {
             key: value for key, value in raw.items()
-            if key in {"kind", "criteria", "ordinal"}
+            if key in {"kind", "criteria", "ordinal", "relative_offset"}
         }
         next_path = path + (str(subobject_id),)
         next_selectors = selectors + (selector,)
