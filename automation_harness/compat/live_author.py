@@ -87,11 +87,26 @@ def run_author():
     return main()
 
 
-def run_capture():
+def _run_legacy_mode(mode):
+    """Launch a legacy specialized surface through the surviving app.main API.
+
+    The artifact-aware GUI migration removed app.capture_main/repository_main,
+    but the installed automation-capture and automation-repository console
+    scripts still target this compatibility module.  Keep those public CLI
+    contracts working without resurrecting duplicate application entry points.
+    """
+    import sys
+
     app = _prepare_legacy()
-    return app.capture_main()
+    argv = list(sys.argv[1:])
+    if "--mode" not in argv:
+        argv.extend(("--mode", mode))
+    return app.main(argv)
+
+
+def run_capture():
+    return _run_legacy_mode("capture")
 
 
 def run_repository():
-    app = _prepare_legacy()
-    return app.repository_main()
+    return _run_legacy_mode("repository")
