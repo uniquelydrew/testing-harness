@@ -46,7 +46,13 @@ class ReferenceUpdateReport:
 
 
 def normalize_rename_map(rename_map: Mapping[str, str]) -> dict[str, str]:
-    """Normalize composed aliases so each source maps directly to its final ID."""
+    """Normalize composed aliases so each source maps directly to its final ID.
+
+    Multiple historic aliases may legitimately converge on the same current
+    alias (for example A->B followed by B->C), so convergence is not itself a
+    collision. Repository validation remains responsible for rejecting two live
+    objects that would occupy the same component ID.
+    """
     result = {}
     for source, target in rename_map.items():
         source = str(source).strip()
@@ -63,9 +69,6 @@ def normalize_rename_map(rename_map: Mapping[str, str]) -> dict[str, str]:
         if target in seen:
             raise ValueError("object rename map contains a cycle involving %r" % source)
         result[source] = target
-    targets = list(result.values())
-    if len(targets) != len(set(targets)):
-        raise ValueError("object rename map collapses multiple aliases onto one target")
     return result
 
 
@@ -102,8 +105,6 @@ def preview_project_reference_updates(project_path: Path, repository_path: Path,
             rewritten = replace(registry, steps=tuple(rewritten_steps))
             updates.append((path.resolve(), "step_registry", count, rewritten.to_document()))
 
-    # Force YAML serialization now; malformed or unserializable staged data must
-    # fail before any artifact is mutated.
     for _path, _kind, _count, document in updates:
         yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
