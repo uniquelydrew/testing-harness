@@ -1,6 +1,8 @@
-"""Direct capture and concrete-object drag/reparent support for repository editing."""
+"""Direct capture, reparenting, and project-wide reference propagation."""
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import threading
 
 import gi
@@ -8,6 +10,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
+from automation_harness.authoring.object_reference_updates import apply_project_reference_updates
+from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_reparenting import reparent_leaf
 
 _INSTALLED = False
@@ -19,9 +23,14 @@ def install():
     if _INSTALLED:
         return
     _INSTALLED = True
-    from automation_harness.authoring.gui.repository_identity_workbench_window import RepositoryIdentityWorkbench
+    from automation_harness.authoring.gui.repository_identity_workbench_window import (
+        RepositoryIdentityWorkbench,
+        RepositoryIdentityWorkbenchWindow,
+    )
     original_toolbar = RepositoryIdentityWorkbench._configure_repository_toolbar
     original_context_ready = RepositoryIdentityWorkbench._context_ready
+    original_save_repository = RepositoryIdentityWorkbench.save_repository
+    original_window_init = RepositoryIdentityWorkbenchWindow.__init__
 
     def configure_toolbar(self):
         original_toolbar(self)
@@ -33,11 +42,86 @@ def install():
         _install_drag_reparent(self)
         return result
 
+    def window_init(self, path, *, project_context=None, opener=None):
+        original_window_init(self, path, project_context=project_context, opener=opener)
+        self.host.project_context = Path(project_context).resolve() if project_context else None
+
+    def save_repository(self):
+        """Persist repository + dependent aliases as one project transaction.
+
+        The existing workbench save path is still responsible for validating and
+        applying in-memory property/name edits. It is redirected to a temporary
+        repository file first. Only after that succeeds do we atomically replace
+        the real repository together with every bound Test Plan and Step Registry.
+        """
+        real_path = Path(self._repository_host.path).resolve()
+        project_context = getattr(self._repository_host, "project_context", None)
+        if project_context is None:
+            return original_save_repository(self)
+
+        before = ComponentRepository.load((real_path,)) if real_path.is_file() else ComponentRepository({})
+        temporary = None
+        try:
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=".%s.authoring-" % real_path.name,
+                suffix=real_path.suffix,
+                dir=str(real_path.parent),
+            )
+            Path(temporary_name).unlink()
+            temporary = Path(temporary_name)
+            # mkstemp reserved the name. Close the descriptor before the normal
+            # repository save recreates it using its own text writer.
+            import os
+            os.close(fd)
+
+            self._repository_host.path = temporary
+            result = original_save_repository(self)
+            self._repository_host.path = real_path
+
+            if not temporary.is_file():
+                # The wrapped save reported/handled a validation error.
+                self.app._mark_repository_dirty(True)
+                return result
+
+            after = self._repository_host.repository
+            rename_map = _rename_map_by_object_id(before, after)
+            report = apply_project_reference_updates(
+                project_context,
+                real_path,
+                rename_map,
+                repository=after,
+            )
+            self.app.repository = after
+            self.app._mark_repository_dirty(False)
+            dependent_updates = [item for item in report.updates if item.artifact_type != "object_repository"]
+            if dependent_updates:
+                self._set_status(
+                    "Saved repository — updated %d reference(s) across %d dependent artifact(s)" %
+                    (sum(item.replacements for item in dependent_updates), len(dependent_updates))
+                )
+            else:
+                self._set_status("Saved repository")
+            return result
+        except Exception as exc:
+            self._repository_host.path = real_path
+            self.app._mark_repository_dirty(True)
+            self.app._error("Save repository", "%s: %s" % (type(exc).__name__, exc))
+            return None
+        finally:
+            self._repository_host.path = real_path
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+
     RepositoryIdentityWorkbench._configure_repository_toolbar = configure_toolbar
     RepositoryIdentityWorkbench._context_ready = context_ready
+    RepositoryIdentityWorkbench.save_repository = save_repository
     RepositoryIdentityWorkbench.capture_new_object = capture_new_object
     RepositoryIdentityWorkbench._capture_new_finished = _capture_new_finished
     RepositoryIdentityWorkbench._add_captured_object = _add_captured_object
+    RepositoryIdentityWorkbenchWindow.__init__ = window_init
 
 
 def capture_new_object(self):
@@ -45,6 +129,7 @@ def capture_new_object(self):
         return self.app._error("Capture object", "No supported live desktop capture backend is available.")
     self._set_status("Capture new object: click the live target…")
     self.window.hide()
+
     def worker():
         try:
             captured = self.app.capture.capture_next_click(click_count=1, timeout=30.0)
@@ -52,6 +137,7 @@ def capture_new_object(self):
             GLib.idle_add(self._capture_new_finished, None, exc)
         else:
             GLib.idle_add(self._capture_new_finished, captured, None)
+
     threading.Thread(target=worker, name="repository-new-object-capture", daemon=True).start()
 
 
@@ -134,6 +220,16 @@ def _drag_received(workbench, tree, context, x, y, time):
     finally:
         workbench._repository_drag_source_key = None
         context.finish(success, False, time)
+
+
+def _rename_map_by_object_id(before, after):
+    before_names = {definition.object_id: name for name, definition in before.components.items()}
+    after_names = {definition.object_id: name for name, definition in after.components.items()}
+    return {
+        old_name: after_names[object_id]
+        for object_id, old_name in before_names.items()
+        if object_id in after_names and after_names[object_id] != old_name
+    }
 
 
 def _segment(value):
