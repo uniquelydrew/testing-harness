@@ -176,8 +176,12 @@ relative to the durable accessible panel anchor.
 
 Use `java_accessibility` component strategies for application controls. They use Java Access Bridge on Windows and AT-SPI through the Java ATK wrapper on Linux. For visuals, resolve a stable canvas/panel, then use `ctx.component("logical.id").assert_visual()` for an approved component-bound gold, or `vision.wait_for_color` for a lightweight color check. Approved PNGs and optional grayscale masks live under the repository's `visual/` directory; the exact host visual profile selects the variant. Stage and review a new candidate with `automation-run visual stage`, then promote it explicitly with `automation-run visual approve`. Baseline comparison stores expected, actual, and diff images; a black pixel in an optional grayscale mask ignores volatile regions.
 
-The packaged `automation_harness/examples/java_desktop` directory is retained
-as a legacy visual-bundle template. Current declarative authoring uses a
+The packaged `automation_harness/examples/java_desktop` directory is the current
+black-box qualification target for Swing and JavaFX desktop interaction.
+`DesktopDemo` validates Swing controls plus an embedded `JFXPanel`;
+`FxOnlyDemo` validates the standalone JavaFX scene-graph bridge. Browser
+applications remain a supported future backend, but are outside the current
+visual and object-tree acceptance pass. Current declarative authoring uses a
 self-contained `.ahplan` and `live-desktop`; application startup belongs in a
 script-backed plan step when required.
 
