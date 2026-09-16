@@ -21,6 +21,26 @@ from automation_harness.formats import REPOSITORY_SUFFIX
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeUnavailable
 
 
+def _choose_click_count(app):
+    dialog = Gtk.Dialog(title="Capture on Click", transient_for=app.window, modal=True)
+    dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Capture", Gtk.ResponseType.OK)
+    box = dialog.get_content_area()
+    box.set_spacing(8)
+    box.set_border_width(10)
+    box.pack_start(Gtk.Label(label="Capture on click number:"), False, False, 0)
+    count = Gtk.SpinButton.new_with_range(1, 9, 1)
+    count.set_value(1)
+    box.pack_start(count, False, False, 0)
+    note = Gtk.Label(label="1 captures the next click. Higher values discard earlier clicks.")
+    note.set_halign(Gtk.Align.START)
+    box.pack_start(note, False, False, 0)
+    dialog.show_all()
+    response = dialog.run()
+    value = count.get_value_as_int()
+    dialog.destroy()
+    return value if response == Gtk.ResponseType.OK else None
+
+
 def _install_capture_backend(app_module):
     """Install the RHEL desktop capture service before AuthoringApp starts.
 
@@ -42,13 +62,16 @@ def _install_capture_next_click(app_module):
             )
         if self._click_capture_active:
             return
+        click_count = _choose_click_count(self)
+        if click_count is None:
+            return
         self._click_capture_active = True
-        self._set_status("Waiting for the next desktop click…")
+        self._set_status("Waiting for click %d of %d…" % (click_count, click_count))
         self.window.hide()
 
         def worker():
             try:
-                captured = self.capture.capture_next_click(timeout=30.0)
+                captured = self.capture.capture_next_click(timeout=30.0, click_count=click_count)
             except Exception as exc:
                 GLib.idle_add(self._finish_next_click_capture, None, exc)
             else:

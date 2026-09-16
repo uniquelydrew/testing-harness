@@ -6,6 +6,7 @@ import time
 from typing import Any, Mapping
 
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
+from automation_harness.core.object_hierarchy import hierarchy_contract
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
@@ -36,8 +37,16 @@ class HybridObjectCaptureService(ObjectCaptureService):
     def available(self) -> bool:
         return bool(getattr(self.driver, "available", False)) or self._javafx_available()
 
-    def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
-        """Return the first successful next-click capture from any live backend."""
+    def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
+        """Capture click number 1 through 9 using the shared live backends."""
+        if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
+            raise ValueError("click_count must be an integer from 1 through 9")
+        if click_count != 1:
+            captured = None
+            for _index in range(click_count):
+                captured = self.capture_next_click(timeout=timeout, click_count=1)
+            assert captured is not None
+            return captured
         atspi_available = bool(getattr(self.driver, "available", False))
         javafx_available = self._javafx_available()
         self._log(
@@ -229,6 +238,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
             framework="javafx",
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,
+            scope=hierarchy_contract(captured),
         )
 
     def _capture_javafx_next_click(self, timeout: float) -> CapturedComponent:

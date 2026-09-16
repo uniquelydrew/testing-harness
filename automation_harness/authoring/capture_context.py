@@ -343,7 +343,7 @@ def _build_fallback_context(captured):
         is_semantic=False,
     )
     current = root
-    for index, label in enumerate(hierarchy[:-1]):
+    for index, label in enumerate(_fallback_context_labels(hierarchy, window)):
         child = CaptureContextNode(
             key="ancestor-%s" % index,
             label=str(label),
@@ -374,6 +374,40 @@ def _build_fallback_context(captured):
         target_key,
         captured_by_key={target_key: captured},
     )
+
+
+_GENERIC_FALLBACK_LABELS = {
+    "anchor pane", "anchor-pane", "application", "border pane", "border-pane",
+    "component", "content", "content pane", "content-pane", "container",
+    "desktop", "filler", "frame", "grid pane", "grid-pane", "hbox",
+    "jframe", "jfxpanel", "jlabel", "jpanel", "label", "pane", "panel",
+    "root", "scene", "scroll pane", "scroll-pane", "stack pane", "stack-pane",
+    "vbox", "viewport", "window",
+}
+
+
+def _fallback_context_labels(hierarchy, window):
+    """Keep named desktop ancestry while dropping toolkit-only wrappers.
+
+    AT-SPI ancestry for Swing commonly contains repeated JPanel/JLabel/filler
+    nodes. Those nodes are useful to a resolver diagnostic but add no authoring
+    meaning. Named application regions remain as structural context so the
+    workbench can show the desktop layout without pretending containers are
+    saveable objects.
+    """
+    labels = []
+    window_label = str(window or "").strip().casefold()
+    for raw_label in hierarchy[:-1]:
+        label = str(raw_label or "").strip()
+        normalized = label.casefold()
+        if not label or normalized == window_label:
+            continue
+        if normalized in _GENERIC_FALLBACK_LABELS:
+            continue
+        if labels and labels[-1].casefold() == normalized:
+            continue
+        labels.append(label)
+    return labels
 
 
 def _semantic_children(raw, target_ref):
@@ -439,7 +473,7 @@ def is_semantic_node(node):
     boundaries = {
         "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
         "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
-        "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
+        "Spinner", "DatePicker", "Slider", "ProgressBar", "ListCell", "TableCell",
         "TreeCell", "MenuBar", "MenuButton", "Menu", "MenuItem", "MenuItemContainer", "Tab",
     }
     if simple_name in boundaries:
@@ -448,7 +482,7 @@ def is_semantic_node(node):
         return True
     semantic_roles = {
         "button", "check box", "radio button", "toggle button", "text field",
-        "password field", "text area", "combo box", "spinner", "slider",
+        "password field", "text area", "combo box", "spinner", "slider", "progress bar",
         "list item", "table cell", "tree item", "menu bar", "menu",
         "menu item", "tab", "hyperlink",
     }
@@ -456,16 +490,23 @@ def is_semantic_node(node):
 
 
 def is_structural_context_node(node):
-    """Retain stable ancestry for identity without making it saveable."""
+    """Retain stable or explicitly named ancestry without making it saveable."""
     if node.get("id") not in (None, ""):
         return True
     properties = node.get("properties")
-    if isinstance(properties, Mapping):
-        return any(
-            str(key).casefold().startswith(("automation.", "test.", "qa."))
-            for key in properties
-        )
-    return False
+    if isinstance(properties, Mapping) and any(
+        str(key).casefold().startswith(("automation.", "test.", "qa."))
+        for key in properties
+    ):
+        return True
+
+    # JavaFX applications often name a visual anchor without assigning a Node
+    # id. Keep that authored context, but never promote internal skin/text
+    # nodes that only repeat rendered control content.
+    class_name = str(node.get("class") or "")
+    if _is_internal_class(class_name):
+        return False
+    return any(node.get(key) not in (None, "") for key in ("accessible_text", "text"))
 
 
 def identity_descriptors(node):

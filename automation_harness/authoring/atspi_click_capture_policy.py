@@ -42,17 +42,19 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    def capture_next_click(self, *, timeout: float = 30.0):
+    def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1):
+        _validate_click_count(click_count)
         session = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().casefold()
         if session not in {"x11", "xorg"}:
-            return _ORIGINAL_CAPTURE_NEXT_CLICK(self, timeout=timeout)
-        return _capture_x11_mouse_press(self, timeout=timeout)
+            return _ORIGINAL_CAPTURE_NEXT_CLICK(self, timeout=timeout, click_count=click_count)
+        return _capture_x11_mouse_press(self, timeout=timeout, click_count=click_count)
 
-    def hybrid_capture_next_click(self, *, timeout: float = 30.0):
+    def hybrid_capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1):
+        _validate_click_count(click_count)
         session = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().casefold()
         if session not in {"x11", "xorg"}:
-            return _ORIGINAL_HYBRID_CAPTURE_NEXT_CLICK(self, timeout=timeout)
-        return _capture_hybrid_x11_mouse_press(self, timeout=timeout)
+            return _ORIGINAL_HYBRID_CAPTURE_NEXT_CLICK(self, timeout=timeout, click_count=click_count)
+        return _capture_hybrid_x11_mouse_press(self, timeout=timeout, click_count=click_count)
 
     def hybrid_capture_at_point(self, x, y):
         session = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().casefold()
@@ -73,8 +75,14 @@ def install() -> None:
     _INSTALLED = True
 
 
-def _capture_hybrid_x11_mouse_press(service: HybridObjectCaptureService, *, timeout: float):
-    """Capture one physical X11 press and resolve it exactly as recording does."""
+def _validate_click_count(click_count: int) -> None:
+    if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
+        raise ValueError("click_count must be an integer from 1 through 9")
+
+
+def _capture_hybrid_x11_mouse_press(service: HybridObjectCaptureService, *, timeout: float, click_count: int = 1):
+    """Capture physical X11 click number 1 through 9."""
+    _validate_click_count(click_count)
     if timeout <= 0:
         raise ValueError("click capture timeout must be positive")
 
@@ -84,6 +92,7 @@ def _capture_hybrid_x11_mouse_press(service: HybridObjectCaptureService, *, time
     # Capture has a short bounded lifetime, so poll aggressively. XQueryPointer
     # observes server state and cannot be consumed by the application under test.
     monitor = X11PointerMonitor(poll_interval=0.002)
+    press_count = [0]
 
     def finish(captured, error):
         with finish_lock:
@@ -94,6 +103,9 @@ def _capture_hybrid_x11_mouse_press(service: HybridObjectCaptureService, *, time
 
     def on_pointer(event_type, coordinates, _timestamp, owner_pid=None):
         if not event_type.endswith("1p"):
+            return
+        press_count[0] += 1
+        if press_count[0] < click_count:
             return
         try:
             captured = _resolve_hybrid_press(service, coordinates, owner_pid)
@@ -250,8 +262,9 @@ def _authoring_chrome(captured):
     return application.startswith("Automation Harness") or name == "Stop Recording"
 
 
-def _capture_x11_mouse_press(driver: AtspiDriver, *, timeout: float):
-    """AT-SPI-only compatibility path for legacy callers."""
+def _capture_x11_mouse_press(driver: AtspiDriver, *, timeout: float, click_count: int = 1):
+    """AT-SPI-only compatibility path for click number 1 through 9."""
+    _validate_click_count(click_count)
     if timeout <= 0:
         raise ValueError("click capture timeout must be positive")
 
@@ -264,6 +277,7 @@ def _capture_x11_mouse_press(driver: AtspiDriver, *, timeout: float):
     outcome = queue.Queue(maxsize=1)
     completed = threading.Event()
     finish_lock = threading.Lock()
+    press_count = [0]
 
     def finish(captured, error):
         with finish_lock:
@@ -273,6 +287,9 @@ def _capture_x11_mouse_press(driver: AtspiDriver, *, timeout: float):
             completed.set()
 
     def on_mouse_press(event: Any) -> None:
+        press_count[0] += 1
+        if press_count[0] < click_count:
+            return
         source = getattr(event, "source", None)
         if source is None:
             return
