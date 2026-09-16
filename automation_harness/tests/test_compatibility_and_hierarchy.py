@@ -42,26 +42,37 @@ def _captured(**overrides):
     return CapturedComponent(**values)
 
 
-def test_hierarchy_condensation_keeps_named_desktop_parentage():
+def test_hierarchy_condensation_preserves_concrete_runtime_containers():
     retained, removed = condense_labels(
         ("Editor", "JFrame", "JPanel", "Document", "Panel", "Save"),
         window="Editor",
     )
-    assert retained == ("Document", "Save")
-    assert "JPanel" in removed
-    assert "Panel" in removed
+    assert retained == ("JFrame", "JPanel", "Document", "Panel", "Save")
+    assert removed == ("Editor",)
 
 
-def test_hierarchy_contract_separates_ownership_and_discarded_wrappers():
+def test_mixed_swing_javafx_lineage_keeps_bridge_and_largest_container():
+    retained, removed = condense_labels(
+        ("Editor", "JFrame", "JPanel", "JFXPanel", "BorderPane", "Save"),
+        window="Editor",
+    )
+    assert retained == ("JFrame", "JPanel", "JFXPanel", "BorderPane", "Save")
+    assert removed == ("Editor",)
+
+
+def test_hierarchy_contract_uses_concrete_runtime_ancestry():
     contract = hierarchy_contract(_captured())
-    assert contract["schema"] == "object-hierarchy/v1"
+    assert contract["schema"] == "object-hierarchy/v2"
     assert contract["ownership"] == {
         "application": "Swing Editor",
         "window": "Editor",
         "framework": "swing",
     }
-    assert [item["label"] for item in contract["path"]] == ["Document", "Save"]
-    assert contract["condensation"]["removed_count"] == 3
+    assert [item["label"] for item in contract["path"]] == [
+        "Swing Editor", "JFrame", "JPanel", "Document", "Save",
+    ]
+    assert contract["condensation"]["algorithm"] == "concrete-runtime-ancestry"
+    assert contract["condensation"]["removed_count"] == 0
 
 
 def test_recapture_comparison_classifies_stable_and_mutable_changes():
