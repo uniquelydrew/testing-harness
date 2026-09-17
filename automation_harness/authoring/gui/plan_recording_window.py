@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import replace
 
@@ -11,6 +10,7 @@ from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.plan_authoring_window import TestPlanAuthoringWindow
 from automation_harness.authoring.gui.preferences import recording_highlights_enabled
+from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.authoring.plan_repository import (
     assigned_repository_path,
     ensure_default_repository,
@@ -19,11 +19,12 @@ from automation_harness.authoring.plan_repository import (
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.test_plan import repository_from_plan
-from automation_harness.drivers.javafx_bridge import HttpJavaFxBridgeTransport
+from automation_harness.drivers.java_agent import configured_java_recording_transports
 from automation_harness.recording import RecordedInteraction, RecordingSession, RepositoryMatch, interactions_to_steps
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
 from automation_harness.recording.observations import PointerInteraction
+from automation_harness.recording.diagnostics import RecordingDebugLog
 
 
 _ACTIVE_RECORDING_WINDOW = None
@@ -46,6 +47,11 @@ class _ObservedRecordingAdapter:
     def stop(self):
         return self.delegate.stop()
 
+    def set_diagnostic_sink(self, sink):
+        setter = getattr(self.delegate, "set_diagnostic_sink", None)
+        if callable(setter):
+            setter(sink)
+
 
 class RecordingTestPlanWindow(TestPlanAuthoringWindow):
     """Test Plan workflow with end-to-end desktop interaction recording."""
@@ -56,6 +62,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self.recording_stop_window = None
         self._recording_stop_pending = False
         self._recording_highlights = []
+        self._recording_diagnostic_session = None
         self.recording_toggle_button = self.button("Start Recording", self.toggle_recording)
         self.recording_toggle_button.set_tooltip_text(
             "Start or stop the single active recording session"
@@ -71,18 +78,9 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         )
         if atspi.available:
             adapters.append(atspi)
-        urls = os.environ.get(
-            "AUTOMATION_HARNESS_JAVAFX_AGENT_URLS",
-            os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", ""),
-        ).split(",")
-        tokens = os.environ.get(
-            "AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS",
-            os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", ""),
-        ).split(",")
         javafx_adapters = [
-            JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip()))
-            for url, token in zip(urls, tokens)
-            if url.strip() and token.strip()
+            JavaFxRecordingAdapter(transport)
+            for transport in configured_java_recording_transports()
         ]
         if highlight:
             javafx_adapters = [_ObservedRecordingAdapter(item, self._recording_observation) for item in javafx_adapters]
@@ -159,7 +157,24 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         adapters = self._recording_adapters()
         if not adapters:
             return self.error("Recording", "No AT-SPI desktop session or configured JavaFX recording agent is available.")
-        session = RecordingSession(adapters, repository=self.repository)
+        preferences = AuthoringPreferences.load()
+        debug_log = None
+        if preferences.recording_verbose_debug:
+            debug_log = RecordingDebugLog(
+                preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
+            )
+        recording_repository = self.repository
+        existing_path = assigned_repository_path(self.plan, self.path)
+        if existing_path is not None and existing_path.exists():
+            recording_repository = recording_repository.overlay(
+                ComponentRepository.load((existing_path,))
+            )
+        if self.registry_resources:
+            recording_repository = recording_repository.overlay(self.registry_resources.repository)
+        session = RecordingSession(
+            adapters, repository=recording_repository,
+            diagnostics=bool(debug_log), debug_log=debug_log,
+        )
         try:
             with _ACTIVE_RECORDING_LOCK:
                 if _ACTIVE_RECORDING_WINDOW is not None and _ACTIVE_RECORDING_WINDOW is not self:
@@ -225,6 +240,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         with _ACTIVE_RECORDING_LOCK:
             session = self.recording_session
             self.recording_session = None
+            self._recording_diagnostic_session = session
             self._recording_stop_pending = True
             # Retain the global owner until session.stop() completes so another
             # Test Plan cannot begin recording during adapter shutdown.
@@ -247,7 +263,11 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             if _ACTIVE_RECORDING_WINDOW is self:
                 _ACTIVE_RECORDING_WINDOW = None
         self._set_recording_toggle_state(active=False)
+        diagnostic_session = self._recording_diagnostic_session
+        diagnostic_path = getattr(diagnostic_session, "diagnostic_path", None)
         if error is not None:
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic_exception("recording_finish_failed", error)
             self.set_status("Recording failed"); self.error("Recording", "%s: %s" % (type(error).__name__, error)); return False
 
         resolved = []; unresolved = []; captured_count = 0
@@ -255,6 +275,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         assigned_repository = ComponentRepository.load((assigned_path,)) if assigned_path and assigned_path.exists() else None
 
         for interaction in interactions or ():
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("review_interaction_started", interaction=interaction)
             reviewed = interaction
             if interaction.repository_match.component_id is None and interaction.target is not None and interaction.repository_match.status in {"new_candidate", "unresolved"}:
                 try:
@@ -269,22 +291,42 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     object_reference = assigned_repository.get(component_id).object_id
                     reviewed = replace(interaction, repository_match=RepositoryMatch("known_unique", (object_reference,)))
                     if created: captured_count += 1
-                except Exception:
+                except Exception as exc:
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic_exception(
+                            "review_materialization_failed", exc,
+                            interaction=interaction, assigned_path=assigned_path,
+                            assigned_repository=assigned_repository.to_document() if assigned_repository else None,
+                        )
                     unresolved.append(interaction); continue
             elif interaction.repository_match.component_id is None:
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic(
+                        "review_interaction_unresolved", interaction=interaction,
+                        reason="repository_match_has_no_unique_component",
+                    )
                 unresolved.append(interaction); continue
 
             if reviewed.repository_match.component_id is not None and assigned_repository is not None:
                 try:
                     object_reference = assigned_repository.get(reviewed.repository_match.component_id).object_id
                     reviewed = replace(reviewed, repository_match=RepositoryMatch("known_unique", (object_reference,)))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic_exception(
+                            "review_object_id_conversion_failed", exc, interaction=reviewed,
+                        )
 
             try:
                 call = interactions_to_steps((reviewed,), start_index=len(self.plan.steps) + len(resolved) + 1)[0]
                 resolved.append(replace(call, group="Recorded session"))
-            except Exception:
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic("review_step_created", interaction=reviewed, step=resolved[-1])
+            except Exception as exc:
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic_exception(
+                        "review_step_conversion_failed", exc, interaction=reviewed,
+                    )
                 unresolved.append(interaction)
 
         if assigned_repository is not None and assigned_path is not None:
@@ -298,9 +340,21 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                 self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
             self.mark_dirty(); self.refresh_all()
         self.set_status("Recording complete: %d actions added, %d new objects captured, %d unresolved" % (len(resolved), captured_count, len(unresolved)))
+        if diagnostic_session is not None:
+            diagnostic_session.diagnostic(
+                "recording_review_complete", resolved_steps=resolved,
+                unresolved_interactions=unresolved, captured_count=captured_count,
+                assigned_path=assigned_path,
+                final_repository=assigned_repository.to_document() if assigned_repository else None,
+                plan=self.plan,
+            )
         if unresolved:
+            log_note = "\n\nVerbose diagnostic log: %s" % diagnostic_path if diagnostic_path else ""
             self.info(
                 "Recording Review",
-                "%d interaction(s) remain ambiguous or lack a semantic target. Use repository deduplication/OR merge when multiple existing objects represent the same target." % len(unresolved),
+                "%d interaction(s) remain ambiguous or lack a semantic target. Use repository deduplication/OR merge when multiple existing objects represent the same target.%s" % (len(unresolved), log_note),
             )
+        elif diagnostic_path:
+            self.set_status("Recording complete: %d actions added — diagnostics: %s" % (len(resolved), diagnostic_path))
+        self._recording_diagnostic_session = None
         return False

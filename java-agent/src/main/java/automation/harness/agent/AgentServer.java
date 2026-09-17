@@ -6,6 +6,11 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.EnumSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.LinkedHashMap;
@@ -17,8 +22,9 @@ final class AgentServer {
     private final String token;
     private final RecordingBuffer recording = new RecordingBuffer();
     private final HttpServer server;
+    private final Path discoveryFile;
 
-    AgentServer(String token, int port) throws IOException {
+    AgentServer(String token, int port, String discoveryDirectory) throws IOException {
         this.token = token;
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
         server.createContext("/health", this::handle);
@@ -36,10 +42,50 @@ final class AgentServer {
             return thread;
         }));
         server.start();
+        discoveryFile = writeDiscovery(token, discoveryDirectory);
+        Runtime.getRuntime().addShutdownHook(new Thread(this::cleanup, "automation-harness-agent-cleanup"));
     }
 
     RecordingBuffer recording() { return recording; }
     int port() { return server.getAddress().getPort(); }
+
+    private Path writeDiscovery(String token, String configuredDirectory) throws IOException {
+        String configured = configuredDirectory;
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("AUTOMATION_HARNESS_JAVA_AGENT_DISCOVERY_DIR");
+        }
+        Path directory = configured == null || configured.isBlank()
+            ? Paths.get(System.getProperty("java.io.tmpdir"), "automation-harness-java-agent")
+            : Paths.get(configured);
+        Files.createDirectories(directory);
+        restrict(directory, true);
+        long pid = ProcessHandle.current().pid();
+        Path target = directory.resolve("java-" + pid + ".json");
+        String payload = AgentJson.value(Map.of(
+            "protocol", "automation-harness-java-agent/1",
+            "pid", pid,
+            "host", "127.0.0.1",
+            "port", port(),
+            "token", token
+        ));
+        Files.writeString(target, payload, StandardCharsets.UTF_8);
+        restrict(target, false);
+        return target;
+    }
+
+    private static void restrict(Path path, boolean directory) {
+        try {
+            Files.setPosixFilePermissions(path, directory
+                ? EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
+                : EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException | IOException ignored) { }
+    }
+
+    private void cleanup() {
+        try { Files.deleteIfExists(discoveryFile); }
+        catch (IOException ignored) { }
+        server.stop(0);
+    }
 
     private void handle(HttpExchange exchange) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod()) || !token.equals(exchange.getRequestHeaders().getFirst("X-Automation-Harness-Token"))) {
@@ -74,13 +120,15 @@ final class AgentServer {
         } else if (path.equals("/resolve")) {
             try { result.putAll(SwingRecorder.resolve(
                 string(request, "name"), string(request, "accessible_id"),
-                string(request, "native_class"), string(request, "window")
+                string(request, "native_class"), string(request, "window"),
+                string(request, "component_path")
             )); }
             catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
         } else if (path.equals("/activate")) {
             try { result.putAll(SwingRecorder.activate(
                 string(request, "name"), string(request, "accessible_id"),
-                string(request, "native_class"), string(request, "window")
+                string(request, "native_class"), string(request, "window"),
+                string(request, "component_path")
             )); }
             catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
         } else if (path.equals("/windows")) {

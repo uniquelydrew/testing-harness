@@ -31,7 +31,9 @@ from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
 from automation_harness.recording import RecordedInteraction, RecordingSession, RepositoryMatch, interactions_to_steps
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
-from automation_harness.drivers.javafx_bridge import HttpJavaFxBridgeTransport
+from automation_harness.drivers.java_agent import configured_java_recording_transports
+from automation_harness.recording.diagnostics import RecordingDebugLog
+from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.formats import PLAN_SUFFIX, PROJECT_SUFFIX, REPOSITORY_SUFFIX, artifact_stem, with_artifact_suffix
 
@@ -1026,8 +1028,6 @@ class AuthoringApp:
         if self.recording_session_factory is not None:
             self.recording_session = self.recording_session_factory(self.repository)
         else:
-            urls = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URLS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", "")).split(",")
-            tokens = os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKENS", os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN", "")).split(",")
             adapters = []
             atspi = AtspiRecordingAdapter(
                 on_resolved=self._acknowledge_recorded_target,
@@ -1035,10 +1035,22 @@ class AuthoringApp:
             )
             if atspi.available:
                 adapters.append(atspi)
-            adapters.extend(JavaFxRecordingAdapter(HttpJavaFxBridgeTransport(url.strip(), token.strip())) for url, token in zip(urls, tokens) if url.strip() and token.strip())
+            adapters.extend(
+                JavaFxRecordingAdapter(transport)
+                for transport in configured_java_recording_transports()
+            )
             if not adapters:
                 return self._error("Recording", "No AT-SPI desktop session or configured JavaFX recording agent is available.")
-            self.recording_session = RecordingSession(adapters, repository=self.repository)
+            preferences = AuthoringPreferences.load()
+            debug_log = None
+            if preferences.recording_verbose_debug:
+                debug_log = RecordingDebugLog(
+                    preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
+                )
+            self.recording_session = RecordingSession(
+                adapters, repository=self.repository,
+                diagnostics=bool(debug_log), debug_log=debug_log,
+            )
         try:
             self.recording_session.start()
         except Exception as exc:
@@ -1121,16 +1133,26 @@ class AuthoringApp:
         threading.Thread(target=worker, name="automation-recording-stop", daemon=True).start()
 
     def _finish_recording_stop(self, interactions=None, error=None):
+        session = self.recording_session
         self._recording_stop_active = False
         self.recording_session = None
         self.start_recording_button.set_sensitive(True)
         self.stop_recording_button.set_sensitive(False)
         self._restore_after_recording()
         if error is not None:
+            if session is not None:
+                session.diagnostic_exception("legacy_recording_finish_failed", error)
             self._set_status("Recording failed to stop cleanly")
             self._error("Recording", "%s: %s" % (type(error).__name__, error))
             return False
         self.recorded_interactions = list(interactions or ())
+        if session is not None:
+            session.diagnostic(
+                "legacy_recording_review_ready",
+                interactions=self.recorded_interactions,
+                repository=self.repository.to_document(),
+                plan=self.plan,
+            )
         self._recorded_plan_indices = set()
         self.refresh_recorded_interactions()
         interacted = tuple(

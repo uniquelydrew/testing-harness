@@ -33,15 +33,7 @@ def install() -> None:
             explicit_old = None
 
         matches = find_existing_component_ids(repository, captured)
-        old_component_id = explicit_old
-        if old_component_id is None:
-            if len(matches) > 1:
-                raise ValueError(
-                    "capture matches multiple existing objects (%s); refine identity before saving"
-                    % ", ".join(matches)
-                )
-            if len(matches) == 1:
-                old_component_id = matches[0]
+        old_component_id = _capture_update_target(component_id, matches, explicit_old)
 
         # A typed name that already belongs to a different live identity must
         # never silently overwrite that repository object.
@@ -93,6 +85,23 @@ def install() -> None:
     # before generating a name. This covers direct recording/capture paths that
     # never open Object Identity Workbench.
     plan_repository.matching_component_ids = matching_component_ids
+
+
+def _capture_update_target(component_id, matches, explicit_old=None):
+    """Choose an update target without ever inferring a repository rename."""
+    if explicit_old is not None:
+        return explicit_old
+    if len(matches) > 1:
+        raise ValueError(
+            "capture matches multiple existing objects (%s); refine identity before saving"
+            % ", ".join(matches)
+        )
+    if len(matches) == 1 and matches[0] != component_id:
+        raise ValueError(
+            "capture matches existing object %r; reuse that object or refine identity. "
+            "A new capture cannot implicitly rename or replace repository objects." % matches[0]
+        )
+    return matches[0] if matches else None
 
 
 def _propagate_app_rename(app, old_component_id: str, new_component_id: str) -> None:

@@ -80,6 +80,40 @@ def test_javafx_point_capture_queries_only_the_x11_owner_process():
     assert owner.calls[0][0] == "hit_test"
 
 
+def test_x11_pointer_uses_mixed_java_agent_before_javafx_and_atspi():
+    target = replace(_target(), backend_properties={"process_id": 7804})
+
+    class Mixed:
+        available = True
+        transports = ()
+
+        def __init__(self):
+            self.calls = []
+
+        def capture_at_point(self, x, y, *, process_id=None):
+            self.calls.append((x, y, process_id))
+            return target
+
+    class JavaFx:
+        available = True
+
+        def capture_at_point(self, *_args, **_kwargs):
+            raise AssertionError("JavaFX must not run after mixed-agent resolution")
+
+    mixed = Mixed()
+    driver = _Driver(None)
+    adapter = AtspiRecordingAdapter(
+        driver, java_agent_driver=mixed, javafx_driver=JavaFx(),
+        acknowledgement_seconds=0,
+    )
+
+    captured = adapter._resolve_physical_pointer_target((945, 331), owner_pid=7804)
+
+    assert captured is target
+    assert mixed.calls == [(945, 331, 7804)]
+    assert driver.point_snapshots == []
+
+
 def test_pointer_event_is_re_hit_tested_at_desktop_coordinates():
     driver = _Driver(_target())
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
@@ -710,9 +744,35 @@ def test_action_and_text_events_drain_against_last_resolved_target():
     adapter._pointer_worker.stop_and_drain()
 
     assert [type(item).__name__ for item in emitted] == [
-        "PointerInteraction", "StateChanged", "ActionFired", "TextChanged",
+        "PointerInteraction", "StateChanged", "ActionFired",
     ]
     assert all(item.target.name == "Save" for item in emitted)
+
+
+def test_text_events_are_retained_for_editable_targets():
+    target = replace(
+        _target(), role="text field", actions=("set_text",),
+        state=ComponentState(True, editable=True),
+    )
+    adapter = AtspiRecordingAdapter(_Driver(target), acknowledgement_seconds=0)
+    emitted = []
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1p", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._handle_pointer(SimpleNamespace(
+        type="mouse:button:1r", detail1=10, detail2=20, source=object(),
+    ))
+    adapter._text(SimpleNamespace(
+        type="object:text-changed:insert", any_data="updated", source=object(),
+    ))
+    adapter._pointer_worker.stop_and_drain()
+
+    assert [type(item).__name__ for item in emitted] == [
+        "PointerInteraction", "TextChanged",
+    ]
+    assert emitted[-1].after == "updated"
 
 
 def test_invalid_device_coordinates_are_not_used():

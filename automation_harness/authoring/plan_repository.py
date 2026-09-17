@@ -68,6 +68,7 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
     component_id = _unique_component_id(repository, capture)
     repository, definition, _created = materialize_capture(
         HybridObjectCaptureService(), repository, component_id, capture,
+        validate_live=False,
     )
     return repository, definition.component_id, True
 

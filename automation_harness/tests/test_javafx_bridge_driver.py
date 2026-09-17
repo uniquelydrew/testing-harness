@@ -284,6 +284,8 @@ def test_internal_javafx_menu_skin_class_is_not_persisted(tmp_path):
         assert "class" not in identity["assistive"]
         assert "hierarchy" not in identity["assistive"]
         assert identity["assistive"]["lineage"][1]["id"] == "topMenuBar"
+        assert identity["assistive"]["sibling_index"] == 5
+        assert identity["assistive"]["sibling_count"] == 6
         assert identity["ordinal"] == 1
     finally:
         server.close()

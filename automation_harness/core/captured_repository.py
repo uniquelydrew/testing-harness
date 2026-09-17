@@ -16,6 +16,7 @@ def materialize_capture(
     captured,
     *,
     visual_leaf: bool | None = None,
+    validate_live: bool = True,
 ):
     """Create a concrete object, or a surface plus owner-relative visual leaf."""
     boundary = classify_capture_boundary(captured)
@@ -24,7 +25,9 @@ def materialize_capture(
         visual_leaf = boundary.supports_visual_children and has_point
     if visual_leaf and captured.candidate_strategy().type != "anchored_visual":
         captured = surface_relative_visual_capture(captured)
-    definition = service.definition_from_capture(component_id, captured)
+    definition = service.definition_from_capture(
+        component_id, captured, validate_live=validate_live,
+    )
     visual = next((item for item in definition.strategies if item.type == "anchored_visual"), None)
     if visual is None:
         return repository.with_component(definition), definition, ()

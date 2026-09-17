@@ -3,10 +3,13 @@ from __future__ import annotations
 import threading
 
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.models.component import CapturedComponent, ComponentState
+from automation_harness.models.component import (
+    CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy,
+)
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.recording import ActionFired, PointerInteraction, RecordingSession, StateChanged, TextChanged, interactions_to_steps
 from automation_harness.recording.evidence import parameters_for_pointer
+from automation_harness.recording.diagnostics import RecordingDebugLog
 
 
 def _capture(name: str, *, kind: ObjectType = ObjectType.BUTTON) -> CapturedComponent:
@@ -22,6 +25,35 @@ def _repository() -> ComponentRepository:
     return ComponentRepository.from_document({"version": 2, "components": {
         "open": {"object_type": "button", "actions": ["click"], "framework": "javafx", "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Open", "role": "button"}}}]},
     }})
+
+
+def _javafx_region(index: int, *, node_ref: str) -> CapturedComponent:
+    lineage = [
+        {"accessible_role": "TITLED_PANE", "class": "javafx.scene.control.TitledPane", "text": "Left Set"},
+        {"class": "edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController", "id": "VideoPlayer"},
+        {"class": "javafx.scene.layout.VBox", "id": "centerVBox"},
+    ]
+    identity = {
+        "mandatory": {"class": "javafx.scene.layout.Region"},
+        "assistive": {
+            "window": "ERSA Mosaic", "lineage": lineage,
+            "sibling_count": 6, "sibling_index": index,
+        },
+    }
+    return CapturedComponent(
+        name="Region", role="parent", description=None, accessible_id=None,
+        application="ERSA Mosaic", window="ERSA Mosaic",
+        hierarchy=("GridPane", "VideoPlayerFXMLController#VideoPlayer", "VBox#centerVBox", "Region"),
+        actions=(), bounds=(7, 145 + index * 73, 468, 72),
+        state=ComponentState(present=True, visible=True, showing=True),
+        backend_properties={
+            "bridge_pid": 7079, "node_ref": node_ref,
+            "accessible_role": "PARENT", "stable_ancestors": lineage,
+            "sibling_count": 6, "sibling_index": index,
+        },
+        authored_strategy=ComponentStrategy("javafx", {"identification": identity}),
+        framework="javafx", native_class="javafx.scene.layout.Region",
+    )
 
 
 def test_click_correlates_action_and_meaningful_state_without_pressed_noise():
@@ -87,6 +119,52 @@ def test_duplicate_cross_backend_pointer_observations_prefer_javafx_target():
     assert interactions[0].evidence["correlated_sources"] == ["atspi", "javafx"]
 
 
+def test_distinct_generic_javafx_siblings_do_not_collapse_into_one_interaction():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "javafx", _javafx_region(0, node_ref="n19"),
+        phase="released", coordinates=(252, 190),
+    ))
+    session.observe(PointerInteraction(
+        1.1, "javafx", _javafx_region(1, node_ref="n1"),
+        phase="released", coordinates=(239, 243),
+    ))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 2
+    assert [item.target.backend_properties["sibling_index"] for item in interactions] == [0, 1]
+
+
+def test_repository_matching_uses_javafx_lineage_and_sibling_evidence():
+    first = _javafx_region(0, node_ref="persisted-0")
+    second = _javafx_region(5, node_ref="persisted-5")
+    repository = ComponentRepository({
+        "first-region": ComponentDefinition(
+            component_id="first-region", strategies=(first.candidate_strategy(),),
+            object_type=first.semantic_type(), framework="javafx",
+            native_class=first.native_class,
+        ),
+        "sixth-region": ComponentDefinition(
+            component_id="sixth-region", strategies=(second.candidate_strategy(),),
+            object_type=second.semantic_type(), framework="javafx",
+            native_class=second.native_class,
+        ),
+    })
+    target = _javafx_region(5, node_ref="current-run-ref")
+    session = RecordingSession(repository=repository)
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "javafx", target, phase="released", coordinates=(179, 448),
+    ))
+
+    interaction = session.stop()[0]
+
+    assert interaction.repository_match.status == "known_unique"
+    assert interaction.repository_match.component_id == "sixth-region"
+
+
 def test_modal_visibility_is_retained_as_contextual_effect_of_click():
     session = RecordingSession()
     session.start()
@@ -104,6 +182,29 @@ def test_raw_observations_are_bounded_and_disabled_without_diagnostics():
         session.observe(PointerInteraction(timestamp, "javafx", target, phase="moved"))
     assert len(session.observations()) == 2
     session.stop()
+
+
+def test_verbose_debug_log_persists_runtime_observations_and_match_decisions(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_HARNESS_JAVA_AGENT_TOKEN", "do-not-write-this")
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-javaagent:agent.jar=token=also-secret;port=9418")
+    debug_log = RecordingDebugLog(tmp_path)
+    session = RecordingSession(
+        repository=_repository(), diagnostics=True, debug_log=debug_log,
+    )
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "javafx", _capture("Open"), phase="released", coordinates=(15, 15),
+    ))
+    session.stop()
+
+    contents = debug_log.path.read_text(encoding="utf-8")
+    assert "diagnostic_log_created" in contents
+    assert "observation_received" in contents
+    assert "repository_match" in contents
+    assert "interaction_flushed" in contents
+    assert "do-not-write-this" not in contents
+    assert "also-secret" not in contents
+    assert "<redacted>" in contents
 
 
 def test_stop_correlates_final_adapter_event_before_closing_session():

@@ -10,6 +10,13 @@ PILLOW_VERSION="${AUTOMATION_HARNESS_PILLOW_VERSION:-8.4.0}"
 JAVAFX_AGENT_JAR="$ROOT_DIR/javafx_agent/build/automation-harness-javafx-agent.jar"
 JAVA_AGENT_JAR="$ROOT_DIR/java-agent/build/automation-harness-agent.jar"
 
+# A previously sourced harness environment injects the mixed agent into every
+# Java launcher. Bootstrap itself invokes javac/jar and may delete/rebuild that
+# same JAR, so allowing the tool JVMs to load it makes the build self-poisoning.
+# This only changes bootstrap's child environment; the caller's shell is
+# updated later by explicitly sourcing the regenerated environment file.
+unset JAVA_TOOL_OPTIONS
+
 log() { printf '[bootstrap] %s\n' "$*" >&2; }
 warn() { printf '[bootstrap] WARNING: %s\n' "$*" >&2; }
 die() { printf '[bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -192,14 +199,14 @@ build_javafx_agent() {
         warn "JDK compiler tools are unavailable; JavaFX native bridge agent was not built"
         return 0
     fi
-    log "Building JavaFX native bridge agent with $(javac -version 2>&1)"
-    if bash "$ROOT_DIR/javafx_agent/build.sh" >/dev/null && [[ -f "$JAVAFX_AGENT_JAR" ]]; then
+    log "Building JavaFX native bridge agent with $(env -u JAVA_TOOL_OPTIONS javac -version 2>&1)"
+    if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/javafx_agent/build.sh" >/dev/null && [[ -f "$JAVAFX_AGENT_JAR" ]]; then
         log "JavaFX native bridge agent: $JAVAFX_AGENT_JAR"
     else
         warn "JavaFX native bridge agent build failed; Swing/AT-SPI capture remains available"
     fi
     log "Building mixed Swing/JavaFX native agent"
-    if bash "$ROOT_DIR/java-agent/build.sh" >/dev/null && [[ -f "$JAVA_AGENT_JAR" ]]; then
+    if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/java-agent/build.sh" >/dev/null && [[ -f "$JAVA_AGENT_JAR" ]]; then
         log "Mixed Java agent: $JAVA_AGENT_JAR"
     else
         warn "Mixed Java agent build failed; unexposed Swing/JOGL capture is unavailable"
@@ -327,7 +334,17 @@ write_environment() {
         printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"
         [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"
         [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"
-        [[ -f "$JAVA_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"
+        if [[ -f "$JAVA_AGENT_JAR" ]]; then
+            printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"
+            printf 'case " ${JAVA_TOOL_OPTIONS:-} " in\n'
+            printf '  *" --add-modules=jdk.httpserver "*) ;;\n'
+            printf '  *) export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }--add-modules=jdk.httpserver" ;;\n'
+            printf 'esac\n'
+            printf 'case " ${JAVA_TOOL_OPTIONS:-} " in\n'
+            printf '  *" -javaagent:%s"*) ;;\n' "$JAVA_AGENT_JAR"
+            printf '  *) export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:%s" ;;\n' "$JAVA_AGENT_JAR"
+            printf 'esac\n'
+        fi
     } > "$ROOT_DIR/.automation-harness-env"
 }
 
@@ -373,8 +390,8 @@ qualify() {
         warn "JavaFX bridge agent is unavailable; Linux JavaFX Node capture is disabled"
     fi
     if [[ -f "$JAVA_AGENT_JAR" ]]; then
-        log "Mixed Swing/JOGL agent ready. Instrument targets with: -javaagent:$JAVA_AGENT_JAR=token=<token>;port=<port>"
-        log "Set AUTOMATION_HARNESS_JAVA_AGENT_URL and AUTOMATION_HARNESS_JAVA_AGENT_TOKEN to the matching loopback endpoint."
+        log "Mixed Swing/JOGL agent ready with automatic secure endpoint discovery."
+        log "Source '$ROOT_DIR/.automation-harness-env' before launching the Java target so JAVA_TOOL_OPTIONS instruments it."
     else
         warn "Mixed Java agent is unavailable; opaque Swing/JOGL surfaces require AT-SPI exposure"
     fi

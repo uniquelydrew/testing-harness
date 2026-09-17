@@ -13,6 +13,7 @@ from automation_harness.drivers.atspi_driver import (
     _pyatspi,
 )
 from automation_harness.drivers.atspi_registry import AtspiRegistryLease, acquire_atspi_registry
+from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.observations import ActionFired, Observation, PointerInteraction, StateChanged, TextChanged
 from automation_harness.recording.x11_pointer import X11PointerMonitor
@@ -148,7 +149,7 @@ class _PointerRecordingWorker:
             return
         if kind == "text":
             _kind, after, event_type, timestamp = item
-            if self._last_target is not None and after is not None:
+            if _is_editable_text_target(self._last_target) and after is not None:
                 self._publish(TextChanged(
                     timestamp, "atspi", self._last_target,
                     {"event_type": event_type}, None, str(after),
@@ -195,6 +196,19 @@ def _is_recordable_target(captured) -> bool:
     return True
 
 
+def _is_editable_text_target(captured) -> bool:
+    if captured is None:
+        return False
+    state = getattr(captured, "state", None)
+    if getattr(state, "editable", None) is True:
+        return True
+    role = _normalize_role(getattr(captured, "role", None))
+    if role in {"entry", "password text", "text field", "editable text", "spin button"}:
+        return True
+    actions = {_normalize_role(value) for value in tuple(getattr(captured, "actions", ()) or ())}
+    return bool(actions & {"set text", "replace text", "insert text", "edit"})
+
+
 def _is_authoring_chrome(captured) -> bool:
     application = str(getattr(captured, "application", None) or "")
     name = str(getattr(captured, "name", None) or "")
@@ -226,6 +240,7 @@ class AtspiRecordingAdapter:
         hold_retry_interval=0.04,
         pointer_monitor=None,
         javafx_driver=None,
+        java_agent_driver=None,
     ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
@@ -237,6 +252,7 @@ class AtspiRecordingAdapter:
         # must query the same bridge before falling back to AT-SPI; OpenJFX does
         # not reliably expose its scene graph through Linux AT-SPI.
         self._javafx_driver = javafx_driver or JavaFxBridgeDriver()
+        self._java_agent_driver = java_agent_driver or JavaAgentDriver()
         self._using_x11_pointer = False
         self._active = False
         self._emit: Callable[[Observation], None] | None = None
@@ -247,11 +263,19 @@ class AtspiRecordingAdapter:
         self._callbacks_accepting = False
         self._active_callbacks = 0
         self._stop_requested = threading.Event()
+        self._diagnostic_sink = None
         self._pointer_worker = _PointerRecordingWorker(
             self._publish,
             acknowledge=on_resolved,
             acknowledgement_seconds=acknowledgement_seconds,
         )
+
+    def set_diagnostic_sink(self, sink) -> None:
+        self._diagnostic_sink = sink
+
+    def _diagnostic(self, event, **payload) -> None:
+        if self._diagnostic_sink is not None:
+            self._diagnostic_sink(event, **payload)
 
     @property
     def available(self) -> bool:
@@ -267,6 +291,22 @@ class AtspiRecordingAdapter:
             raise RuntimeError("AT-SPI recording adapter is already active")
         self._emit = emit
         atspi_available = bool(self.driver.available)
+        try:
+            javafx_available = bool(self._javafx_driver.available)
+        except Exception as exc:
+            javafx_available = False
+            self._diagnostic("javafx_availability_failed", error_type=type(exc).__name__, error=str(exc))
+        self._diagnostic(
+            "start_configuration", atspi_available=atspi_available,
+            javafx_available=javafx_available,
+            java_agent_available=bool(self._java_agent_driver.available),
+            java_agent_pids=sorted({
+                int(item.pid) for item in self._java_agent_driver.transports
+                if getattr(item, "pid", None) is not None
+            }),
+            hold_resolution_timeout=self.hold_resolution_timeout,
+            hold_retry_interval=self.hold_retry_interval,
+        )
         self._pyatspi = _pyatspi() if atspi_available else None
         self._stop_requested.clear()
         self._pointer_worker.start()
@@ -419,9 +459,17 @@ class AtspiRecordingAdapter:
         if not self._begin_callback():
             return
         try:
+            self._diagnostic(
+                "physical_pointer", event_type=event_type, coordinates=coordinates,
+                timestamp=timestamp, owner_pid=owner_pid,
+            )
             target = None
             if event_type.endswith(("1p", "3p")):
                 target = self._resolve_physical_pointer_target(coordinates, owner_pid=owner_pid)
+                self._diagnostic(
+                    "physical_pointer_resolved", coordinates=coordinates,
+                    owner_pid=owner_pid, target=target,
+                )
             self._pointer_worker.accept_pointer(
                 event_type, coordinates, timestamp, target,
             )
@@ -434,6 +482,20 @@ class AtspiRecordingAdapter:
         # never participate merely because its bounds contain the pointer.
         if owner_pid is not None:
             try:
+                captured = self._java_agent_driver.capture_at_point(
+                    *coordinates, process_id=owner_pid,
+                )
+                if (
+                    _is_recordable_target(captured)
+                    and _captured_process_id(captured) == owner_pid
+                ):
+                    return captured
+            except Exception as exc:
+                self._diagnostic(
+                    "java_agent_owner_resolution_failed", coordinates=coordinates,
+                    owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
+                )
+            try:
                 captured = self._javafx_driver.capture_at_point(
                     *coordinates, process_id=owner_pid,
                 )
@@ -442,12 +504,15 @@ class AtspiRecordingAdapter:
                     and _captured_process_id(captured) == owner_pid
                 ):
                     return captured
-            except Exception:
-                pass
+            except Exception as exc:
+                self._diagnostic(
+                    "javafx_owner_resolution_failed", coordinates=coordinates,
+                    owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
+                )
 
-        # Swing on Linux has no in-process capture bridge yet. AT-SPI through
-        # java-atk-wrapper is therefore the final semantic fallback, and its
-        # owning PID must agree with X11 whenever both are available.
+        # If no mixed-agent target was resolved, AT-SPI through java-atk-wrapper
+        # is the final semantic fallback, and its owning PID must agree with X11
+        # whenever both are available.
         atspi_candidate = None
         try:
             snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
@@ -458,8 +523,11 @@ class AtspiRecordingAdapter:
                 atspi_pid = _captured_process_id(atspi_candidate)
                 if owner_pid is not None and atspi_pid != owner_pid:
                     return None
-        except Exception:
-            pass
+        except Exception as exc:
+            self._diagnostic(
+                "atspi_point_resolution_failed", coordinates=coordinates,
+                owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
+            )
 
         # Compatibility path for non-X11/manual invocations: use AT-SPI to
         # establish process ownership, then restrict JavaFX to that process.
@@ -534,8 +602,11 @@ class AtspiRecordingAdapter:
                     return None
                 if _is_recordable_target(captured):
                     return captured
-            except Exception:
-                pass
+            except Exception as exc:
+                self._diagnostic(
+                    "atspi_event_source_resolution_failed", coordinates=coordinates,
+                    error_type=type(exc).__name__, error=str(exc),
+                )
         if coordinates is None:
             return None
         try:
@@ -566,6 +637,7 @@ class AtspiRecordingAdapter:
             )
 
     def _publish(self, observation: Observation) -> None:
+        self._diagnostic("normalized_observation", observation=observation)
         if self._emit is not None:
             self._emit(observation)
 

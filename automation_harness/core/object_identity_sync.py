@@ -19,7 +19,7 @@ _TEXT_KEYS = frozenset({"text", "accessible_text", "name"})
 _SCOPE_KEYS = frozenset({"window", "application"})
 _STRONG_KEYS = frozenset({
     "id", "accessible_id", "properties", "user_data", "name",
-    "accessible_text", "text",
+    "accessible_text", "text", "component_path",
 })
 
 
@@ -155,11 +155,13 @@ def _identity_matches(expected: Mapping[str, Any], captured: Mapping[str, Any]) 
     compared = 0
     strong = False
     for key, expected_value in expected.items():
-        if key in {"hierarchy", "lineage", "parent", "ancestor", "layout", "style_classes", "ordinal"}:
+        if key in {"style_classes", "ordinal"}:
             continue
         actual, present = _lookup_capture_value(captured, key)
         if not present:
-            continue
+            # Identity reuse is a destructive decision: a missing condition is
+            # not evidence that two captures refer to the same live object.
+            return False
         compared += 1
         if not _value_equal(actual, expected_value):
             return False

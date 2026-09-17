@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Never inject this agent into the javac/jar processes rebuilding its own JAR.
+unset JAVA_TOOL_OPTIONS
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$ROOT/build"
 CLASSES="$BUILD/classes"

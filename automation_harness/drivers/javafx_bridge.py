@@ -34,6 +34,7 @@ class HttpJavaFxBridgeTransport:
     endpoint: str
     token: str
     timeout: float = 5.0
+    pid: int | None = None
 
     def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         if not self.endpoint.startswith(("http://127.0.0.1", "http://localhost")):
@@ -593,6 +594,8 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
     properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
     domain_properties = _domain_identity_properties(properties)
     style_classes = _string_list(node.get("style_classes"))
+    sibling_index = node.get("sibling_index")
+    sibling_count = node.get("sibling_count")
     internal_class = _is_internal_javafx_class(native_class)
 
     if node_id:
@@ -645,6 +648,15 @@ def _candidate_identification(node: Mapping[str, Any]) -> dict[str, Any]:
         assistive["lineage"] = lineage
     elif hierarchy and not internal_class:
         assistive["hierarchy"] = hierarchy
+    # Generic JavaFX layout nodes frequently have no author-supplied id, text,
+    # or layout constraint.  Their position within a stable concrete owner is
+    # then the only durable discriminator available.  Keep it assistive so a
+    # semantic mandatory property still wins whenever one exists.
+    weak_mandatory = set(mandatory).issubset({"class", "accessible_role"})
+    if weak_mandatory and isinstance(sibling_count, int) and sibling_count > 0:
+        assistive["sibling_count"] = sibling_count
+    if weak_mandatory and isinstance(sibling_index, int) and sibling_index >= 0:
+        assistive["sibling_index"] = sibling_index
     if style_classes and not lineage and not layout and not internal_class:
         assistive["style_classes"] = style_classes
 
@@ -773,13 +785,17 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     if framework in {"swing", "awt", "java", "jogl"}:
         mandatory = {}
         assistive = {}
-        for key, value in (
-            ("accessible_id", node.get("accessible_id")),
-            ("name", node.get("name") or node.get("text")),
-            ("native_class", native_class),
-        ):
-            if value not in (None, ""):
-                (mandatory if not mandatory else assistive)[key] = str(value)
+        accessible_id = node.get("accessible_id")
+        name = node.get("name") or node.get("text")
+        component_path = node.get("component_path")
+        if accessible_id not in (None, ""):
+            mandatory["accessible_id"] = str(accessible_id)
+        elif name not in (None, ""):
+            mandatory["name"] = str(name)
+        if native_class not in (None, ""):
+            mandatory["native_class"] = str(native_class)
+        if component_path not in (None, ""):
+            (assistive if accessible_id or name else mandatory)["component_path"] = str(component_path)
         if node.get("window") not in (None, ""):
             assistive["window"] = str(node.get("window"))
         strategy = ComponentStrategy("java_agent", {"identification": {
@@ -789,6 +805,7 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     else:
         strategy = None
     logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
+    parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("text")), role=role,
         description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
@@ -798,8 +815,13 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
         backend_properties={
             **dict(properties),
+            **({"component_path": node["component_path"]} if node.get("component_path") else {}),
+            **({"sibling_index": node["sibling_index"]} if node.get("sibling_index") is not None else {}),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
         },
+        parent_name=_optional_str(parent.get("name")),
+        parent_role=_optional_str(parent.get("role")),
+        parent_accessible_id=_optional_str(parent.get("accessible_id")),
         authored_strategy=strategy,
         object_type=object_type, framework=framework, native_class=native_class,
         logical_subobjects=logical_subobjects,

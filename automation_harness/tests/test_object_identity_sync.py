@@ -70,6 +70,51 @@ def test_capture_identity_conflict_does_not_match_existing_component():
     assert find_existing_component_ids(repository, _javafx_capture()) == ()
 
 
+def test_same_named_objects_under_different_parents_do_not_collapse():
+    definition = ComponentDefinition(
+        component_id="Primary.Save",
+        object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {
+            "identification": {
+                "mandatory": {"name": "Save", "role": "push button"},
+                "assistive": {"parent": {"accessible_id": "primary-pane"}},
+            }
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    capture = CapturedComponent(
+        name="Save", role="push button", description=None, accessible_id=None,
+        application="Demo", window="Demo", hierarchy=("secondary-pane", "Save"),
+        actions=("click",), bounds=(0, 0, 10, 10),
+        state=ComponentState(present=True), parent_accessible_id="secondary-pane",
+        object_type=ObjectType.BUTTON,
+    )
+
+    assert find_existing_component_ids(repository, capture) == ()
+
+
+def test_missing_stored_identity_condition_is_not_treated_as_a_match():
+    definition = ComponentDefinition(
+        component_id="Stable.Save",
+        object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {
+            "identification": {
+                "mandatory": {"accessible_id": "save-button", "role": "push button"},
+                "assistive": {"name": "Save"},
+            }
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    capture = CapturedComponent(
+        name="Save", role="push button", description=None, accessible_id=None,
+        application="Demo", window="Demo", hierarchy=("Save",),
+        actions=("click",), bounds=(0, 0, 10, 10),
+        state=ComponentState(present=True), object_type=ObjectType.BUTTON,
+    )
+
+    assert find_existing_component_ids(repository, capture) == ()
+
+
 def test_repository_rename_preserves_immutable_object_id_and_removes_old_name():
     definition = ComponentDefinition(
         component_id="Generated.Name",

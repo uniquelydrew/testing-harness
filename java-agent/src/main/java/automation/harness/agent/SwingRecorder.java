@@ -75,12 +75,12 @@ final class SwingRecorder {
         return result;
     }
 
-    static Map<String, Object> resolve(String name, String accessibleId, String nativeClass, String windowTitle) {
-        return target(find(name, accessibleId, nativeClass, windowTitle));
+    static Map<String, Object> resolve(String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
+        return target(find(name, accessibleId, nativeClass, windowTitle, componentPath));
     }
 
-    static Map<String, Object> activate(String name, String accessibleId, String nativeClass, String windowTitle) {
-        Component component = find(name, accessibleId, nativeClass, windowTitle);
+    static Map<String, Object> activate(String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
+        Component component = find(name, accessibleId, nativeClass, windowTitle, componentPath);
         runOnEdtAndWait(() -> {
             if (component instanceof AbstractButton button) button.doClick();
             else component.requestFocusInWindow();
@@ -90,12 +90,12 @@ final class SwingRecorder {
         return result;
     }
 
-    private static Component find(String name, String accessibleId, String nativeClass, String windowTitle) {
+    private static Component find(String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
         final List<Component> matches = new ArrayList<>();
         runOnEdtAndWait(() -> {
             for (Window window : Window.getWindows()) {
                 if (!window.isShowing()) continue;
-                collect(window, matches, name, accessibleId, nativeClass, windowTitle);
+                collect(window, matches, name, accessibleId, nativeClass, windowTitle, componentPath);
             }
         });
         if (matches.isEmpty()) throw new IllegalArgumentException("no Swing/AWT component matched the locator");
@@ -103,17 +103,18 @@ final class SwingRecorder {
         return matches.get(0);
     }
 
-    private static void collect(Component component, List<Component> matches, String name, String accessibleId, String nativeClass, String windowTitle) {
+    private static void collect(Component component, List<Component> matches, String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
         if (!component.isShowing()) return;
         Map<String, Object> item = snapshot(component);
         if (matches(item.get("name"), name)
                 && matches(item.get("accessible_id"), accessibleId)
                 && matches(item.get("native_class"), nativeClass)
-                && matches(item.get("window"), windowTitle)) {
+                && matches(item.get("window"), windowTitle)
+                && matches(item.get("component_path"), componentPath)) {
             matches.add(component);
         }
         if (component instanceof Container container) {
-            for (Component child : container.getComponents()) collect(child, matches, name, accessibleId, nativeClass, windowTitle);
+            for (Component child : container.getComponents()) collect(child, matches, name, accessibleId, nativeClass, windowTitle, componentPath);
         }
     }
 
@@ -200,6 +201,10 @@ final class SwingRecorder {
         SwingUtilities.convertPointToScreen(location, component);
         result.put("bounds", List.of(location.x, location.y, component.getWidth(), component.getHeight()));
         result.put("hierarchy", hierarchy(component));
+        result.put("component_path", componentPath(component));
+        result.put("sibling_index", siblingIndex(component));
+        Component parent = component.getParent();
+        if (parent != null) result.put("parent", parentIdentity(parent));
         result.put("state", Map.of(
             "present", true,
             "visible", component.isVisible(),
@@ -214,6 +219,40 @@ final class SwingRecorder {
         properties.put("window_focused", owner != null && owner.isFocused());
         result.put("properties", properties);
         return result;
+    }
+
+    private static Map<String, Object> parentIdentity(Component component) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("native_class", component.getClass().getName());
+        result.put("role", role(component));
+        AccessibleContext accessible = component instanceof Accessible value ? value.getAccessibleContext() : null;
+        String name = accessible == null ? component.getName() : accessible.getAccessibleName();
+        if (name == null || name.isBlank()) name = authoredText(component);
+        if (name != null && !name.isBlank()) result.put("name", name);
+        if (component.getName() != null && !component.getName().isBlank()) result.put("accessible_id", component.getName());
+        return result;
+    }
+
+    private static String componentPath(Component component) {
+        List<String> segments = new ArrayList<>();
+        Component current = component;
+        while (current != null) {
+            segments.add(current.getClass().getName() + "[" + siblingIndex(current) + "]");
+            current = current.getParent();
+        }
+        Collections.reverse(segments);
+        return String.join("/", segments);
+    }
+
+    private static int siblingIndex(Component component) {
+        Container parent = component.getParent();
+        if (parent == null) return 0;
+        int index = 0;
+        for (Component sibling : parent.getComponents()) {
+            if (sibling == component) return index;
+            if (sibling.getClass().equals(component.getClass())) index++;
+        }
+        return index;
     }
 
     private static boolean isRenderSurface(Component component) {

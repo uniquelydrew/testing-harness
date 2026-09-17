@@ -68,12 +68,13 @@ def test_preferences_round_trip(tmp_path):
     files = tmp_path / "authored"
     runs = tmp_path / "results"
 
-    saved = AuthoringPreferences(files, runs)
+    saved = AuthoringPreferences(files, runs, recording_verbose_debug=True)
     assert saved.save(config) == config
 
     loaded = AuthoringPreferences.load(config)
     assert loaded.default_files_dir == files
     assert loaded.runs_dir == runs
+    assert loaded.recording_verbose_debug is True
     assert loaded.resolved_files_dir() == files.resolve()
     assert loaded.resolved_runs_dir() == runs.resolve()
 

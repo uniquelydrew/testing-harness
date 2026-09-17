@@ -166,6 +166,11 @@ def _resolve_hybrid_point(service, coordinates, scoped=True, owner_pid=None):
                 return _classified(service, _with_capture_point(captured, x, y), "java-agent")
         except Exception as exc:
             errors.append("java agent: %s: %s" % (type(exc).__name__, exc))
+    elif owner_pid is not None:
+        errors.append(
+            "mixed Java agent is not configured for pid %s; instrument the target "
+            "with AUTOMATION_HARNESS_JAVA_AGENT and configure its URL/token" % owner_pid
+        )
 
     javafx_available = False
     try:

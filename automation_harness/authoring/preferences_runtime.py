@@ -35,6 +35,7 @@ def preferences_path():
 class AuthoringPreferences:
     default_files_dir: object = None
     runs_dir: object = None
+    recording_verbose_debug: bool = False
 
     @classmethod
     def load(cls, path=None):
@@ -50,6 +51,7 @@ class AuthoringPreferences:
         return cls(
             default_files_dir=_optional_directory(raw.get("default_files_dir")),
             runs_dir=_optional_directory(raw.get("runs_dir")),
+            recording_verbose_debug=bool(raw.get("recording_verbose_debug", False)),
         )
 
     def save(self, path=None):
@@ -59,6 +61,7 @@ class AuthoringPreferences:
             "version": _PREFERENCES_VERSION,
             "default_files_dir": _path_text(self.default_files_dir),
             "runs_dir": _path_text(self.runs_dir),
+            "recording_verbose_debug": bool(self.recording_verbose_debug),
         }
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_text(
@@ -225,6 +228,11 @@ def install(app_module):
         files_entry.set_text(str(current.resolved_files_dir(self.project)))
         runs_entry = Gtk.Entry()
         runs_entry.set_text(str(current.resolved_runs_dir(self.project)))
+        verbose_debug = Gtk.CheckButton(label="Write verbose recording diagnostic logs")
+        verbose_debug.set_active(bool(current.recording_verbose_debug))
+        verbose_debug.set_tooltip_text(
+            "Writes observation, correlation, matching, and review diagnostics to the runs folder."
+        )
 
         def row(index, label_text, entry, title):
             label = Gtk.Label(label=label_text)
@@ -247,7 +255,8 @@ def install(app_module):
             label="These are user preferences. Existing project files are not rewritten."
         )
         note.set_xalign(0)
-        grid.attach(note, 0, 2, 3, 1)
+        grid.attach(verbose_debug, 0, 2, 3, 1)
+        grid.attach(note, 0, 3, 3, 1)
 
         dialog.show_all()
         response = dialog.run()
@@ -259,7 +268,9 @@ def install(app_module):
             runs_dir = Path(runs_entry.get_text().strip()).expanduser().resolve()
             files_dir.mkdir(parents=True, exist_ok=True)
             runs_dir.mkdir(parents=True, exist_ok=True)
-            preferences = AuthoringPreferences(files_dir, runs_dir)
+            preferences = AuthoringPreferences(
+                files_dir, runs_dir, bool(verbose_debug.get_active())
+            )
             saved_to = preferences.save()
         except Exception as exc:
             dialog.destroy()

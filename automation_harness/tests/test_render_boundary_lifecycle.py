@@ -31,9 +31,11 @@ def _jogl_capture():
 
 
 class _DefinitionService:
-    def definition_from_capture(self, component_id, captured):
+    def definition_from_capture(self, component_id, captured, *, validate_live=True):
         service = object.__new__(HybridObjectCaptureService)
-        return HybridObjectCaptureService.definition_from_capture(service, component_id, captured)
+        return HybridObjectCaptureService.definition_from_capture(
+            service, component_id, captured, validate_live=validate_live,
+        )
 
 
 class _JavaAgent:

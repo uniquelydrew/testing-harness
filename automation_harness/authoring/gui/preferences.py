@@ -23,6 +23,10 @@ def recording_highlights_enabled() -> bool:
     return bool(raw.get("recording_highlight_clicks", True)) if isinstance(raw, dict) else True
 
 
+def recording_verbose_debug_enabled() -> bool:
+    return bool(AuthoringPreferences.load().recording_verbose_debug)
+
+
 def show_preferences_dialog(owner, project=None):
     current = AuthoringPreferences.load()
     dialog = Gtk.Dialog(title="Preferences", transient_for=owner, modal=True)
@@ -34,6 +38,11 @@ def show_preferences_dialog(owner, project=None):
     runs = Gtk.Entry(); runs.set_text(str(current.resolved_runs_dir(project)))
     highlight = Gtk.CheckButton(label="Highlight targets during recording")
     highlight.set_active(recording_highlights_enabled())
+    verbose_debug = Gtk.CheckButton(label="Write verbose recording diagnostic logs")
+    verbose_debug.set_active(recording_verbose_debug_enabled())
+    verbose_debug.set_tooltip_text(
+        "Writes raw observations, correlation decisions, repository matching, failures, and review results to the runs folder."
+    )
     resolution_timeout = Gtk.SpinButton.new_with_range(0.0, 120.0, 0.5)
     resolution_timeout.set_digits(1)
     resolution_timeout.set_value(object_resolution_timeout())
@@ -61,6 +70,7 @@ def show_preferences_dialog(owner, project=None):
     grid.attach(timeout_label, 0, 2, 1, 1)
     grid.attach(resolution_timeout, 1, 2, 1, 1)
     grid.attach(highlight, 0, 3, 3, 1)
+    grid.attach(verbose_debug, 0, 4, 3, 1)
     dialog.show_all(); response = dialog.run()
     if response != Gtk.ResponseType.OK:
         dialog.destroy(); return False
@@ -68,11 +78,12 @@ def show_preferences_dialog(owner, project=None):
         files_dir = Path(files.get_text().strip()).expanduser().resolve()
         runs_dir = Path(runs.get_text().strip()).expanduser().resolve()
         files_dir.mkdir(parents=True, exist_ok=True); runs_dir.mkdir(parents=True, exist_ok=True)
-        AuthoringPreferences(files_dir, runs_dir).save()
+        AuthoringPreferences(files_dir, runs_dir, bool(verbose_debug.get_active())).save()
         target = preferences_path()
         raw = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
         if not isinstance(raw, dict): raw = {}
         raw["recording_highlight_clicks"] = bool(highlight.get_active())
+        raw["recording_verbose_debug"] = bool(verbose_debug.get_active())
         raw["object_resolution_timeout"] = float(resolution_timeout.get_value())
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
