@@ -1,10 +1,14 @@
 package automation.harness.agent;
 
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /** Snapshot of the JVM that actually loaded the Automation Harness agent. */
@@ -34,6 +38,22 @@ final class RuntimeDiagnostics {
         result.put("uptime_ms", runtime.getUptime());
         result.put("input_arguments", new ArrayList<String>(runtime.getInputArguments()));
         return result;
+    }
+
+    static Path write(String configuredDirectory) throws IOException {
+        Map<String, Object> snapshot = snapshot();
+        long pid = ((Number) snapshot.get("pid")).longValue();
+        String configured = configuredDirectory;
+        if (configured == null || configured.trim().isEmpty()) {
+            configured = System.getenv("AUTOMATION_HARNESS_JAVA_AGENT_DISCOVERY_DIR");
+        }
+        Path directory = configured == null || configured.trim().isEmpty()
+            ? Paths.get(System.getProperty("java.io.tmpdir"), "automation-harness-java-agent")
+            : Paths.get(configured);
+        Files.createDirectories(directory);
+        Path target = directory.resolve("java-" + pid + "-runtime.json");
+        Files.write(target, AgentJson.value(snapshot).getBytes(StandardCharsets.UTF_8));
+        return target;
     }
 
     private static String property(String name) {
