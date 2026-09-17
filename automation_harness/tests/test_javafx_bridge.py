@@ -1,4 +1,4 @@
-from automation_harness.drivers.javafx_bridge import JavaFxRecordingBridge
+from automation_harness.drivers.javafx_bridge import JavaFxRecordingBridge, _captured_recording_node
 
 
 class _Transport:
@@ -29,3 +29,45 @@ def test_javafx_standalone_text_remains_a_semantic_label():
     })
     assert resolution.capture().semantic_type().value == "label"
     assert "physical_target" not in resolution.capture().backend_properties
+
+
+def test_mixed_agent_swing_snapshot_authors_native_agent_locator():
+    capture = _captured_recording_node({
+        "framework": "swing",
+        "class": "com.jogamp.opengl.awt.GLCanvas",
+        "native_class": "com.jogamp.opengl.awt.GLCanvas",
+        "name": "Tactical Display",
+        "accessible_id": "tactical-display",
+        "window": "MSCT Display",
+        "role": "canvas",
+        "object_type": "canvas",
+        "bounds": [100, 200, 800, 600],
+        "component_path": "javax.swing.JFrame[0]/com.jogamp.opengl.awt.GLCanvas[0]",
+        "properties": {"opaque_render_surface": True, "process_id": 42},
+    })
+
+    assert capture.framework == "swing"
+    assert capture.native_class == "com.jogamp.opengl.awt.GLCanvas"
+    assert capture.candidate_strategy().type == "java_agent"
+    assert capture.candidate_strategy().options["identification"]["mandatory"] == {
+        "accessible_id": "tactical-display",
+        "native_class": "com.jogamp.opengl.awt.GLCanvas",
+    }
+    assert capture.candidate_strategy().options["identification"]["assistive"]["component_path"].endswith(
+        "GLCanvas[0]"
+    )
+
+
+def test_unnamed_same_class_swing_controls_keep_distinct_resolvable_paths():
+    first = _captured_recording_node({
+        "framework": "swing", "native_class": "javax.swing.JPanel", "role": "panel",
+        "component_path": "javax.swing.JFrame[0]/javax.swing.JPanel[0]",
+    })
+    second = _captured_recording_node({
+        "framework": "swing", "native_class": "javax.swing.JPanel", "role": "panel",
+        "component_path": "javax.swing.JFrame[0]/javax.swing.JPanel[1]",
+    })
+
+    assert first.candidate_strategy() != second.candidate_strategy()
+    assert first.candidate_strategy().options["identification"]["mandatory"]["component_path"].endswith("[0]")
+    assert second.candidate_strategy().options["identification"]["mandatory"]["component_path"].endswith("[1]")

@@ -6,6 +6,11 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.EnumSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.LinkedHashMap;
@@ -17,8 +22,9 @@ final class AgentServer {
     private final String token;
     private final RecordingBuffer recording = new RecordingBuffer();
     private final HttpServer server;
+    private final Path discoveryFile;
 
-    AgentServer(String token, int port) throws IOException {
+    AgentServer(String token, int port, String discoveryDirectory) throws IOException {
         this.token = token;
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
         server.createContext("/health", this::handle);
@@ -27,16 +33,59 @@ final class AgentServer {
         server.createContext("/record_stop", this::handle);
         server.createContext("/capture_next_click", this::handle);
         server.createContext("/hit_test", this::handle);
+        server.createContext("/resolve", this::handle);
+        server.createContext("/activate", this::handle);
+        server.createContext("/windows", this::handle);
         server.setExecutor(Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "automation-harness-agent");
             thread.setDaemon(true);
             return thread;
         }));
         server.start();
+        discoveryFile = writeDiscovery(token, discoveryDirectory);
+        Runtime.getRuntime().addShutdownHook(new Thread(this::cleanup, "automation-harness-agent-cleanup"));
     }
 
     RecordingBuffer recording() { return recording; }
     int port() { return server.getAddress().getPort(); }
+
+    private Path writeDiscovery(String token, String configuredDirectory) throws IOException {
+        String configured = configuredDirectory;
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("AUTOMATION_HARNESS_JAVA_AGENT_DISCOVERY_DIR");
+        }
+        Path directory = configured == null || configured.isBlank()
+            ? Paths.get(System.getProperty("java.io.tmpdir"), "automation-harness-java-agent")
+            : Paths.get(configured);
+        Files.createDirectories(directory);
+        restrict(directory, true);
+        long pid = ProcessHandle.current().pid();
+        Path target = directory.resolve("java-" + pid + ".json");
+        String payload = AgentJson.value(Map.of(
+            "protocol", "automation-harness-java-agent/1",
+            "pid", pid,
+            "host", "127.0.0.1",
+            "port", port(),
+            "token", token
+        ));
+        Files.writeString(target, payload, StandardCharsets.UTF_8);
+        restrict(target, false);
+        return target;
+    }
+
+    private static void restrict(Path path, boolean directory) {
+        try {
+            Files.setPosixFilePermissions(path, directory
+                ? EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
+                : EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException | IOException ignored) { }
+    }
+
+    private void cleanup() {
+        try { Files.deleteIfExists(discoveryFile); }
+        catch (IOException ignored) { }
+        server.stop(0);
+    }
 
     private void handle(HttpExchange exchange) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod()) || !token.equals(exchange.getRequestHeaders().getFirst("X-Automation-Harness-Token"))) {
@@ -52,6 +101,7 @@ final class AgentServer {
         } else if (path.equals("/record_start")) {
             recording.start();
             JavaFxRecorder.start(recording);
+            SwingRecorder.start(recording);
             result.put("observations", recording.drain());
         } else if (path.equals("/record_read")) {
             result.put("observations", recording.awaitAndDrain(
@@ -59,13 +109,30 @@ final class AgentServer {
             ));
         } else if (path.equals("/record_stop")) {
             JavaFxRecorder.stop();
+            SwingRecorder.stop();
             result.put("observations", recording.stop());
         } else if (path.equals("/capture_next_click")) {
-            try { result.putAll(JavaFxRecorder.captureNextClick((long) (number(request, "timeout", 30.0) * 1000))); }
+            try { result.putAll(AgentCapture.captureNextClick((long) (number(request, "timeout", 30.0) * 1000))); }
             catch (Exception exception) { send(exchange, 408, Map.of("ok", false, "error", "capture timed out or failed: " + exception.getMessage())); return; }
         } else if (path.equals("/hit_test")) {
-            try { result.putAll(JavaFxRecorder.hitTest(number(request, "x", Double.NaN), number(request, "y", Double.NaN))); }
+            try { result.putAll(AgentCapture.hitTest(number(request, "x", Double.NaN), number(request, "y", Double.NaN))); }
             catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/resolve")) {
+            try { result.putAll(SwingRecorder.resolve(
+                string(request, "name"), string(request, "accessible_id"),
+                string(request, "native_class"), string(request, "window"),
+                string(request, "component_path")
+            )); }
+            catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/activate")) {
+            try { result.putAll(SwingRecorder.activate(
+                string(request, "name"), string(request, "accessible_id"),
+                string(request, "native_class"), string(request, "window"),
+                string(request, "component_path")
+            )); }
+            catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/windows")) {
+            result.put("windows", SwingRecorder.windows());
         } else {
             send(exchange, 404, Map.of("ok", false, "error", "unknown operation"));
             return;
@@ -84,5 +151,11 @@ final class AgentServer {
     private static double number(String payload, String key, double fallback) {
         Matcher match = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))").matcher(payload);
         return match.find() ? Double.parseDouble(match.group(1)) : fallback;
+    }
+
+    private static String string(String payload, String key) {
+        Matcher match = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").matcher(payload);
+        if (!match.find()) return null;
+        return match.group(1).replace("\\\"", "\"").replace("\\\\", "\\");
     }
 }

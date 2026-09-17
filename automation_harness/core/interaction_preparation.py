@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from automation_harness.models.gui import ActionType, GuiAction
+from automation_harness.models.gui import ActionType, GuiAction, ObjectType
 
 
 @dataclass(frozen=True)
@@ -78,9 +78,22 @@ _FOCUS_REQUIRED_ACTIONS = frozenset({
 })
 
 
-def preparation_requirement(action: GuiAction | ActionType | str | Mapping[str, Any]) -> PreparationRequirement:
+def preparation_requirement(
+    action: GuiAction | ActionType | str | Mapping[str, Any],
+    *,
+    object_type: ObjectType | None = None,
+) -> PreparationRequirement:
     """Return the minimum preconditions for one semantic interaction."""
     semantic = GuiAction.from_value(action)
+    if semantic.type in _POINTER_ACTIONS and object_type in {
+        ObjectType.MENU_ITEM,
+        ObjectType.CHECK_MENU_ITEM,
+        ObjectType.RADIO_MENU_ITEM,
+        ObjectType.CONTEXT_MENU,
+    }:
+        # Popup/menu-item windows are transient. Raising or focusing their
+        # JavaFX PopupWindow can dismiss it before the pointer action executes.
+        return PreparationRequirement(False, False, require_window_activation=False)
     if semantic.type in _POINTER_ACTIONS:
         return PreparationRequirement(True, False, require_window_activation=True)
     if semantic.type == ActionType.SELECT_MENU_ITEM:

@@ -1,5 +1,7 @@
 package automation.harness.agent;
 
+import java.util.UUID;
+
 /**
  * Deliberately small agent bootstrap.  Transport and adapters are supplied by
  * the host application's Java integration in the next vertical slice; keeping
@@ -10,17 +12,14 @@ public final class AutomationAgent {
     private AutomationAgent() { }
 
     public static void premain(String arguments) {
-        // Never create a network listener without a run-scoped token supplied
-        // by the Python java-desktop backend.
-        if (arguments == null || !arguments.contains("token=")) {
-            return;
-        }
         System.setProperty("automation.harness.agent.enabled", "true");
         String token = argument(arguments, "token");
         String port = argument(arguments, "port");
-        if (token == null || port == null) return;
+        String discovery = argument(arguments, "discovery");
+        if (token == null || token.isBlank()) token = UUID.randomUUID().toString();
+        if (port == null || port.isBlank()) port = "0";
         try {
-            server = new AgentServer(token, Integer.parseInt(port));
+            server = new AgentServer(token, Integer.parseInt(port), discovery);
         } catch (Exception exception) {
             throw new IllegalStateException("could not start automation harness agent", exception);
         }
@@ -38,6 +37,7 @@ public final class AutomationAgent {
     }
 
     private static String argument(String arguments, String key) {
+        if (arguments == null) return null;
         for (String part : arguments.split("[,;]")) {
             String[] pair = part.split("=", 2);
             if (pair.length == 2 && pair[0].trim().equals(key)) return pair[1].trim();

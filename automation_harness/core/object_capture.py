@@ -226,6 +226,14 @@ class ObjectCaptureService:
                 actions=frozenset({"resolve"}),
                 expected_states={"visible": True},
                 revision=revision,
+                object_type=ObjectType.CUSTOM,
+                properties={
+                    **dict(captured.backend_properties or {}),
+                    "coordinate_space": "normalized-owner",
+                    "locator_status": "ready",
+                },
+                framework="visual",
+                native_class=captured.native_class,
                 scope=hierarchy_contract(captured),
             )
         if criteria is not None and identification is not None:
@@ -315,7 +323,18 @@ class ObjectCaptureService:
             revision=existing.revision + 1,
             validate_live=validate_live,
         )
-        proposed = replace(proposed, object_id=existing.object_id)
+        properties = dict(proposed.properties or {})
+        if any(strategy.type == "anchored_visual" for strategy in proposed.strategies):
+            properties["coordinate_space"] = "normalized-owner"
+            properties["locator_status"] = "ready"
+            properties.pop("recapture_reason", None)
+            properties.pop("previous_owner_object_id", None)
+        proposed = replace(
+            proposed,
+            object_id=existing.object_id,
+            owner_object_id=existing.owner_object_id,
+            properties=properties,
+        )
         comparison = recapture_comparison(existing, captured, proposed)
         return proposed, comparison
     def save_capture(

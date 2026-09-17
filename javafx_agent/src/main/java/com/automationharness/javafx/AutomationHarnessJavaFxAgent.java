@@ -107,14 +107,15 @@ public final class AutomationHarnessJavaFxAgent {
                 writeResponse(writer, error("invalid bridge token"));
                 return;
             }
-            writeResponse(writer, dispatch(request));
-        } catch (Throwable error) {
+            Map<String, Object> response;
             try {
-                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
-                writeResponse(writer, error(error.getClass().getSimpleName() + ": " + error.getMessage()));
-            } catch (Throwable ignored) {
-                // Client may already have disconnected.
+                response = dispatch(request);
+            } catch (Throwable error) {
+                response = error(error.getClass().getSimpleName() + ": " + error.getMessage());
             }
+            writeResponse(writer, response);
+        } catch (Throwable error) {
+            System.err.println("[automation-harness-javafx] client request failed: " + error);
         }
     }
 
@@ -325,7 +326,8 @@ public final class AutomationHarnessJavaFxAgent {
                         "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
                         "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
                         "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
-                        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab")));
+                        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab",
+                        "TitledPane", "Accordion")));
 
         private FxRuntime() {
         }
@@ -568,13 +570,16 @@ public final class AutomationHarnessJavaFxAgent {
         static Map<String, Object> activate(final Map<String, Object> identification) throws Exception {
             return onFx(() -> {
                 NodeMatch match = unique(resolve(identification, true), identification);
-                Method fire = findMethod(match.node.getClass(), "fire");
-                if (fire == null || fire.getParameterCount() != 0) {
-                    throw new UnsupportedOperationException("JavaFX node has no semantic fire() action: " + match.node.getClass().getName());
+                boolean menu = isInstance("javafx.scene.control.Menu", match.node);
+                Method operation = findMethod(match.node.getClass(), menu ? "show" : "fire");
+                if (operation == null || operation.getParameterCount() != 0) {
+                    throw new UnsupportedOperationException(
+                            "JavaFX object has no semantic " + (menu ? "show()" : "fire()")
+                                    + " action: " + match.node.getClass().getName());
                 }
-                fire.invoke(match.node);
+                operation.invoke(match.node);
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
-                result.put("action", "fire");
+                result.put("action", menu ? "show" : "fire");
                 result.put("node", nodePayload(match.node, match.window));
                 return result;
             });
@@ -626,10 +631,13 @@ public final class AutomationHarnessJavaFxAgent {
                     Map<String, Object> selector = (Map<String, Object>) selectors.get(index);
                     Object child = menuChild(current, selector);
                     boolean terminal = index == selectors.size() - 1;
-                    Method operation = findMethod(child.getClass(), terminal ? "fire" : "show");
+                    boolean terminalMenu = terminal && isInstance("javafx.scene.control.Menu", child);
+                    Method operation = findMethod(
+                            child.getClass(), !terminal || terminalMenu ? "show" : "fire");
                     if (operation == null || operation.getParameterCount() != 0) {
                         throw new UnsupportedOperationException(
-                                "JavaFX menu segment has no " + (terminal ? "fire()" : "show()")
+                                "JavaFX menu segment has no "
+                                        + (!terminal || terminalMenu ? "show()" : "fire()")
                                         + ": " + child.getClass().getName());
                     }
                     operation.invoke(child);
@@ -990,7 +998,11 @@ public final class AutomationHarnessJavaFxAgent {
             List<Object> stages = new ArrayList<Object>();
             stages.add(stage("mandatory", mandatory, matches.size()));
             for (Map.Entry<String, Object> entry : assistive.entrySet()) {
-                if (applyOrdinal && matches.size() <= 1) {
+                // Assistive criteria disambiguate a non-unique mandatory
+                // result. They must never invalidate an object that mandatory
+                // identity has already resolved uniquely; skin ancestry and
+                // layout are allowed to change between capture and playback.
+                if (matches.size() <= 1) {
                     break;
                 }
                 Map<String, Object> criterion = new LinkedHashMap<String, Object>();
@@ -1021,7 +1033,6 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static boolean matches(NodeMatch match, Map<String, Object> criteria) throws Exception {
-            Map<String, Object> node = nodePayload(match.node, match.window);
             for (Map.Entry<String, Object> entry : criteria.entrySet()) {
                 String key = entry.getKey();
                 Object expected = entry.getValue();
@@ -1049,11 +1060,39 @@ public final class AutomationHarnessJavaFxAgent {
                     }
                     continue;
                 }
-                if (!valueMatches(node.get(key), expected)) {
+                if (!valueMatches(criterionValue(match, key), expected)) {
                     return false;
                 }
             }
             return true;
+        }
+
+        private static Object criterionValue(NodeMatch match, String key) throws Exception {
+            Object node = match.node;
+            if ("id".equals(key)) return stringOrNull(call(node, "getId"));
+            if ("class".equals(key)) return node.getClass().getName();
+            if ("accessible_role".equals(key)) return enumName(call(node, "getAccessibleRole"));
+            if ("accessible_text".equals(key)) return stringOrNull(call(node, "getAccessibleText"));
+            if ("accessible_help".equals(key)) return stringOrNull(call(node, "getAccessibleHelp"));
+            if ("text".equals(key)) return optionalNoArgString(node, "getText");
+            if ("window".equals(key)) return windowTitle(match.window);
+            if ("user_data".equals(key)) return scalarValue(call(node, "getUserData"));
+            if ("properties".equals(key)) return scalarProperties(node);
+            if ("layout".equals(key)) return layoutConstraints(node);
+            if ("hierarchy".equals(key)) return hierarchy(node);
+            if ("style_classes".equals(key)) return listValue(call(node, "getStyleClass"));
+            if ("sibling_index".equals(key)) return siblingIndex(node);
+            if ("sibling_count".equals(key)) return siblingCount(node);
+            if ("visible".equals(key)) return Boolean.valueOf(boolCall(node, "isVisible", true));
+            if ("disabled".equals(key)) return Boolean.valueOf(boolCall(node, "isDisable", false));
+            if ("focused".equals(key)) return Boolean.valueOf(boolCall(node, "isFocused", false));
+            if ("managed".equals(key)) return Boolean.valueOf(boolCall(node, "isManaged", true));
+            if ("focus_traversable".equals(key)) {
+                return Boolean.valueOf(boolCall(node, "isFocusTraversable", false));
+            }
+            // Unknown extensions remain compatible, but only they pay the
+            // cost of constructing a complete diagnostic payload.
+            return nodePayload(node, match.window).get(key);
         }
 
         @SuppressWarnings("unchecked")
@@ -1142,9 +1181,22 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 for (Object node : flatten(root)) {
                     result.add(new NodeMatch(node, window));
+                    if (isInstance("javafx.scene.control.MenuBar", node)) {
+                        addLogicalMenuMatches(node, window, result);
+                    }
                 }
             }
             return result;
+        }
+
+        private static void addLogicalMenuMatches(
+                Object parent, Object window, List<NodeMatch> result) throws Exception {
+            for (Object child : menuChildrenIfPresent(parent)) {
+                result.add(new NodeMatch(child, window));
+                if (isInstance("javafx.scene.control.Menu", child)) {
+                    addLogicalMenuMatches(child, window, result);
+                }
+            }
         }
 
         private static List<Object> flatten(Object root) throws Exception {
@@ -1186,7 +1238,12 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("managed", boolCall(node, "isManaged", true));
             payload.put("focus_traversable", boolCall(node, "isFocusTraversable", false));
             payload.put("style_classes", listValue(call(node, "getStyleClass")));
-            payload.put("bounds", boundsList(boundsOnScreen(node)));
+            double[] bounds = boundsOnScreen(node);
+            if (bounds == null && (isInstance("javafx.scene.control.Menu", node)
+                    || isInstance("javafx.scene.control.MenuItem", node))) {
+                bounds = menuBounds(node);
+            }
+            payload.put("bounds", boundsList(bounds));
             payload.put("hierarchy", hierarchy(node));
             payload.put("stable_ancestors", stableAncestors(node));
             payload.put("user_data", scalarValue(call(node, "getUserData")));
@@ -1397,6 +1454,10 @@ public final class AutomationHarnessJavaFxAgent {
 
         private static List<Object> actions(Object node) {
             List<Object> result = new ArrayList<Object>();
+            if (isInstance("javafx.scene.control.Menu", node)) {
+                result.add("activate");
+                result.add("click");
+            }
             Method fire = findMethod(node.getClass(), "fire");
             if (fire != null && fire.getParameterCount() == 0) {
                 result.add("activate");

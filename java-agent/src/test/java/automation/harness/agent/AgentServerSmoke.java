@@ -13,7 +13,7 @@ public final class AgentServerSmoke {
     private AgentServerSmoke() { }
 
     public static void main(String[] arguments) throws Exception {
-        AgentServer server = new AgentServer("smoke-token", 0);
+        AgentServer server = new AgentServer("smoke-token", 0, null);
         String endpoint = "http://127.0.0.1:" + server.port();
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "/record_start"))

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Never inject a previously built harness agent into javac/jar while replacing
+# that agent. This also lets a failed prior build recover from a stale path.
+unset JAVA_TOOL_OPTIONS
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$ROOT/build"
 CLASSES="$BUILD/classes"

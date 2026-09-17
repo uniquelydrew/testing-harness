@@ -43,7 +43,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 call.group or "Ungrouped",
                 call.node_id,
                 call.step_id,
-                _call_summary(call),
+                _call_summary(call, self.repository),
             ))
         self._restore_flow_selection(selected)
         self.set_status(
@@ -63,7 +63,10 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             self.detail.get_buffer().set_text(
                 "%d calls selected\n\n%s" % (
                     len(calls),
-                    "\n".join("• %s — %s" % (item.node_id, _call_summary(item)) for item in calls),
+                    "\n".join(
+                        "• %s — %s" % (item.node_id, _call_summary(item, self.repository))
+                        for item in calls
+                    ),
                 )
             )
             return
@@ -77,7 +80,10 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         ]
         if call.step_id == "gui.object.action":
             action = call.inputs.get("action", {})
-            lines.append("  Target: %s" % call.inputs.get("component_id", ""))
+            target = call.inputs.get("component_id", "")
+            if target and self.repository.contains(target):
+                target = self.repository.get(target).component_id
+            lines.append("  Target: %s" % target)
             lines.append("  Action: %s" % (action.get("type", "") if isinstance(action, dict) else action))
             if isinstance(action, dict):
                 for key, value in action.items():
@@ -135,6 +141,8 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             component_entry = Gtk.ComboBoxText.new_with_entry()
             known = sorted(self.repository.components)
             current_component = str(call.inputs.get("component_id", ""))
+            if current_component and self.repository.contains(current_component):
+                current_component = self.repository.get(current_component).component_id
             for component_id in known:
                 component_entry.append_text(component_id)
             component_entry.get_child().set_text(current_component)
@@ -199,7 +207,14 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 action = {"type": action_type}
                 for name, (entry, original) in action_parameter_fields.items():
                     action[name] = _parse_editor_value(entry.get_text(), original)
-                inputs = {"component_id": component_id, "action": action}
+                # Immutable identity remains in the repository; authored plans
+                # persist the readable alias.
+                component_reference = (
+                    self.repository.get(component_id).component_id
+                    if self.repository.contains(component_id)
+                    else component_id
+                )
+                inputs = {"component_id": component_reference, "action": action}
             else:
                 inputs = {
                     name: _parse_editor_value(entry.get_text(), original)
@@ -292,10 +307,12 @@ def _parse_editor_value(raw, original):
         return raw
 
 
-def _call_summary(call):
+def _call_summary(call, repository=None):
     pieces = []
     if call.step_id == "gui.object.action":
         target = call.inputs.get("component_id")
+        if target and repository is not None and repository.contains(target):
+            target = repository.get(target).component_id
         action = call.inputs.get("action", {})
         if target:
             pieces.append("object=%s" % target)

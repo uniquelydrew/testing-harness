@@ -1,6 +1,7 @@
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_identity_sync import (
     find_existing_component_ids,
+    readable_plan_component_references,
     rename_plan_component,
     rename_repository_component,
 )
@@ -70,6 +71,51 @@ def test_capture_identity_conflict_does_not_match_existing_component():
     assert find_existing_component_ids(repository, _javafx_capture()) == ()
 
 
+def test_same_named_objects_under_different_parents_do_not_collapse():
+    definition = ComponentDefinition(
+        component_id="Primary.Save",
+        object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {
+            "identification": {
+                "mandatory": {"name": "Save", "role": "push button"},
+                "assistive": {"parent": {"accessible_id": "primary-pane"}},
+            }
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    capture = CapturedComponent(
+        name="Save", role="push button", description=None, accessible_id=None,
+        application="Demo", window="Demo", hierarchy=("secondary-pane", "Save"),
+        actions=("click",), bounds=(0, 0, 10, 10),
+        state=ComponentState(present=True), parent_accessible_id="secondary-pane",
+        object_type=ObjectType.BUTTON,
+    )
+
+    assert find_existing_component_ids(repository, capture) == ()
+
+
+def test_missing_stored_identity_condition_is_not_treated_as_a_match():
+    definition = ComponentDefinition(
+        component_id="Stable.Save",
+        object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {
+            "identification": {
+                "mandatory": {"accessible_id": "save-button", "role": "push button"},
+                "assistive": {"name": "Save"},
+            }
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    capture = CapturedComponent(
+        name="Save", role="push button", description=None, accessible_id=None,
+        application="Demo", window="Demo", hierarchy=("Save",),
+        actions=("click",), bounds=(0, 0, 10, 10),
+        state=ComponentState(present=True), object_type=ObjectType.BUTTON,
+    )
+
+    assert find_existing_component_ids(repository, capture) == ()
+
+
 def test_repository_rename_preserves_immutable_object_id_and_removes_old_name():
     definition = ComponentDefinition(
         component_id="Generated.Name",
@@ -115,3 +161,29 @@ def test_plan_component_rename_updates_steps_inline_objects_and_definitions():
     assert renamed.step_definitions["custom.step"]["description"] == (
         "Generated.Name is text here and should not be rewritten"
     )
+
+
+def test_plan_uuid_references_are_migrated_to_readable_component_names():
+    definition = ComponentDefinition(
+        component_id="File Menu",
+        object_id="33333333-3333-3333-3333-333333333333",
+        strategies=(ComponentStrategy("javafx", {
+            "identification": {"mandatory": {"id": "fileMenu"}}
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    plan = TestPlan(
+        name="readable",
+        steps=(StepCall(
+            node_id="step-1",
+            step_id="gui.object.action",
+            inputs={"component_id": definition.object_id, "action": {"type": "click"}},
+            completion={"object": definition.object_id, "state": "visible", "equals": True},
+        ),),
+    )
+
+    migrated = readable_plan_component_references(plan, repository)
+
+    assert migrated.steps[0].inputs["component_id"] == "File Menu"
+    assert migrated.steps[0].completion["object"] == "File Menu"
+    assert repository.get("File Menu").object_id == definition.object_id

@@ -4,17 +4,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
-HIERARCHY_SCHEMA = "object-hierarchy/v1"
+HIERARCHY_SCHEMA = "object-hierarchy/v2"
 
-# These labels describe toolkit plumbing rather than ownership. They may remain
-# in capture diagnostics, but they do not become repository parentage.
-_GENERIC_WRAPPERS = frozenset({
-    "anchor pane", "anchor-pane", "application", "border pane", "border-pane",
-    "component", "content", "content pane", "content-pane", "container",
-    "desktop", "filler", "frame", "glass pane", "glass-pane", "grid pane",
-    "grid-pane", "hbox", "jframe", "jfxpanel", "jlabel", "jpanel", "layer",
-    "node", "pane", "panel", "root", "scene", "scroll pane", "scroll-pane",
-    "stack pane", "stack-pane", "vbox", "viewport", "window",
+# Only non-runtime bookkeeping labels are discarded. Toolkit containers such as
+# JPanel/JFXPanel/Pane are real runtime objects and must remain in lineage so
+# every repository parent can be independently resolved and highlighted.
+_NON_OBJECT_WRAPPERS = frozenset({
+    "application", "desktop", "root", "scene", "window",
 })
 
 _MUTABLE_FIELDS = frozenset({
@@ -42,7 +38,13 @@ class HierarchySegment:
 
 
 def condense_labels(labels, *, window: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return (retained semantic ancestry, discarded wrapper labels)."""
+    """Return concrete runtime ancestry and discarded non-object labels.
+
+    The old named-semantic condensation removed toolkit containers and could
+    consequently create logical repository parents that had no independently
+    resolvable runtime object. Lineage now preserves concrete containers; only
+    desktop/application/window/scene bookkeeping and duplicates are removed.
+    """
     retained: list[str] = []
     discarded: list[str] = []
     window_key = str(window or "").strip().casefold()
@@ -50,8 +52,10 @@ def condense_labels(labels, *, window: str | None = None) -> tuple[tuple[str, ..
         label = str(raw or "").strip()
         normalized = " ".join(label.casefold().replace("_", " ").split())
         if not label or normalized == window_key:
+            if label:
+                discarded.append(label)
             continue
-        if normalized in _GENERIC_WRAPPERS:
+        if normalized in _NON_OBJECT_WRAPPERS:
             discarded.append(label)
             continue
         if retained and retained[-1].casefold() == label.casefold():
@@ -62,7 +66,7 @@ def condense_labels(labels, *, window: str | None = None) -> tuple[tuple[str, ..
 
 
 def hierarchy_contract(captured) -> dict[str, Any]:
-    """Build the persisted object-hierarchy/v1 ownership contract."""
+    """Build persisted ownership using only concrete runtime ancestry."""
     window = getattr(captured, "window", None)
     application = getattr(captured, "application", None)
     retained, discarded = condense_labels(getattr(captured, "hierarchy", ()), window=window)
@@ -93,8 +97,8 @@ def hierarchy_contract(captured) -> dict[str, Any]:
         "path": [HierarchySegment(label).to_dict() for label in retained],
         "target": target,
         "condensation": {
-            "algorithm": "named-semantic-ancestry",
-            "removed_wrappers": list(discarded),
+            "algorithm": "concrete-runtime-ancestry",
+            "removed_non_objects": list(discarded),
             "removed_count": len(discarded),
         },
         **({"parent": parent} if parent else {}),

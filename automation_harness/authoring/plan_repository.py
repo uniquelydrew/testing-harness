@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Iterable
 
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.captured_repository import materialize_capture
+from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 
 
@@ -64,8 +66,11 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
     if len(matches) > 1:
         raise ValueError("captured target matches multiple repository objects: %s" % ", ".join(matches))
     component_id = _unique_component_id(repository, capture)
-    definition = definition_from_capture(component_id, capture)
-    return repository.with_component(definition), component_id, True
+    repository, definition, _created = materialize_capture(
+        HybridObjectCaptureService(), repository, component_id, capture,
+        validate_live=False,
+    )
+    return repository, definition.component_id, True
 
 
 def matching_component_ids(repository: ComponentRepository, capture: CapturedComponent) -> list[str]:

@@ -14,6 +14,8 @@ from automation_harness.authoring.object_identity_workbench import ObjectIdentit
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
+from automation_harness.core.object_resolution import resolve_repository_object
+from automation_harness.core.repository_hierarchy import concrete_parent_ids, repository_migration_report
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy
 
 
@@ -29,6 +31,7 @@ class _RepositoryWorkbenchHost:
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
         self.repository = ComponentRepository.load((self.path,))
+        self.migration_report = repository_migration_report(self.repository)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
         self.window.set_decorated(False)
@@ -112,6 +115,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
 
     def _load_context_async(self):
         try:
+            self._repository_host.migration_report = repository_migration_report(self._repository_host.repository)
             context, definitions = _repository_context(self._repository_host.repository)
             self._definition_by_key = definitions
         except Exception as exc:
@@ -133,7 +137,14 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             if selected is not None and selected.is_semantic:
                 self.selected_key = selected.key
                 self._render_properties(selected)
-        self._set_status("Repository scope loaded — %d object(s) prechecked" % len(self._definition_by_key))
+        report = self._repository_host.migration_report
+        detail = ""
+        if report.synthetic_lineage_segments_ignored or report.visual_objects_needing_recapture:
+            detail = " — %d legacy scope segment(s) ignored; %d visual object(s) need recapture" % (
+                report.synthetic_lineage_segments_ignored,
+                len(report.visual_objects_needing_recapture),
+            )
+        self._set_status("Repository scope loaded — %d object(s) prechecked%s" % (len(self._definition_by_key), detail))
         return result
 
     def _configure_repository_toolbar(self):
@@ -275,9 +286,45 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         if node.key in self._definition_by_key:
             definition = self._definition_by_key[node.key]
             return "Repository object · %s · immutable object ID %s" % (
-                definition.object_type.value, definition.object_id,
+                definition.object_type.value,
+                definition.object_id + (
+                    " · NEEDS RECAPTURE"
+                    if dict(definition.properties or {}).get("locator_status") == "needs_recapture"
+                    else ""
+                ),
             )
         return "Repository hierarchy"
+
+    def highlight_selected(self):
+        """Resolve the selected persisted object through the shared dispatcher."""
+        node = self._selected_node()
+        definition = self._definition_by_key.get(node.key) if node is not None else None
+        if definition is None:
+            return self.app._info("Highlight object", "Select a repository object first.")
+        self._highlight_generation += 1
+        generation = self._highlight_generation
+        self._set_status("Resolving %s for highlight…" % definition.component_id)
+
+        def worker():
+            try:
+                result = resolve_repository_object(
+                    self.app.capture, self._repository_host.repository, definition,
+                )
+            except Exception as exc:
+                GLib.idle_add(self._highlight_resolution_failed, generation, exc)
+            else:
+                GLib.idle_add(self._repository_highlight_ready, generation, result)
+
+        import threading
+        threading.Thread(target=worker, name="repository-highlight-resolver", daemon=True).start()
+
+    def _repository_highlight_ready(self, generation, result):
+        if generation != self._highlight_generation:
+            return False
+        self.app._show_highlight(result.bounds, False)
+        GLib.timeout_add(1400, self._clear_highlight)
+        self._set_status("Highlighted %s via %s" % (result.definition.component_id, result.strategy))
+        return False
 
     def _render_properties(self, node):
         """Render persisted locator identity directly for every resolver type."""
@@ -403,39 +450,32 @@ def _repository_context(repository: ComponentRepository):
         key="repository-root", label="Object Repository", payload={},
         is_window_root=True, is_semantic=False,
     )
-    branches: dict[tuple[str, ...], CaptureContextNode] = {(): root}
     captured_by_key = {}
     definitions = {}
     target_keys = []
+    nodes_by_id = {}
 
     for definition in sorted(repository.components.values(), key=lambda item: item.component_id):
-        parts = tuple(part for part in definition.component_id.split(".") if part) or (definition.component_id,)
-        parent = root
-        prefix: tuple[str, ...] = ()
-        for part in parts[:-1]:
-            prefix = prefix + (part,)
-            branch = branches.get(prefix)
-            if branch is None:
-                branch = CaptureContextNode(
-                    key="repo-branch:" + ".".join(prefix), label=part,
-                    payload={"repository_path": ".".join(prefix)},
-                    is_semantic=False,
-                )
-                parent.children.append(branch)
-                branches[prefix] = branch
-            parent = branch
-
         key = "repo-object:" + definition.object_id
         capture = _capture_from_definition(definition)
         payload = _capture_payload(capture, definition)
         node = CaptureContextNode(
-            key=key, label=parts[-1], payload=payload,
+            key=key, label=definition.component_id.rsplit(".", 1)[-1], payload=payload,
             is_target=True, is_semantic=True,
         )
-        parent.children.append(node)
+        nodes_by_id[definition.object_id] = node
         captured_by_key[key] = capture
         definitions[key] = definition
         target_keys.append(key)
+
+    # Only real ComponentDefinitions may occupy the hierarchy.  Legacy dotted
+    # names are not converted into pseudo-objects; when an actual prefix object
+    # exists it can be inferred as the concrete owner for display/migration.
+    parent_ids = concrete_parent_ids(repository)
+    for definition in sorted(repository.components.values(), key=lambda item: item.component_id):
+        owner_id = parent_ids[definition.object_id]
+        parent = nodes_by_id.get(owner_id, root)
+        parent.children.append(nodes_by_id[definition.object_id])
 
     target_key = target_keys[0] if target_keys else "repository-root"
     context = CaptureContext(

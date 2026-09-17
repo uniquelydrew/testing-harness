@@ -19,7 +19,7 @@ _TEXT_KEYS = frozenset({"text", "accessible_text", "name"})
 _SCOPE_KEYS = frozenset({"window", "application"})
 _STRONG_KEYS = frozenset({
     "id", "accessible_id", "properties", "user_data", "name",
-    "accessible_text", "text",
+    "accessible_text", "text", "component_path",
 })
 
 
@@ -81,6 +81,27 @@ def rename_plan_component(plan: TestPlan, old_component_id: str, new_component_i
 
     step_definitions = _rewrite_component_refs(plan.step_definitions, old_component_id, new_component_id)
     return replace(plan, steps=steps, objects=objects, step_definitions=step_definitions)
+
+
+def readable_plan_component_references(
+    plan: TestPlan,
+    repository: ComponentRepository,
+) -> TestPlan:
+    """Migrate UUID object references to their readable repository aliases.
+
+    Repository ``object_id`` values remain the durable identity used to detect
+    rename and reparent operations. Test Plans are authored artifacts, however,
+    and their component references must remain comprehensible without looking
+    up UUIDs in the repository.
+    """
+    current = plan
+    for definition in repository.components.values():
+        current = rename_plan_component(
+            current,
+            definition.object_id,
+            definition.component_id,
+        )
+    return current
 
 
 def _rename_step(step: StepCall, old: str, new: str) -> StepCall:
@@ -155,11 +176,13 @@ def _identity_matches(expected: Mapping[str, Any], captured: Mapping[str, Any]) 
     compared = 0
     strong = False
     for key, expected_value in expected.items():
-        if key in {"hierarchy", "lineage", "parent", "ancestor", "layout", "style_classes", "ordinal"}:
+        if key in {"style_classes", "ordinal"}:
             continue
         actual, present = _lookup_capture_value(captured, key)
         if not present:
-            continue
+            # Identity reuse is a destructive decision: a missing condition is
+            # not evidence that two captures refer to the same live object.
+            return False
         compared += 1
         if not _value_equal(actual, expected_value):
             return False

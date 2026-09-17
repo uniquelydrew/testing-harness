@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 from automation_harness.drivers.javafx_bridge import JavaFxRecordingBridge, JavaFxRecordingTransport
@@ -21,6 +22,14 @@ class JavaFxRecordingAdapter:
         self._emit: Callable[[Observation], None] | None = None
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
+        self._diagnostic_sink = None
+
+    def set_diagnostic_sink(self, sink) -> None:
+        self._diagnostic_sink = sink
+
+    def _diagnostic(self, event, **payload) -> None:
+        if self._diagnostic_sink is not None:
+            self._diagnostic_sink(event, **payload)
 
     def start(self, emit: Callable[[Observation], None]) -> None:
         if self._thread is not None:
@@ -28,6 +37,7 @@ class JavaFxRecordingAdapter:
         self._emit = emit
         self._stopping.clear()
         self.transport.request("record_start", {})
+        self._diagnostic("record_start_response", endpoint=getattr(self.transport, "endpoint", None))
         self._thread = threading.Thread(target=self._read_loop, name="javafx-recording", daemon=True)
         self._thread.start()
 
@@ -37,6 +47,7 @@ class JavaFxRecordingAdapter:
             self._thread.join(timeout=max(1.0, self.read_timeout * 4))
             self._thread = None
         response = self.transport.request("record_stop", {})
+        self._diagnostic("record_stop_response", response=response)
         self._emit_events(response.get("observations", ()))
         self._emit = None
 
@@ -44,8 +55,10 @@ class JavaFxRecordingAdapter:
         while not self._stopping.is_set():
             try:
                 response = self.transport.request("record_read", {"timeout": self.read_timeout})
+                self._diagnostic("record_read_response", response=response)
                 self._emit_events(response.get("observations", ()))
-            except Exception:
+            except Exception as exc:
+                self._diagnostic("record_read_failed", error_type=type(exc).__name__, error=str(exc))
                 # The session will stop and surface transport failures through
                 # its adapter lifecycle; do not spin on a failed endpoint.
                 self._stopping.set()
@@ -54,8 +67,10 @@ class JavaFxRecordingAdapter:
         if not isinstance(values, (list, tuple)) or self._emit is None:
             return
         for value in values:
+            self._diagnostic("raw_observation", value=value)
             if isinstance(value, Mapping):
                 observation = self.normalize(value)
+                self._diagnostic("normalized_observation", value=value, observation=observation)
                 if observation is not None:
                     self._emit(observation)
 
@@ -73,7 +88,12 @@ class JavaFxRecordingAdapter:
         if kind == "pointer":
             point = event.get("coordinates")
             coordinates = tuple(int(value) for value in point) if isinstance(point, (list, tuple)) and len(point) == 2 else None
-            return PointerInteraction(timestamp, "javafx", target, dict(evidence), str(event.get("button", "primary")), str(event.get("phase", "released")), coordinates)
+            source = str(getattr(target, "framework", None) or "javafx")
+            if target is not None and coordinates is not None:
+                properties = dict(target.backend_properties or {})
+                properties["capture_point"] = list(coordinates)
+                target = replace(target, backend_properties=properties)
+            return PointerInteraction(timestamp, source, target, dict(evidence), str(event.get("button", "primary")), str(event.get("phase", "released")), coordinates)
         if kind == "action":
             return ActionFired(timestamp, "javafx", target, dict(evidence), str(event.get("action", "activate")))
         if kind == "text_changed":

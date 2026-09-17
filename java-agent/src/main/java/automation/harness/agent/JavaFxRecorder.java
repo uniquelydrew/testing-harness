@@ -30,11 +30,20 @@ final class JavaFxRecorder {
     static void stop() { buffer = null; }
 
     static Map<String, Object> captureNextClick(long timeoutMillis) throws Exception {
+        CompletableFuture<Map<String, Object>> future = beginCapture();
+        try { return future.get(timeoutMillis, TimeUnit.MILLISECONDS); }
+        finally { endCapture(future); }
+    }
+
+    static CompletableFuture<Map<String, Object>> beginCapture() {
         CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
         captureFuture = future;
         runOnFxThread(JavaFxRecorder::attachOpenScenes);
-        try { return future.get(timeoutMillis, TimeUnit.MILLISECONDS); }
-        finally { captureFuture = null; }
+        return future;
+    }
+
+    static void endCapture(CompletableFuture<Map<String, Object>> future) {
+        if (captureFuture == future) captureFuture = null;
     }
 
     static Map<String, Object> hitTest(double screenX, double screenY) {
@@ -421,6 +430,13 @@ final class JavaFxRecorder {
                 result.put("menu_children", snapshots);
             }
         }
+        return result;
+    }
+
+    private static List<Object> boundsList(double[] values) {
+        if (values == null) return null;
+        List<Object> result = new java.util.ArrayList<>(values.length);
+        for (double value : values) result.add(value);
         return result;
     }
 
