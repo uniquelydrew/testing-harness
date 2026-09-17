@@ -114,7 +114,9 @@ def open_window(path: Path, *, project_context=None, launching_window=None):
     if artifact_type is ArtifactType.STEP_REGISTRY:
         from automation_harness.authoring.gui.registry_window import StepRegistryWindow
         return _finish(StepRegistryWindow(path, project_context=project_context, opener=open_window), launching_window)
+    from automation_harness.authoring.repository_lineage_runtime import install as install_repository_lineage
     from automation_harness.authoring.repository_direct_authoring_runtime import install as install_repository_authoring
+    install_repository_lineage()
     install_repository_authoring()
     from automation_harness.authoring.gui.repository_identity_workbench_window import RepositoryIdentityWorkbenchWindow
     return _finish(RepositoryIdentityWorkbenchWindow(path, project_context=project_context, opener=open_window), launching_window)
