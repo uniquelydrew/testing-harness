@@ -222,7 +222,10 @@ class ComponentHandle:
     ) -> InteractionPreparation:
         """Establish live-desktop interaction preconditions without firing the object."""
         semantic = GuiAction.from_value(action)
-        requirement = preparation_requirement(semantic)
+        requirement = preparation_requirement(
+            semantic,
+            object_type=self.definition.object_type,
+        )
         if getattr(self.context, "backend", None) != "live-desktop":
             preparation = InteractionPreparation(
                 "none",

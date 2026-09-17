@@ -288,8 +288,10 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                             project = AuthoringProject.load(self.project_context).with_object_repository(assigned_path)
                             save_authoring_project(self.project_context, project); self.project = project
                     assigned_repository, component_id, created = materialize_captured_target(assigned_repository, interaction.target)
-                    object_reference = assigned_repository.get(component_id).object_id
-                    reviewed = replace(interaction, repository_match=RepositoryMatch("known_unique", (object_reference,)))
+                    reviewed = replace(
+                        interaction,
+                        repository_match=RepositoryMatch("known_unique", (component_id,)),
+                    )
                     if created: captured_count += 1
                 except Exception as exc:
                     if diagnostic_session is not None:
@@ -309,8 +311,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
 
             if reviewed.repository_match.component_id is not None and assigned_repository is not None:
                 try:
-                    object_reference = assigned_repository.get(reviewed.repository_match.component_id).object_id
-                    reviewed = replace(reviewed, repository_match=RepositoryMatch("known_unique", (object_reference,)))
+                    readable_reference = assigned_repository.get(
+                        reviewed.repository_match.component_id
+                    ).component_id
+                    reviewed = replace(
+                        reviewed,
+                        repository_match=RepositoryMatch("known_unique", (readable_reference,)),
+                    )
                 except Exception as exc:
                     if diagnostic_session is not None:
                         diagnostic_session.diagnostic_exception(

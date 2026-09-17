@@ -83,6 +83,27 @@ def rename_plan_component(plan: TestPlan, old_component_id: str, new_component_i
     return replace(plan, steps=steps, objects=objects, step_definitions=step_definitions)
 
 
+def readable_plan_component_references(
+    plan: TestPlan,
+    repository: ComponentRepository,
+) -> TestPlan:
+    """Migrate UUID object references to their readable repository aliases.
+
+    Repository ``object_id`` values remain the durable identity used to detect
+    rename and reparent operations. Test Plans are authored artifacts, however,
+    and their component references must remain comprehensible without looking
+    up UUIDs in the repository.
+    """
+    current = plan
+    for definition in repository.components.values():
+        current = rename_plan_component(
+            current,
+            definition.object_id,
+            definition.component_id,
+        )
+    return current
+
+
 def _rename_step(step: StepCall, old: str, new: str) -> StepCall:
     return replace(
         step,

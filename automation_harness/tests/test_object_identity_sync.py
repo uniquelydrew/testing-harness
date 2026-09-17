@@ -1,6 +1,7 @@
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_identity_sync import (
     find_existing_component_ids,
+    readable_plan_component_references,
     rename_plan_component,
     rename_repository_component,
 )
@@ -160,3 +161,29 @@ def test_plan_component_rename_updates_steps_inline_objects_and_definitions():
     assert renamed.step_definitions["custom.step"]["description"] == (
         "Generated.Name is text here and should not be rewritten"
     )
+
+
+def test_plan_uuid_references_are_migrated_to_readable_component_names():
+    definition = ComponentDefinition(
+        component_id="File Menu",
+        object_id="33333333-3333-3333-3333-333333333333",
+        strategies=(ComponentStrategy("javafx", {
+            "identification": {"mandatory": {"id": "fileMenu"}}
+        }),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    plan = TestPlan(
+        name="readable",
+        steps=(StepCall(
+            node_id="step-1",
+            step_id="gui.object.action",
+            inputs={"component_id": definition.object_id, "action": {"type": "click"}},
+            completion={"object": definition.object_id, "state": "visible", "equals": True},
+        ),),
+    )
+
+    migrated = readable_plan_component_references(plan, repository)
+
+    assert migrated.steps[0].inputs["component_id"] == "File Menu"
+    assert migrated.steps[0].completion["object"] == "File Menu"
+    assert repository.get("File Menu").object_id == definition.object_id

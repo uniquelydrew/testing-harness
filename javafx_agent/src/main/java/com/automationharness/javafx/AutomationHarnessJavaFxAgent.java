@@ -107,14 +107,15 @@ public final class AutomationHarnessJavaFxAgent {
                 writeResponse(writer, error("invalid bridge token"));
                 return;
             }
-            writeResponse(writer, dispatch(request));
-        } catch (Throwable error) {
+            Map<String, Object> response;
             try {
-                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
-                writeResponse(writer, error(error.getClass().getSimpleName() + ": " + error.getMessage()));
-            } catch (Throwable ignored) {
-                // Client may already have disconnected.
+                response = dispatch(request);
+            } catch (Throwable error) {
+                response = error(error.getClass().getSimpleName() + ": " + error.getMessage());
             }
+            writeResponse(writer, response);
+        } catch (Throwable error) {
+            System.err.println("[automation-harness-javafx] client request failed: " + error);
         }
     }
 

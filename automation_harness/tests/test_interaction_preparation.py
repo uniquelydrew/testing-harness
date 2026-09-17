@@ -15,6 +15,15 @@ def test_pointer_actions_raise_window_without_preemptive_component_focus():
     assert not requirement.require_focus
 
 
+def test_transient_menu_item_click_does_not_reactivate_popup_window():
+    requirement = preparation_requirement(
+        ActionType.CLICK,
+        object_type=ObjectType.MENU_ITEM,
+    )
+    assert not requirement.activate_window
+    assert not requirement.require_window_activation
+
+
 def test_text_actions_require_verified_component_focus():
     requirement = preparation_requirement(ActionType.SET_TEXT)
     assert requirement.activate_window
