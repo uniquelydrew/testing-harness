@@ -42,7 +42,7 @@ final class AgentServer {
     int port() { return server.getAddress().getPort(); }
 
     private Path writeDiscovery(String token, String configuredDirectory) throws IOException {
-        String configured = discoveryDirectory;
+        String configured = configuredDirectory;
         if (configured == null || configured.trim().isEmpty()) configured = System.getenv("AUTOMATION_HARNESS_JAVA_AGENT_DISCOVERY_DIR");
         Path directory = configured == null || configured.trim().isEmpty() ? Paths.get(System.getProperty("java.io.tmpdir"), "automation-harness-java-agent") : Paths.get(configured);
         Files.createDirectories(directory); restrict(directory, true);
