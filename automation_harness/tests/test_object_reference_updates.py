@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from automation_harness.authoring.object_reference_updates import (
     apply_project_reference_updates,
     normalize_rename_map,
     preview_project_reference_updates,
 )
+from automation_harness.authoring import object_reference_updates
 from automation_harness.authoring.plan_repository import assign_repository
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.step_registry import AuthoringStepRegistry, save_step_registry
@@ -67,6 +70,17 @@ def test_normalize_rename_map_composes_reparents():
     }
 
 
+def test_immutable_object_reference_requires_no_alias_rewrite():
+    definition = _definition("A.Button")
+    plan = _plan("Flow", definition.object_id)
+
+    rewritten = object_reference_updates._rewrite_plan(
+        plan, {"A.Button": "B.Button"},
+    )[0]
+
+    assert rewritten.steps[0].inputs["component_id"] == definition.object_id
+
+
 def test_preview_finds_plan_and_registry_bound_to_repository(tmp_path: Path):
     repository_path = tmp_path / "objects.ahobjects"
     ComponentRepository({"A.Button": _definition("A.Button")}).save(repository_path)
@@ -124,6 +138,41 @@ def test_apply_updates_repository_plan_and_registry_as_one_operation(tmp_path: P
     assert {item.artifact_type for item in report.updates} == {
         "object_repository", "test_plan", "step_registry",
     }
+
+
+def test_transaction_restores_all_files_when_a_commit_replace_fails(tmp_path: Path, monkeypatch):
+    repository_path = tmp_path / "objects.ahobjects"
+    old = _definition("A.Button")
+    ComponentRepository({"A.Button": old}).save(repository_path)
+    plan_path = tmp_path / "flow.ahplan"
+    save_plan(assign_repository(_plan("Flow", "A.Button"), plan_path, repository_path), plan_path)
+    registry_path = tmp_path / "steps.ahregistry"
+    save_step_registry(registry_path, AuthoringStepRegistry(
+        name="Steps", root=tmp_path, repository=repository_path, steps=(_reusable("A.Button"),),
+    ))
+    project_path = _project(tmp_path, repository_path, plan_path, registry_path)
+    originals = {path: path.read_bytes() for path in (repository_path, plan_path, registry_path)}
+    real_replace = object_reference_updates.os.replace
+    update_replaces = {"count": 0}
+
+    def fail_second_update(source, destination):
+        if ".update-" in Path(source).name:
+            update_replaces["count"] += 1
+            if update_replaces["count"] == 2:
+                raise OSError("injected commit failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(object_reference_updates.os, "replace", fail_second_update)
+    moved = ComponentRepository({
+        "B.Button": replace(old, component_id="B.Button", revision=old.revision + 1),
+    })
+
+    with pytest.raises(OSError, match="injected commit failure"):
+        apply_project_reference_updates(
+            project_path, repository_path, {"A.Button": "B.Button"}, repository=moved,
+        )
+
+    assert {path: path.read_bytes() for path in originals} == originals
 
 
 def test_unrelated_repository_artifacts_are_not_rewritten(tmp_path: Path):

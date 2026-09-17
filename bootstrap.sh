@@ -8,6 +8,7 @@ DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-20}"
 PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
 PILLOW_VERSION="${AUTOMATION_HARNESS_PILLOW_VERSION:-8.4.0}"
 JAVAFX_AGENT_JAR="$ROOT_DIR/javafx_agent/build/automation-harness-javafx-agent.jar"
+JAVA_AGENT_JAR="$ROOT_DIR/java-agent/build/automation-harness-agent.jar"
 
 log() { printf '[bootstrap] %s\n' "$*" >&2; }
 warn() { printf '[bootstrap] WARNING: %s\n' "$*" >&2; }
@@ -197,6 +198,12 @@ build_javafx_agent() {
     else
         warn "JavaFX native bridge agent build failed; Swing/AT-SPI capture remains available"
     fi
+    log "Building mixed Swing/JavaFX native agent"
+    if bash "$ROOT_DIR/java-agent/build.sh" >/dev/null && [[ -f "$JAVA_AGENT_JAR" ]]; then
+        log "Mixed Java agent: $JAVA_AGENT_JAR"
+    else
+        warn "Mixed Java agent build failed; unexposed Swing/JOGL capture is unavailable"
+    fi
 }
 
 verify_native_python_bindings() {
@@ -320,6 +327,7 @@ write_environment() {
         printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"
         [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"
         [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"
+        [[ -f "$JAVA_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"
     } > "$ROOT_DIR/.automation-harness-env"
 }
 
@@ -363,6 +371,12 @@ qualify() {
         log "JavaFX bridge agent ready. Instrument JavaFX targets with: -javaagent:$JAVAFX_AGENT_JAR"
     else
         warn "JavaFX bridge agent is unavailable; Linux JavaFX Node capture is disabled"
+    fi
+    if [[ -f "$JAVA_AGENT_JAR" ]]; then
+        log "Mixed Swing/JOGL agent ready. Instrument targets with: -javaagent:$JAVA_AGENT_JAR=token=<token>;port=<port>"
+        log "Set AUTOMATION_HARNESS_JAVA_AGENT_URL and AUTOMATION_HARNESS_JAVA_AGENT_TOKEN to the matching loopback endpoint."
+    else
+        warn "Mixed Java agent is unavailable; opaque Swing/JOGL surfaces require AT-SPI exposure"
     fi
 }
 

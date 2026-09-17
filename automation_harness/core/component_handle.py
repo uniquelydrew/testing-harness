@@ -13,6 +13,8 @@ from automation_harness.core.interaction_preparation import (
 )
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
+from automation_harness.drivers.java_agent import JavaAgentDriver
+from automation_harness.core.object_resolution import owner_relative_bounds, resolve_live_capture
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
@@ -455,25 +457,33 @@ class ComponentHandle:
         )
 
     def _resolve_strategy(self, strategy_type: str, options: dict[str, Any]) -> ResolvedComponent:
-        if strategy_type == "atspi":
-            return AtspiDriver(self.context).resolve(
-                self.definition.component_id,
-                identification=options.get("identification"),
-                name=_optional_str(options.get("name")),
-                role=_optional_str(options.get("role")),
-                accessible_id=_optional_str(options.get("accessible_id")),
-            )
-        if strategy_type == "java_accessibility":
-            return JavaAccessibilityDriver(self.context).resolve(
-                self.definition.component_id,
-                identification=options.get("identification"),
-            )
-        if strategy_type == "javafx":
-            return JavaFxBridgeDriver(self.context).resolve(
-                self.definition.component_id,
-                identification=options.get("identification"),
-            )
+        if strategy_type in {"atspi", "java_accessibility", "java_agent", "javafx"}:
+            captured = resolve_live_capture(strategy_type, options, context=self.context)
+            metadata = captured.to_dict()
+            metadata["bounds"] = list(captured.bounds) if captured.bounds else None
+            return ResolvedComponent(self.definition.component_id, strategy_type, metadata)
         if strategy_type == "anchored_visual":
+            if self.definition.owner_object_id:
+                status = str(dict(self.definition.properties or {}).get("locator_status") or "ready")
+                if status == "needs_recapture":
+                    raise ComponentResolutionError(
+                        f"visual object {self.definition.component_id!r} requires recapture after reparenting"
+                    )
+                owner = self.context.components.get(self.definition.owner_object_id)
+                owner_result = ComponentHandle(self.context, owner).resolve()
+                owner_bounds = owner_result.metadata.get("bounds")
+                relative = options.get("relative_bounds")
+                bounds = owner_relative_bounds(owner_bounds, relative)
+                return ResolvedComponent(
+                    self.definition.component_id,
+                    "anchored_visual",
+                    {
+                        "bounds": list(bounds),
+                        "anchor_bounds": list(owner_bounds),
+                        "owner_object_id": self.definition.owner_object_id,
+                        "coordinate_space": "normalized-owner",
+                    },
+                )
             return AnchoredVisualDriver(self.context).resolve(
                 self.definition.component_id,
                 anchor_identification=options.get("anchor_identification"),
@@ -502,9 +512,17 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).state(identification=options.get("identification"))
+        if strategy_type == "java_agent":
+            return JavaAgentDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "anchored_visual":
+            if self.definition.owner_object_id:
+                resolved = self._resolve_strategy(strategy_type, options)
+                return ComponentState(
+                    present=True, visible=True, showing=True,
+                    properties=dict(resolved.metadata),
+                )
             return AnchoredVisualDriver(self.context).state(
                 anchor_identification=options.get("anchor_identification"),
                 relative_bounds=options.get("relative_bounds"),
@@ -548,6 +566,8 @@ class ComponentHandle:
             )
         if strategy_type == "java_accessibility":
             return JavaAccessibilityDriver(self.context).activate(identification=options.get("identification"))
+        if strategy_type == "java_agent":
+            return JavaAgentDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "javafx":
             return JavaFxBridgeDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "reference_inspection":

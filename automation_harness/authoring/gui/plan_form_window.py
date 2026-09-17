@@ -135,6 +135,8 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             component_entry = Gtk.ComboBoxText.new_with_entry()
             known = sorted(self.repository.components)
             current_component = str(call.inputs.get("component_id", ""))
+            if current_component and self.repository.contains(current_component):
+                current_component = self.repository.get(current_component).component_id
             for component_id in known:
                 component_entry.append_text(component_id)
             component_entry.get_child().set_text(current_component)
@@ -199,7 +201,14 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 action = {"type": action_type}
                 for name, (entry, original) in action_parameter_fields.items():
                     action[name] = _parse_editor_value(entry.get_text(), original)
-                inputs = {"component_id": component_id, "action": action}
+                # Persist immutable identity for newly edited object actions.
+                # Legacy aliases remain accepted and are upgraded on edit.
+                component_reference = (
+                    self.repository.get(component_id).object_id
+                    if self.repository.contains(component_id)
+                    else component_id
+                )
+                inputs = {"component_id": component_reference, "action": action}
             else:
                 inputs = {
                     name: _parse_editor_value(entry.get_text(), original)

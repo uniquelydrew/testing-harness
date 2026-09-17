@@ -1209,9 +1209,11 @@ class AuthoringApp:
             if interaction.repository_match.status != "new_candidate" or interaction.target is None:
                 continue
             component_id = _recorded_component_id(interaction.target, repository)
-            definition = self.capture.definition_from_capture(component_id, interaction.target)
-            repository = repository.with_component(definition)
-            updated[index] = replace(interaction, repository_match=RepositoryMatch("known_unique", (component_id,)))
+            from automation_harness.core.captured_repository import materialize_capture
+            repository, definition, _created = materialize_capture(
+                self.capture, repository, component_id, interaction.target,
+            )
+            updated[index] = replace(interaction, repository_match=RepositoryMatch("known_unique", (definition.object_id,)))
             saved_ids.append(component_id)
         return repository, updated, saved_ids
 

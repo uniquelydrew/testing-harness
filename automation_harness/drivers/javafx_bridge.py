@@ -769,6 +769,25 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     except ValueError:
         object_type = classify_accessibility(role, native_class)
     properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    framework = str(node.get("framework") or "javafx").casefold()
+    if framework in {"swing", "awt", "java", "jogl"}:
+        mandatory = {}
+        assistive = {}
+        for key, value in (
+            ("accessible_id", node.get("accessible_id")),
+            ("name", node.get("name") or node.get("text")),
+            ("native_class", native_class),
+        ):
+            if value not in (None, ""):
+                (mandatory if not mandatory else assistive)[key] = str(value)
+        if node.get("window") not in (None, ""):
+            assistive["window"] = str(node.get("window"))
+        strategy = ComponentStrategy("java_agent", {"identification": {
+            "mandatory": mandatory or {"native_class": native_class or "java.awt.Component"},
+            **({"assistive": assistive} if assistive else {}),
+        }})
+    else:
+        strategy = None
     logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("text")), role=role,
@@ -781,7 +800,8 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             **dict(properties),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
         },
-        object_type=object_type, framework="javafx", native_class=native_class,
+        authored_strategy=strategy,
+        object_type=object_type, framework=framework, native_class=native_class,
         logical_subobjects=logical_subobjects,
     )
 

@@ -1,8 +1,10 @@
 # Optional Automation Harness Java Agent
 
-This Gradle module is the contract boundary for opt-in, in-process Swing and
-JavaFX automation.  The Python harness continues to support black-box Java
-applications through AT-SPI and Java Access Bridge without this agent.
+This module is the contract boundary for opt-in, in-process Swing/AWT and
+JavaFX automation. The Python harness continues to support black-box Java
+applications through AT-SPI and Java Access Bridge without this agent, but the
+agent is the authoritative route for opaque Swing rendering surfaces that are
+not exposed by accessibility APIs.
 
 The agent is launched as a `-javaagent` and exposes a loopback-only JSON service
 authenticated by a run-scoped random token. It
@@ -10,6 +12,12 @@ returns serialized semantic object snapshots (identity, type, bounds, state,
 properties, actions, and logical children) and accepts semantic action
 requests. Native `Node` and `Component` instances must never cross the RPC
 boundary.
+
+Swing discovery enumerates every visible `Window`, resolves the deepest real
+AWT component at the pointer, and preserves concrete container ancestry.
+JOGL `GLCanvas`/`GLJPanel` classes are returned as concrete rendering
+boundaries; rendered descendants are authored as normalized owner-relative
+visual objects by the Python repository layer.
 
 ## RPC contract
 
@@ -36,8 +44,8 @@ Launch an instrumented target with a token and an unused loopback port:
 The authoring application connects when both environment variables are set:
 
 ```text
-AUTOMATION_HARNESS_JAVAFX_AGENT_URL=http://127.0.0.1:9418
-AUTOMATION_HARNESS_JAVAFX_AGENT_TOKEN=<same random token>
+AUTOMATION_HARNESS_JAVA_AGENT_URL=http://127.0.0.1:9418
+AUTOMATION_HARNESS_JAVA_AGENT_TOKEN=<same random token>
 ```
 
 For multiple instrumented applications, use comma-separated

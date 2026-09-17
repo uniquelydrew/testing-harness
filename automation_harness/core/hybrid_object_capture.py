@@ -7,7 +7,9 @@ from typing import Any, Mapping
 
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.core.object_hierarchy import hierarchy_contract
+from automation_harness.core.capture_boundaries import annotate_capture_boundary, classify_capture_boundary
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
 
@@ -23,19 +25,21 @@ class HybridObjectCaptureService(ObjectCaptureService):
     returned.
     """
 
-    def __init__(self, driver=None, javafx_driver=None) -> None:
+    def __init__(self, driver=None, javafx_driver=None, java_agent_driver=None) -> None:
         super().__init__(driver=driver)
         self.javafx_driver = javafx_driver or JavaFxBridgeDriver()
+        self.java_agent_driver = java_agent_driver or JavaAgentDriver()
         self._log(
             "capture_backends_ready",
             atspi_available=bool(getattr(self.driver, "available", False)),
             javafx_bridge_available=self._javafx_available(),
             javafx_bridge_pids=self._javafx_pids(),
+            java_agent_available=bool(self.java_agent_driver.available),
         )
 
     @property
     def available(self) -> bool:
-        return bool(getattr(self.driver, "available", False)) or self._javafx_available()
+        return bool(getattr(self.driver, "available", False)) or self._javafx_available() or bool(self.java_agent_driver.available)
 
     def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
         """Capture click number 1 through 9 using the shared live backends."""
@@ -49,6 +53,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
             return captured
         atspi_available = bool(getattr(self.driver, "available", False))
         javafx_available = self._javafx_available()
+        java_agent_available = bool(self.java_agent_driver.available)
         self._log(
             "hybrid_capture_next_click_started",
             timeout=timeout,
@@ -57,16 +62,22 @@ class HybridObjectCaptureService(ObjectCaptureService):
             javafx_bridge_pids=self._javafx_pids(),
         )
 
-        if not javafx_available:
-            return super().capture_next_click(timeout=timeout)
-        if not atspi_available:
+        if java_agent_available:
+            backends = []
+            if atspi_available:
+                backends.append(("atspi", self.driver))
+            if javafx_available:
+                backends.append(("javafx", self.javafx_driver))
+            backends.append(("java-agent", self.java_agent_driver))
+        elif not javafx_available:
+            captured = super().capture_next_click(timeout=timeout)
+            return self._annotated(captured, backend="atspi")
+        elif not atspi_available:
             return self._capture_javafx_next_click(timeout)
+        else:
+            backends = [("atspi", self.driver), ("javafx", self.javafx_driver)]
 
         results = queue.Queue()
-        backends = (
-            ("atspi", self.driver),
-            ("javafx", self.javafx_driver),
-        )
 
         def worker(name, backend):
             try:
@@ -114,7 +125,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
                     backend=name,
                     capture=captured.to_dict(),
                 )
-                return captured
+                return self._annotated(captured, backend=name)
             errors.append("%s: %s: %s" % (name, type(error).__name__, error))
             self._log(
                 "hybrid_capture_backend_failed",
@@ -130,7 +141,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 capture=atspi_candidate.to_dict(),
                 arbitration="javafx-timeout",
             )
-            return atspi_candidate
+            return self._annotated(atspi_candidate, backend="atspi")
         message = "no capture backend resolved the selected object"
         if errors:
             message += "; " + "; ".join(errors)
@@ -170,7 +181,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
         validate_live: bool = True,
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
-        if authored.type != "javafx":
+        if authored.type not in {"javafx", "java_agent"}:
             return super().definition_from_capture(
                 component_id,
                 captured,
@@ -179,6 +190,24 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 identification=identification,
                 revision=revision,
                 validate_live=validate_live,
+            )
+        if authored.type == "java_agent":
+            if criteria is not None and identification is not None:
+                raise ValueError("supply criteria or identification, not both")
+            raw_identity = identification or ({"mandatory": dict(criteria)} if criteria is not None else authored.options.get("identification"))
+            if not isinstance(raw_identity, Mapping) or not isinstance(raw_identity.get("mandatory"), Mapping) or not raw_identity.get("mandatory"):
+                raise ValueError("captured Java agent object requires mandatory identity evidence")
+            actions = {"resolve"}
+            if {str(value).casefold() for value in captured.actions} & {"click", "press", "activate"}:
+                actions.add("activate")
+            return ComponentDefinition(
+                component_id=component_id,
+                description=description or captured.description or captured.name or "Captured native Java object",
+                strategies=(ComponentStrategy("java_agent", {"identification": dict(raw_identity)}),),
+                actions=frozenset(actions), revision=revision,
+                object_type=captured.semantic_type(), properties=dict(captured.backend_properties),
+                framework=captured.framework, native_class=captured.native_class,
+                scope=hierarchy_contract(captured),
             )
         if criteria is not None and identification is not None:
             raise ValueError("supply criteria or identification, not both")
@@ -252,6 +281,24 @@ class HybridObjectCaptureService(ObjectCaptureService):
             )
             raise
         self._log("javafx_capture_next_click_succeeded", capture=captured.to_dict())
+        return self._annotated(captured, backend="javafx")
+
+    def _annotated(self, captured: CapturedComponent, *, backend: str) -> CapturedComponent:
+        captured = annotate_capture_boundary(captured)
+        boundary = classify_capture_boundary(captured)
+        self._log(
+            "capture_framework_classified",
+            backend=backend,
+            application=captured.application,
+            window=captured.window,
+            pointer=dict(captured.backend_properties or {}).get("capture_point"),
+            native_class=captured.native_class,
+            component_bounds=list(captured.bounds) if captured.bounds else None,
+            boundary=boundary.to_dict(),
+            javafx_evidence=boundary.framework == "javafx",
+            jogl_evidence=boundary.framework == "jogl",
+            final_candidate=captured.to_dict(),
+        )
         return captured
 
     @staticmethod

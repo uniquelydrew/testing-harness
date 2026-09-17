@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+from dataclasses import replace
 from typing import Any
 
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
@@ -157,6 +158,15 @@ def _resolve_hybrid_point(service, coordinates, scoped=True, owner_pid=None):
     if owner_pid is None:
         owner_pid = _owner_pid_at_current_pointer(x, y)
 
+    java_agent = getattr(service, "java_agent_driver", None)
+    if java_agent is not None and bool(getattr(java_agent, "available", False)):
+        try:
+            captured = java_agent.capture_at_point(x, y)
+            if not _authoring_chrome(captured):
+                return _classified(service, _with_capture_point(captured, x, y), "java-agent")
+        except Exception as exc:
+            errors.append("java agent: %s: %s" % (type(exc).__name__, exc))
+
     javafx_available = False
     try:
         javafx_available = bool(service.javafx_driver.available)
@@ -167,7 +177,7 @@ def _resolve_hybrid_point(service, coordinates, scoped=True, owner_pid=None):
         try:
             captured = service.javafx_driver.capture_at_point(x, y, process_id=owner_pid)
             if _captured_process_id(captured) == owner_pid and not _authoring_chrome(captured):
-                return captured
+                return _classified(service, _with_capture_point(captured, x, y), "javafx-owner-pid")
         except Exception as exc:
             errors.append("javafx pid %s: %s: %s" % (owner_pid, type(exc).__name__, exc))
 
@@ -201,18 +211,18 @@ def _resolve_hybrid_point(service, coordinates, scoped=True, owner_pid=None):
             try:
                 captured = service.javafx_driver.capture_at_point(x, y, process_id=atspi_pid)
                 if not _authoring_chrome(captured):
-                    return captured
+                    return _classified(service, _with_capture_point(captured, x, y), "javafx-atspi-pid")
             except Exception as exc:
                 errors.append("javafx atspi pid %s: %s: %s" % (atspi_pid, type(exc).__name__, exc))
 
     if atspi_candidate is not None:
-        return atspi_candidate
+        return _classified(service, _with_capture_point(atspi_candidate, x, y), "atspi-x11-point")
 
     if owner_pid is None and javafx_available:
         try:
             captured = service.javafx_driver.capture_at_point(x, y)
             if not _authoring_chrome(captured):
-                return captured
+                return _classified(service, _with_capture_point(captured, x, y), "javafx-unscoped")
         except Exception as exc:
             errors.append("javafx unscoped: %s: %s" % (type(exc).__name__, exc))
 
@@ -220,6 +230,17 @@ def _resolve_hybrid_point(service, coordinates, scoped=True, owner_pid=None):
         "no live object resolved at (%s, %s)%s" %
         (x, y, ("; " + "; ".join(errors)) if errors else "")
     )
+
+
+def _classified(service, captured, backend):
+    annotate = getattr(service, "_annotated", None)
+    return annotate(captured, backend=backend) if callable(annotate) else captured
+
+
+def _with_capture_point(captured, x, y):
+    properties = dict(getattr(captured, "backend_properties", {}) or {})
+    properties["capture_point"] = [int(x), int(y)]
+    return replace(captured, backend_properties=properties)
 
 
 def _owner_pid_at_current_pointer(expected_x, expected_y):

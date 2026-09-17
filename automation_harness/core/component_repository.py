@@ -37,6 +37,30 @@ class ComponentRepository:
                     f"immutable object id {object_id!r} is assigned to both {previous!r} and {name!r}"
                 )
             seen[object_id] = name
+        object_ids = set(seen)
+        for name, definition in self.components.items():
+            owner = definition.owner_object_id
+            if owner is None:
+                continue
+            owner = _normalize_object_id(owner, prefix=f"component {name!r}.owner_object_id")
+            if owner == definition.object_id:
+                raise ComponentRepositoryError(f"component {name!r} cannot own itself")
+            if owner not in object_ids:
+                raise ComponentRepositoryError(
+                    f"component {name!r}.owner_object_id does not identify a repository object"
+                )
+        self._validate_ownership_cycles()
+
+    def _validate_ownership_cycles(self) -> None:
+        by_id = {item.object_id: item for item in self.components.values()}
+        for definition in self.components.values():
+            visited = {definition.object_id}
+            owner = definition.owner_object_id
+            while owner is not None:
+                if owner in visited:
+                    raise ComponentRepositoryError(f"component {definition.component_id!r} has cyclic ownership")
+                visited.add(owner)
+                owner = by_id[owner].owner_object_id
 
     @classmethod
     def load(cls, paths: Iterable[Path]) -> "ComponentRepository":
@@ -54,7 +78,7 @@ class ComponentRepository:
                 if existing is not None and existing.object_id != definition.object_id:
                     definition = replace(definition, object_id=existing.object_id)
                 merged[name] = definition
-        return cls(merged)
+        return cls(merged).with_inferred_ownership()
 
     @classmethod
     def from_document(cls, raw: Any, *, source: str = "repository") -> "ComponentRepository":
@@ -96,13 +120,36 @@ class ComponentRepository:
         return get_close_matches(component_id, self.components.keys(), n=limit, cutoff=0.45)
 
     def to_document(self) -> dict[str, Any]:
+        normalized = self.with_inferred_ownership()
         return {
             "version": 3,
             "components": {
                 name: _component_to_mapping(definition)
-                for name, definition in sorted(self.components.items())
+                for name, definition in sorted(normalized.components.items())
             },
         }
+
+    def with_inferred_ownership(self) -> "ComponentRepository":
+        """Migrate legacy dotted paths only when the prefix is a real object.
+
+        Missing name segments are deliberately ignored; they are presentation
+        scopes, not objects.  The longest concrete prefix becomes the owner.
+        """
+        changed = False
+        components = dict(self.components)
+        for name, definition in self.components.items():
+            if definition.owner_object_id is not None:
+                continue
+            parts = name.split(".")
+            owner = None
+            for depth in range(len(parts) - 1, 0, -1):
+                owner = self.components.get(".".join(parts[:depth]))
+                if owner is not None:
+                    break
+            if owner is not None:
+                components[name] = replace(definition, owner_object_id=owner.object_id)
+                changed = True
+        return ComponentRepository(components) if changed else self
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +221,10 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
     if not isinstance(scope, Mapping):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.scope must be a mapping")
     visual = _normalize_visual(path, component_id, value.get("visual"))
+    raw_owner_object_id = value.get("owner_object_id")
+    owner_object_id = None if raw_owner_object_id is None else _normalize_object_id(
+        raw_owner_object_id, prefix=f"{path}: component {component_id!r}.owner_object_id"
+    )
 
     raw_object_type = value.get("object_type")
     if raw_object_type is None:
@@ -251,6 +302,7 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         action_completion=action_completion,
         scope=dict(scope),
         object_id=object_id,
+        owner_object_id=owner_object_id,
     )
 
 
@@ -363,6 +415,8 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["action_completion"] = {key: dict(value) for key, value in definition.action_completion.items()}
     if definition.scope:
         payload["scope"] = dict(definition.scope)
+    if definition.owner_object_id:
+        payload["owner_object_id"] = definition.owner_object_id
     return payload
 
 

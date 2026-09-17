@@ -48,6 +48,10 @@ class ComponentDefinition:
     action_completion: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     scope: Mapping[str, Any] = field(default_factory=dict)
     object_id: str = field(default_factory=lambda: str(uuid4()))
+    # Concrete repository ownership is identity based.  Display names may be
+    # renamed without changing this relationship, and a parent is itself a
+    # normal resolvable ComponentDefinition rather than a synthetic tree node.
+    owner_object_id: str | None = None
 
     @property
     def semantic_actions(self) -> frozenset[ActionType]:

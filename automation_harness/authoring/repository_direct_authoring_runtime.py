@@ -12,7 +12,9 @@ from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.object_reference_updates import apply_project_reference_updates
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.capture_boundaries import classify_capture_boundary, surface_relative_visual_capture
 from automation_harness.core.object_reparenting import reparent_leaf
+from automation_harness.core.captured_repository import materialize_capture
 
 _INSTALLED = False
 _TARGET = Gtk.TargetEntry.new("automation-harness/repository-object", Gtk.TargetFlags.SAME_APP, 0)
@@ -152,12 +154,26 @@ def _capture_new_finished(self, captured, error):
     box.pack_start(Gtk.Label(label="Logical component ID:"), False, False, 0)
     entry = Gtk.Entry(); proposed = str(getattr(captured, "name", None) or getattr(captured, "accessible_id", None) or "Object")
     entry.set_text(_segment(proposed)); entry.set_activates_default(True); box.pack_start(entry, False, False, 0)
+    visual_leaf = None
+    boundary = classify_capture_boundary(captured)
+    if boundary.supports_visual_children:
+        visual_leaf = Gtk.CheckButton(label="Capture a rendered visual region at the click point")
+        visual_leaf.set_active(True)
+        box.pack_start(visual_leaf, False, False, 0)
     note = Gtk.Label(label="The captured locator is added directly to this Object Repository. Drag the new leaf onto a concrete repository object to reparent it.")
     note.set_line_wrap(True); note.set_halign(Gtk.Align.START); box.pack_start(note, False, False, 0)
     dialog.set_default_response(Gtk.ResponseType.OK); dialog.show_all()
-    response = dialog.run(); component_id = entry.get_text().strip(); dialog.destroy()
+    response = dialog.run()
+    component_id = entry.get_text().strip()
+    capture_visual_leaf = visual_leaf is not None and visual_leaf.get_active()
+    dialog.destroy()
     if response != Gtk.ResponseType.OK:
         self._set_status("Capture discarded"); return False
+    if capture_visual_leaf:
+        try:
+            captured = surface_relative_visual_capture(captured)
+        except Exception as exc:
+            self.app._error("Capture visual object", "%s: %s" % (type(exc).__name__, exc)); return False
     return self._add_captured_object(component_id, captured)
 
 
@@ -168,8 +184,10 @@ def _add_captured_object(self, component_id, captured):
     if component_id in repository.components:
         self.app._error("Capture object", "Object %r already exists." % component_id); return False
     try:
-        definition = self.app.capture.definition_from_capture(component_id, captured)
-        repository = repository.with_component(definition)
+        repository, definition, _created = materialize_capture(
+            self.app.capture, repository, component_id, captured,
+            visual_leaf=captured.candidate_strategy().type == "anchored_visual",
+        )
     except Exception as exc:
         self.app._error("Capture object", "%s: %s" % (type(exc).__name__, exc)); return False
     self._repository_host.repository = repository; self.app.repository = repository

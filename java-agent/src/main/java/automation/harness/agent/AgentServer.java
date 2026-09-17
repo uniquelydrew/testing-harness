@@ -27,6 +27,9 @@ final class AgentServer {
         server.createContext("/record_stop", this::handle);
         server.createContext("/capture_next_click", this::handle);
         server.createContext("/hit_test", this::handle);
+        server.createContext("/resolve", this::handle);
+        server.createContext("/activate", this::handle);
+        server.createContext("/windows", this::handle);
         server.setExecutor(Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "automation-harness-agent");
             thread.setDaemon(true);
@@ -52,6 +55,7 @@ final class AgentServer {
         } else if (path.equals("/record_start")) {
             recording.start();
             JavaFxRecorder.start(recording);
+            SwingRecorder.start(recording);
             result.put("observations", recording.drain());
         } else if (path.equals("/record_read")) {
             result.put("observations", recording.awaitAndDrain(
@@ -59,13 +63,28 @@ final class AgentServer {
             ));
         } else if (path.equals("/record_stop")) {
             JavaFxRecorder.stop();
+            SwingRecorder.stop();
             result.put("observations", recording.stop());
         } else if (path.equals("/capture_next_click")) {
-            try { result.putAll(JavaFxRecorder.captureNextClick((long) (number(request, "timeout", 30.0) * 1000))); }
+            try { result.putAll(AgentCapture.captureNextClick((long) (number(request, "timeout", 30.0) * 1000))); }
             catch (Exception exception) { send(exchange, 408, Map.of("ok", false, "error", "capture timed out or failed: " + exception.getMessage())); return; }
         } else if (path.equals("/hit_test")) {
-            try { result.putAll(JavaFxRecorder.hitTest(number(request, "x", Double.NaN), number(request, "y", Double.NaN))); }
+            try { result.putAll(AgentCapture.hitTest(number(request, "x", Double.NaN), number(request, "y", Double.NaN))); }
             catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/resolve")) {
+            try { result.putAll(SwingRecorder.resolve(
+                string(request, "name"), string(request, "accessible_id"),
+                string(request, "native_class"), string(request, "window")
+            )); }
+            catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/activate")) {
+            try { result.putAll(SwingRecorder.activate(
+                string(request, "name"), string(request, "accessible_id"),
+                string(request, "native_class"), string(request, "window")
+            )); }
+            catch (Exception exception) { send(exchange, 404, Map.of("ok", false, "error", exception.getMessage())); return; }
+        } else if (path.equals("/windows")) {
+            result.put("windows", SwingRecorder.windows());
         } else {
             send(exchange, 404, Map.of("ok", false, "error", "unknown operation"));
             return;
@@ -84,5 +103,11 @@ final class AgentServer {
     private static double number(String payload, String key, double fallback) {
         Matcher match = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))").matcher(payload);
         return match.find() ? Double.parseDouble(match.group(1)) : fallback;
+    }
+
+    private static String string(String payload, String key) {
+        Matcher match = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").matcher(payload);
+        if (!match.find()) return null;
+        return match.group(1).replace("\\\"", "\"").replace("\\\\", "\\");
     }
 }

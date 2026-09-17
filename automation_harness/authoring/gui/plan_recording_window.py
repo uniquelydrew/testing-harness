@@ -266,12 +266,20 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                             project = AuthoringProject.load(self.project_context).with_object_repository(assigned_path)
                             save_authoring_project(self.project_context, project); self.project = project
                     assigned_repository, component_id, created = materialize_captured_target(assigned_repository, interaction.target)
-                    reviewed = replace(interaction, repository_match=RepositoryMatch("known_unique", (component_id,)))
+                    object_reference = assigned_repository.get(component_id).object_id
+                    reviewed = replace(interaction, repository_match=RepositoryMatch("known_unique", (object_reference,)))
                     if created: captured_count += 1
                 except Exception:
                     unresolved.append(interaction); continue
             elif interaction.repository_match.component_id is None:
                 unresolved.append(interaction); continue
+
+            if reviewed.repository_match.component_id is not None and assigned_repository is not None:
+                try:
+                    object_reference = assigned_repository.get(reviewed.repository_match.component_id).object_id
+                    reviewed = replace(reviewed, repository_match=RepositoryMatch("known_unique", (object_reference,)))
+                except Exception:
+                    pass
 
             try:
                 call = interactions_to_steps((reviewed,), start_index=len(self.plan.steps) + len(resolved) + 1)[0]

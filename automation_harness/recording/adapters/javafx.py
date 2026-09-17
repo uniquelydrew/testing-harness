@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 from automation_harness.drivers.javafx_bridge import JavaFxRecordingBridge, JavaFxRecordingTransport
@@ -73,7 +74,12 @@ class JavaFxRecordingAdapter:
         if kind == "pointer":
             point = event.get("coordinates")
             coordinates = tuple(int(value) for value in point) if isinstance(point, (list, tuple)) and len(point) == 2 else None
-            return PointerInteraction(timestamp, "javafx", target, dict(evidence), str(event.get("button", "primary")), str(event.get("phase", "released")), coordinates)
+            source = str(getattr(target, "framework", None) or "javafx")
+            if target is not None and coordinates is not None:
+                properties = dict(target.backend_properties or {})
+                properties["capture_point"] = list(coordinates)
+                target = replace(target, backend_properties=properties)
+            return PointerInteraction(timestamp, source, target, dict(evidence), str(event.get("button", "primary")), str(event.get("phase", "released")), coordinates)
         if kind == "action":
             return ActionFired(timestamp, "javafx", target, dict(evidence), str(event.get("action", "activate")))
         if kind == "text_changed":
