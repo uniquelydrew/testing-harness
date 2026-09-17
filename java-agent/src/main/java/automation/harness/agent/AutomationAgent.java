@@ -3,9 +3,8 @@ package automation.harness.agent;
 import java.util.UUID;
 
 /**
- * Deliberately small agent bootstrap.  Transport and adapters are supplied by
- * the host application's Java integration in the next vertical slice; keeping
- * this entry point buildable makes the -javaagent contract explicit now.
+ * Deliberately small agent bootstrap. Transport and adapters are supplied by
+ * the host application's Java integration.
  */
 public final class AutomationAgent {
     private static volatile AgentServer server;
@@ -20,6 +19,7 @@ public final class AutomationAgent {
         if (port == null || port.isBlank()) port = "0";
         try {
             server = new AgentServer(token, Integer.parseInt(port), discovery);
+            RuntimeDiagnostics.write(discovery);
         } catch (Exception exception) {
             throw new IllegalStateException("could not start automation harness agent", exception);
         }
