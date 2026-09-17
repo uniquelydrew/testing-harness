@@ -58,6 +58,42 @@ class JavaAgentDriver:
             "hit_test", {"x": int(x), "y": int(y)}, transports=transports,
         )
 
+    def inspect_render_surface(
+        self, x: int, y: int, *, process_id: int | None = None,
+    ) -> Mapping[str, Any]:
+        """Inspect the rendered surface under a point without invoking target methods.
+
+        This is intentionally diagnostic-only for now. The Java-side adapter
+        reports class hierarchy, interfaces, candidate fields/methods, surface
+        geometry, and canvas-relative coordinates so a stable Solipsys picking
+        API can be identified before production resolution is enabled.
+        """
+        transports = self.refresh_transports()
+        if process_id is not None:
+            transports = tuple(
+                item for item in transports
+                if getattr(item, "pid", None) == process_id
+            )
+            if not transports:
+                raise JavaAgentUnavailable(
+                    "no Automation Harness Java agent endpoint was discovered for pid %s"
+                    % process_id
+                )
+        if not transports:
+            raise JavaAgentUnavailable("no configured Automation Harness Java agent endpoint")
+        errors = []
+        for transport in transports:
+            try:
+                return transport.request(
+                    "render_surface_inspect", {"x": int(x), "y": int(y)}
+                )
+            except Exception as exc:
+                errors.append("%s: %s" % (type(exc).__name__, exc))
+        raise JavaAgentUnavailable(
+            "all configured Java agents failed rendered-surface inspection: "
+            + "; ".join(errors)
+        )
+
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
         return self._first(
             "capture_next_click", {"timeout": float(timeout)},
