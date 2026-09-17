@@ -15,6 +15,17 @@ mkdir -p "$CLASSES"
 # module-system --add-modules option.
 find "$SOURCE" -name '*.java' -print0 |
     xargs -0 javac -source 8 -target 8 -d "$CLASSES"
+
+# Fail the build if the compiler silently emits anything newer than Java 8
+# class-file version 52. This catches accidental target-level regressions.
+while IFS= read -r -d '' class_file; do
+    major="$(javap -verbose "$class_file" | awk '/major version:/ {print $3; exit}')"
+    [[ "$major" == "52" ]] || {
+        echo "Java agent class is not Java 8 bytecode: $class_file (major=$major)" >&2
+        exit 1
+    }
+done < <(find "$CLASSES" -name '*.class' -print0)
+
 cat > "$BUILD/MANIFEST.MF" <<'MANIFEST'
 Manifest-Version: 1.0
 Premain-Class: automation.harness.agent.AutomationAgent
