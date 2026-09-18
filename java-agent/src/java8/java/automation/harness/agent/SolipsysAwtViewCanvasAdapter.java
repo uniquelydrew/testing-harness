@@ -450,15 +450,19 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         node.put("object_type", "custom");
         node.put("actions", java.util.Arrays.asList("resolve", "click"));
         node.put("ref", Integer.toHexString(System.identityHashCode(selectable)));
-        Object position = invokePublicZeroArg(selectable, "getPosition");
-        if (position instanceof java.awt.Point) {
-            java.awt.Point point = (java.awt.Point)position;
-            java.awt.Point origin = new java.awt.Point(0, 0);
-            try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
-            node.put("bounds", java.util.Arrays.asList(
-                    Integer.valueOf(origin.x + point.x), Integer.valueOf(origin.y + point.y),
-                    Integer.valueOf(1), Integer.valueOf(1)));
+        List<String> lineage = new ArrayList<String>();
+        List<Component> ancestors = new ArrayList<Component>();
+        Component currentComponent = surface;
+        while (currentComponent != null) {
+            ancestors.add(currentComponent);
+            currentComponent = currentComponent.getParent();
         }
+        for (int index = ancestors.size() - 1; index >= 0; index--)
+            lineage.add(ancestors.get(index).getClass().getName());
+        lineage.add(selectable.getClass().getName());
+        node.put("hierarchy", lineage);
+        Map<String, Object> geometry = renderedGeometry(surface, selectable);
+        if (geometry.get("bounds") != null) node.put("bounds", geometry.get("bounds"));
         java.awt.Window owner = javax.swing.SwingUtilities.getWindowAncestor(surface);
         if (owner != null) {
             String title = owner instanceof java.awt.Frame ? ((java.awt.Frame)owner).getTitle()
@@ -487,6 +491,8 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         properties.put("track_identity", new LinkedHashMap<String, Object>(identity));
         properties.put("track_identity_key", identityKey);
         properties.put("track_identity_value", identityValue);
+        properties.put("geometry_source", geometry.get("source"));
+        properties.put("geometry_is_fallback", geometry.get("fallback"));
         properties.put("identity_state", "candidate");
         properties.put("identity_rejection_reason", null);
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
@@ -502,6 +508,71 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         node.put("properties", properties);
         node.put("name", identityValue);
         return node;
+    }
+
+    /** Resolve current hit geometry after semantic identity resolution.
+     *
+     * Geometry is deliberately not used by {@link #matchesRenderedIdentity}; it
+     * is transient state for highlighting and pointer injection only.
+     */
+    private static Map<String, Object> renderedGeometry(Component surface, Object selectable) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        java.awt.Point origin = new java.awt.Point(0, 0);
+        try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
+
+        String[] boundsAccessors = {"getBounds", "getBoundingBox", "getDisplayBounds", "getSymbolBounds"};
+        for (String accessor : boundsAccessors) {
+            Object value = invokePublicZeroArg(selectable, accessor);
+            java.awt.Rectangle bounds = rectangleValue(value);
+            if (bounds == null || bounds.width <= 0 || bounds.height <= 0) continue;
+            result.put("bounds", java.util.Arrays.asList(
+                    Integer.valueOf(origin.x + bounds.x), Integer.valueOf(origin.y + bounds.y),
+                    Integer.valueOf(bounds.width), Integer.valueOf(bounds.height)));
+            result.put("source", accessor);
+            result.put("fallback", Boolean.FALSE);
+            return result;
+        }
+
+        Object selectionNode = invokePublicZeroArg(selectable, "getSelectionNode");
+        if (selectionNode != null) {
+            for (String accessor : boundsAccessors) {
+                java.awt.Rectangle bounds = rectangleValue(invokePublicZeroArg(selectionNode, accessor));
+                if (bounds == null || bounds.width <= 0 || bounds.height <= 0) continue;
+                result.put("bounds", java.util.Arrays.asList(
+                        Integer.valueOf(origin.x + bounds.x), Integer.valueOf(origin.y + bounds.y),
+                        Integer.valueOf(bounds.width), Integer.valueOf(bounds.height)));
+                result.put("source", "getSelectionNode." + accessor);
+                result.put("fallback", Boolean.FALSE);
+                return result;
+            }
+        }
+
+        Object position = invokePublicZeroArg(selectable, "getPosition");
+        if (position instanceof java.awt.Point) {
+            java.awt.Point point = (java.awt.Point)position;
+            int radius = 6;
+            result.put("bounds", java.util.Arrays.asList(
+                    Integer.valueOf(origin.x + point.x - radius), Integer.valueOf(origin.y + point.y - radius),
+                    Integer.valueOf(radius * 2 + 1), Integer.valueOf(radius * 2 + 1)));
+            result.put("source", "getPosition");
+            result.put("fallback", Boolean.TRUE);
+            return result;
+        }
+        result.put("source", "unavailable");
+        result.put("fallback", Boolean.TRUE);
+        return result;
+    }
+
+    private static java.awt.Rectangle rectangleValue(Object value) {
+        if (value instanceof java.awt.Rectangle) return new java.awt.Rectangle((java.awt.Rectangle)value);
+        if (value instanceof java.awt.geom.Rectangle2D) {
+            java.awt.geom.Rectangle2D rectangle = (java.awt.geom.Rectangle2D)value;
+            return new java.awt.Rectangle(
+                    (int)Math.floor(rectangle.getX()), (int)Math.floor(rectangle.getY()),
+                    Math.max(1, (int)Math.ceil(rectangle.getWidth())),
+                    Math.max(1, (int)Math.ceil(rectangle.getHeight())));
+        }
+        return null;
     }
 
     private static Map<String, String> trackIdentity(Object track) {

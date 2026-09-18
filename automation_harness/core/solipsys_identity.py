@@ -71,3 +71,19 @@ def locators_match(
     right = semantic_identity(right_mandatory)
     return left is not None and left == right and scope_compatible(left_assistive, right_assistive)
 
+
+def visible_identity_status(properties: Mapping[str, Any] | None) -> str:
+    """Classify provisional identity evidence without declaring it durable."""
+    if not isinstance(properties, Mapping):
+        return "unverified"
+    matches = properties.get("identity_visible_match_count")
+    unique = properties.get("identity_unique_in_visible_scope")
+    if unique is False or (
+        isinstance(matches, int) and not isinstance(matches, bool) and matches > 1
+    ):
+        return "ambiguous"
+    if unique is True and matches == 1:
+        return "candidate_unique"
+    if isinstance(matches, int) and not isinstance(matches, bool) and matches == 0:
+        return "unavailable"
+    return "unverified"

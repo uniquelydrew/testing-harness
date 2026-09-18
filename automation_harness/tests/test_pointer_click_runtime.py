@@ -65,7 +65,7 @@ def test_click_uses_resolved_bounds_not_accessibility_activate(monkeypatch):
         observed["action"] = action
         return {"x": 120, "y": 210, "button": 1, "clicks": 1}
 
-    monkeypatch.setattr("automation_harness.core.pointer_actions.click_bounds", fake_click)
+    monkeypatch.setattr("automation_harness.core.component_handle.click_bounds", fake_click)
     result = handle.execute("click")
     assert result.strategy == "pointer"
     assert observed["bounds"] == [100, 200, 40, 20]

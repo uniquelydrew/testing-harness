@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.models.component import CapturedComponent, ComponentState, ComponentStrategy
+from automation_harness.models.gui import ObjectType
 
 
 def _capture(strategy="atspi"):
@@ -78,6 +81,66 @@ class _JavaFxSuccess:
 
     def assess_identification(self, identification, *, process_id=None):
         return (_Stage("mandatory", dict(identification["mandatory"]), 1),)
+
+
+class _UnavailableJavaAgent:
+    available = False
+
+
+def _solipsys_capture(*, visible_matches=1):
+    return CapturedComponent(
+        name="2", role="rendered_object", description=None,
+        accessible_id=None, application="MSCT", window="MSCT",
+        hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
+        actions=("resolve", "click"), bounds=(100, 200, 13, 13),
+        state=ComponentState(present=True, visible=True, showing=True),
+        backend_properties={
+            "identity_state": "candidate",
+            "identity_visible_match_count": visible_matches,
+            "identity_unique_in_visible_scope": visible_matches == 1,
+        },
+        authored_strategy=ComponentStrategy("java_agent", {"identification": {
+            "mandatory": {
+                "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+                "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+                "track_identity_key": "field:identity",
+                "track_identity_value": "2",
+            },
+            "assistive": {
+                "native_class": "com.solipsys.view.AWTViewCanvas",
+                "window": "MSCT",
+            },
+        }}),
+        object_type=ObjectType.CUSTOM, framework="solipsys_rendered",
+        native_class="com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+    )
+
+
+def test_solipsys_definition_preserves_provisional_unique_identity_state():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+
+    definition = service.definition_from_capture(
+        "msct.track.2", _solipsys_capture(), validate_live=False,
+    )
+
+    assert definition.framework == "solipsys_rendered"
+    assert definition.properties["identity_state"] == "candidate"
+    assert definition.properties["identity_visible_match_count"] == 1
+
+
+def test_solipsys_definition_rejects_identity_duplicated_in_visible_scope():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+
+    with pytest.raises(ValueError, match="ambiguous in the visible surface scope"):
+        service.definition_from_capture(
+            "msct.track.2", _solipsys_capture(visible_matches=2), validate_live=False,
+        )
 
 
 class _JavaFxFailure:

@@ -2,6 +2,7 @@ from automation_harness.core.solipsys_identity import (
     locator_is_complete,
     locators_match,
     semantic_identity,
+    visible_identity_status,
 )
 
 
@@ -38,3 +39,18 @@ def test_locator_matching_rejects_identity_or_scope_conflict():
         _identity("2"), {"window": "MSCT A"},
         _identity("2"), {"window": "MSCT B"},
     )
+
+
+def test_visible_identity_status_distinguishes_unique_ambiguous_and_unknown():
+    assert visible_identity_status({
+        "identity_visible_match_count": 1,
+        "identity_unique_in_visible_scope": True,
+    }) == "candidate_unique"
+    assert visible_identity_status({
+        "identity_visible_match_count": 2,
+        "identity_unique_in_visible_scope": False,
+    }) == "ambiguous"
+    assert visible_identity_status({
+        "identity_visible_match_count": 0,
+    }) == "unavailable"
+    assert visible_identity_status({}) == "unverified"
