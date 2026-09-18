@@ -360,31 +360,65 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
     static Map<String, Object> resolveRenderedNode(
             Component surface, String renderedClass, String trackClass,
             String identityKey, String identityValue) {
+        Map<String, Object> resolution = new LinkedHashMap<String, Object>();
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
-        if (view == null) return null;
+        if (view == null) {
+            resolution.put("resolution_status", "surface_not_present");
+            return resolution;
+        }
         Object regions = readNamedField(view, "regions");
-        if (regions == null) return null;
-        Object candidate = findRenderedCandidate(regions, renderedClass, trackClass, identityKey, identityValue, 0);
-        return candidate == null ? null : renderedNode(surface, candidate);
+        if (regions == null) {
+            resolution.put("resolution_status", "surface_not_present");
+            return resolution;
+        }
+        if (!isTrustedIdentityKey(identityKey) || identityValue == null || identityValue.isEmpty()) {
+            resolution.put("resolution_status", "identity_unavailable");
+            resolution.put("identity_key", identityKey);
+            return resolution;
+        }
+        List<Object> candidates = new ArrayList<Object>();
+        collectRenderedCandidates(regions, renderedClass, trackClass, identityKey, identityValue, 0, candidates);
+        resolution.put("candidate_count", Integer.valueOf(candidates.size()));
+        resolution.put("identity_key", identityKey);
+        resolution.put("identity_value", identityValue);
+        if (candidates.isEmpty()) {
+            resolution.put("resolution_status", "not_present");
+            return resolution;
+        }
+        if (candidates.size() > 1) {
+            resolution.put("resolution_status", "ambiguous_identity");
+            return resolution;
+        }
+        Map<String, Object> node = renderedNode(surface, candidates.get(0));
+        if (node == null) {
+            resolution.put("resolution_status", "identity_unavailable");
+            return resolution;
+        }
+        node.put("resolution_status", "resolved");
+        node.put("candidate_count", Integer.valueOf(1));
+        return node;
     }
 
-    private static Object findRenderedCandidate(
+    private static void collectRenderedCandidates(
             Object container, String renderedClass, String trackClass,
-            String identityKey, String identityValue, int depth) {
-        if (container == null || depth > 8) return null;
+            String identityKey, String identityValue, int depth, List<Object> result) {
+        if (container == null || depth > 8) return;
         Object raw = invokePublicZeroArg(container, "getElements");
-        if (!(raw instanceof Enumeration)) return null;
+        if (!(raw instanceof Enumeration)) return;
         Enumeration<?> values = (Enumeration<?>)raw;
         while (values.hasMoreElements()) {
             Object value = values.nextElement();
             if (value == null) continue;
             Object track = invokePublicZeroArg(value, "getTrack");
             if (track != null && matchesRenderedIdentity(
-                    value, track, renderedClass, trackClass, identityKey, identityValue)) return value;
-            Object nested = findRenderedCandidate(value, renderedClass, trackClass, identityKey, identityValue, depth + 1);
-            if (nested != null) return nested;
+                    value, track, renderedClass, trackClass, identityKey, identityValue)) addUniqueReference(result, value);
+            collectRenderedCandidates(value, renderedClass, trackClass, identityKey, identityValue, depth + 1, result);
         }
-        return null;
+    }
+
+    private static void addUniqueReference(List<Object> values, Object candidate) {
+        for (Object existing : values) if (existing == candidate) return;
+        values.add(candidate);
     }
 
     private static boolean matchesRenderedIdentity(
@@ -453,6 +487,18 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         properties.put("track_identity", new LinkedHashMap<String, Object>(identity));
         properties.put("track_identity_key", identityKey);
         properties.put("track_identity_value", identityValue);
+        properties.put("identity_state", "candidate");
+        properties.put("identity_rejection_reason", null);
+        Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
+        Object regions = view == null ? null : readNamedField(view, "regions");
+        if (regions != null) {
+            List<Object> visibleMatches = new ArrayList<Object>();
+            collectRenderedCandidates(
+                    regions, selectable.getClass().getName(), track.getClass().getName(),
+                    identityKey, identityValue, 0, visibleMatches);
+            properties.put("identity_visible_match_count", Integer.valueOf(visibleMatches.size()));
+            properties.put("identity_unique_in_visible_scope", Boolean.valueOf(visibleMatches.size() == 1));
+        }
         node.put("properties", properties);
         node.put("name", identityValue);
         return node;

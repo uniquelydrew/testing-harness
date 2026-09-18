@@ -72,7 +72,12 @@ final class SwingRecorder {
             if (surface == null) throw new IllegalArgumentException("rendered-object locator did not resolve a Solipsys surface");
             Map<String, Object> semantic = SolipsysAwtViewCanvasAdapter.resolveRenderedNode(
                     surface, renderedClass, trackClass, trackIdentityKey, trackIdentityValue);
-            if (semantic == null) throw new IllegalArgumentException("Solipsys rendered object was not found");
+            String resolutionStatus = String.valueOf(semantic.get("resolution_status"));
+            if (!"resolved".equals(resolutionStatus)) {
+                throw new IllegalArgumentException(
+                        "Solipsys rendered object resolution failed: " + resolutionStatus
+                        + " (candidate_count=" + semantic.get("candidate_count") + ")");
+            }
             Map<String, Object> result = target(surface, null, null);
             result.put("semantic_node", semantic);
             Map<String, Object> promotion = castMap(result.get("promotion"));

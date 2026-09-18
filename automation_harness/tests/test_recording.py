@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import (
@@ -348,6 +349,70 @@ def test_repository_matching_rejects_different_solipsys_track_identity():
     session.observe(PointerInteraction(
         1.0, "solipsys_rendered", _solipsys_track_capture("3"),
         phase="released", coordinates=(900, 300),
+    ))
+
+    assert session.stop()[0].repository_match.status == "new_candidate"
+
+
+def test_recording_correlates_same_solipsys_identity_across_geometry_and_runtime_changes():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", _solipsys_track_capture(
+            "2", bounds=(737, 480, 1, 1), runtime_ref="display-a",
+        ), phase="pressed", coordinates=(737, 480),
+    ))
+    session.observe(PointerInteraction(
+        2.0, "solipsys_rendered", _solipsys_track_capture(
+            "2", bounds=(1297, 227, 1, 1), runtime_ref="display-b",
+        ), phase="released", coordinates=(1297, 227),
+    ))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].target.candidate_strategy().options["identification"]["mandatory"]["track_identity_value"] == "2"
+
+
+def test_recording_does_not_correlate_distinct_solipsys_identities_at_same_geometry():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", _solipsys_track_capture("2"),
+        phase="released", coordinates=(737, 480),
+    ))
+    session.observe(PointerInteraction(
+        2.0, "solipsys_rendered", _solipsys_track_capture("3"),
+        phase="released", coordinates=(737, 480),
+    ))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 2
+
+
+def test_repository_matching_rejects_same_track_identity_in_different_explicit_scope():
+    persisted = _solipsys_track_capture("2")
+    repository = ComponentRepository({
+        "Track 2": ComponentDefinition(
+            component_id="Track 2", strategies=(persisted.candidate_strategy(),),
+            object_type=persisted.semantic_type(), framework="solipsys_rendered",
+            native_class=persisted.native_class,
+        ),
+    })
+    different_scope = _solipsys_track_capture("2")
+    identity = dict(different_scope.candidate_strategy().options["identification"])
+    identity["assistive"] = dict(identity["assistive"], window="MSCT Domain 99")
+    different_scope = replace(
+        different_scope,
+        authored_strategy=ComponentStrategy("java_agent", {"identification": identity}),
+        application="MSCT Domain 99", window="MSCT Domain 99",
+    )
+    session = RecordingSession(repository=repository)
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", different_scope,
+        phase="released", coordinates=(737, 480),
     ))
 
     assert session.stop()[0].repository_match.status == "new_candidate"

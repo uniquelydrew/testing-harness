@@ -185,6 +185,11 @@ class RecordingSession:
             if self.diagnostics:
                 self._diagnostics.append(observation)
             if isinstance(observation, PointerInteraction):
+                if observation.target is not None and observation.target.framework == "solipsys_rendered":
+                    self.diagnostic(
+                        "solipsys_semantic_capture",
+                        **_solipsys_diagnostic_summary(observation.target),
+                    )
                 if observation.phase != "released" or observation.target is None:
                     self.diagnostic(
                         "observation_ignored", reason="pointer_not_released_or_missing_target",
@@ -382,6 +387,8 @@ def _same_target(left: CapturedComponent | None, right: CapturedComponent | None
         right_identity = _javafx_capture_identity(right)
         if left_identity is not None and right_identity is not None:
             return left_identity == right_identity
+    if left.framework == right.framework == "solipsys_rendered":
+        return _same_solipsys_target(left, right)
     return (left.framework, left.accessible_id, left.name, left.role, left.window) == (right.framework, right.accessible_id, right.name, right.role, right.window)
 
 
@@ -390,6 +397,8 @@ def _same_logical_target(left: CapturedComponent | None, right: CapturedComponen
         return left is right
     left_scope = (left.window or left.application or "").casefold()
     right_scope = (right.window or right.application or "").casefold()
+    if left.framework == right.framework == "solipsys_rendered":
+        return _same_solipsys_target(left, right)
     if (
         left.framework == right.framework == "javafx"
         and not (is_javafx_menu_skin_capture(left) and is_javafx_menu_skin_capture(right))
@@ -439,6 +448,12 @@ def _matches_capture_details(definition: ComponentDefinition, capture: CapturedC
         return False, [{"stage": "object_type", "expected": definition.object_type.value, "actual": capture.semantic_type().value, "matched": False}]
     for strategy in definition.strategies:
         identity = strategy.options.get("identification", {}) if isinstance(strategy.options, Mapping) else {}
+        if strategy.type == "java_agent" and capture.framework == "solipsys_rendered":
+            matched, solipsys_details = _matches_solipsys_capture(identity, capture)
+            details.append({"strategy": strategy.type, "matched": matched, **solipsys_details})
+            if matched:
+                return True, details
+            continue
         if strategy.type == "javafx" and capture.framework == "javafx":
             matched, javafx_details = _matches_javafx_capture(identity, capture)
             details.append({"strategy": strategy.type, "matched": matched, **javafx_details})
@@ -530,6 +545,58 @@ def _matches_capture_details(definition: ComponentDefinition, capture: CapturedC
         if matched:
             return True, details
     return False, details
+
+
+def _solipsys_capture_locator(capture):
+    from automation_harness.core.solipsys_identity import strategy_parts
+    strategy = capture.candidate_strategy()
+    if strategy.type != "java_agent":
+        return {}, {}
+    return strategy_parts(strategy.options)
+
+
+def _same_solipsys_target(left, right):
+    from automation_harness.core.solipsys_identity import locators_match
+    left_mandatory, left_assistive = _solipsys_capture_locator(left)
+    right_mandatory, right_assistive = _solipsys_capture_locator(right)
+    return locators_match(left_mandatory, left_assistive, right_mandatory, right_assistive)
+
+
+def _matches_solipsys_capture(identity, capture):
+    from automation_harness.core.solipsys_identity import locators_match, locator_is_complete, strategy_parts
+    expected_mandatory, expected_assistive = strategy_parts({"identification": identity})
+    actual_mandatory, actual_assistive = _solipsys_capture_locator(capture)
+    matched = locators_match(
+        expected_mandatory, expected_assistive, actual_mandatory, actual_assistive,
+    )
+    return matched, {
+        "mandatory": expected_mandatory,
+        "actual_mandatory": actual_mandatory,
+        "identity_complete": locator_is_complete(expected_mandatory),
+        "scope": expected_assistive,
+        "actual_scope": actual_assistive,
+        "unsupported_mandatory_keys": [],
+    }
+
+
+def _solipsys_diagnostic_summary(capture):
+    mandatory, assistive = _solipsys_capture_locator(capture)
+    properties = dict(capture.backend_properties or {})
+    return {
+        "semantic_identity": {key: mandatory.get(key) for key in (
+            "rendered_class", "track_class", "track_identity_key", "track_identity_value",
+        )},
+        "identity_state": properties.get("identity_state", "candidate"),
+        "identity_visible_match_count": properties.get("identity_visible_match_count"),
+        "identity_unique_in_visible_scope": properties.get("identity_unique_in_visible_scope"),
+        "identity_rejection_reason": properties.get("identity_rejection_reason"),
+        "scope": assistive,
+        "runtime": {
+            "rendered_object_ref": properties.get("rendered_object_ref") or properties.get("ref"),
+            "surface_ref": properties.get("surface_ref"),
+            "bounds": capture.bounds,
+        },
+    }
 
 
 def _matches_javafx_capture(identity, capture):
