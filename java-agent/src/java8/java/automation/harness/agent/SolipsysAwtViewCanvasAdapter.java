@@ -12,6 +12,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Enumeration;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -224,8 +225,72 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (manager != null) {
             result.put("selection_manager", describeRuntimeObject(manager));
             result.put("selection_manager_state", targetedFields(manager));
+            result.put("native_selection", nativeSelectionSnapshot(manager));
         }
         return result;
+    }
+
+    /**
+     * Invoke only documented-by-runtime, public, zero-argument selection accessors.
+     * These are read-only queries on DefaultSelectionManager and give us the actual
+     * Selectable instances instead of inferring selection from private fields.
+     */
+    private static Map<String, Object> nativeSelectionSnapshot(Object manager) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("manager_type", manager.getClass().getName());
+        Object count = invokePublicZeroArg(manager, "getNumberOfSelections");
+        if (count != null) result.put("count", count);
+        Object selections = invokePublicZeroArg(manager, "getSelections");
+        if (selections != null) result.put("selections", describeEnumeration(selections));
+        Object nodes = invokePublicZeroArg(manager, "getSelectionNodes");
+        if (nodes != null) result.put("selection_nodes", describeEnumeration(nodes));
+        Object detailed = invokePublicZeroArg(manager, "getDetailedSelections");
+        if (detailed != null) result.put("detailed_selections", describeEnumeration(detailed));
+        return result;
+    }
+
+    private static Object invokePublicZeroArg(Object target, String name) {
+        try {
+            Method method = target.getClass().getMethod(name);
+            if (!Modifier.isPublic(method.getModifiers()) || method.getParameterTypes().length != 0) return null;
+            return method.invoke(target);
+        } catch (Throwable ignored) { return null; }
+    }
+
+    private static Map<String, Object> describeEnumeration(Object value) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("runtime_type", value.getClass().getName());
+        if (!(value instanceof Enumeration)) {
+            result.put("value", describeValue(value));
+            return result;
+        }
+        List<Map<String, Object>> elements = new ArrayList<Map<String, Object>>();
+        Enumeration<?> enumeration = (Enumeration<?>)value;
+        int count = 0;
+        while (enumeration.hasMoreElements() && count++ < MAX_SELECTION_ITEMS) {
+            Object element = enumeration.nextElement();
+            if (element != null) elements.add(describeSelectedObject(element));
+        }
+        result.put("elements", elements);
+        result.put("sampled_count", Integer.valueOf(elements.size()));
+        return result;
+    }
+
+    private static Map<String, Object> describeSelectedObject(Object value) {
+        Map<String, Object> item = describeRuntimeObject(value);
+        item.put("candidate_fields", shallowFieldTypes(value));
+        String[] accessors = {
+            "getName", "getId", "getID", "getIdentifier", "getObject", "getModel",
+            "getTrack", "getTrackId", "getCallsign", "getDescription"
+        };
+        Map<String, Object> identity = new LinkedHashMap<String, Object>();
+        for (String accessor : accessors) {
+            Object result = invokePublicZeroArg(value, accessor);
+            if (result == null || !isSimple(result.getClass())) continue;
+            identity.put(accessor, String.valueOf(result));
+        }
+        if (!identity.isEmpty()) item.put("identity", identity);
+        return item;
     }
 
     private static Object findReferencedObject(Object target, String exactType, String fieldTerm) {
