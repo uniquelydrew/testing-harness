@@ -69,7 +69,7 @@ final class AgentServer {
             else if (path.equals("/record_stop")) { SwingRecorder.stop(); result.put("observations", recording.stop()); }
             else if (path.equals("/capture_next_click")) result.putAll(SwingRecorder.beginCapture().get((long)(number(request, "timeout", 30.0) * 1000), java.util.concurrent.TimeUnit.MILLISECONDS));
             else if (path.equals("/hit_test")) result.putAll(SwingRecorder.hitTest(number(request, "x", Double.NaN), number(request, "y", Double.NaN)));
-            else if (path.equals("/resolve")) result.putAll(SwingRecorder.resolve(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
+            else if (path.equals("/resolve")) result.putAll(SwingRecorder.resolve(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path"), string(request, "rendered_class"), string(request, "track_class"), string(request, "track_identity_key"), string(request, "track_identity_value")));
             else if (path.equals("/activate")) result.putAll(SwingRecorder.activate(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/windows")) result.put("windows", SwingRecorder.windows());
             else if (path.equals("/render_surface_inspect")) result.putAll(RenderedSurfaceDiagnostics.inspectAt(number(request, "x", Double.NaN), number(request, "y", Double.NaN)));
