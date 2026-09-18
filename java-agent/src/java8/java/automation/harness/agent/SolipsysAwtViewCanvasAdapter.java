@@ -267,6 +267,63 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         }
         result.put("available", true);
         result.put("elements", describeEnumeration(elements));
+        result.put("rendered_candidates", renderedCandidatesFromRegions(regions));
+        return result;
+    }
+
+    /** Extract concrete rendered Selectable/Region objects and safe identity/position accessors. */
+    private static Map<String, Object> renderedCandidatesFromRegions(Object regions) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        Object raw = invokePublicZeroArg(regions, "getElements");
+        if (!(raw instanceof Enumeration)) {
+            result.put("available", false);
+            return result;
+        }
+        result.put("available", true);
+        List<Map<String, Object>> candidates = new ArrayList<Map<String, Object>>();
+        Enumeration<?> enumeration = (Enumeration<?>)raw;
+        int count = 0;
+        while (enumeration.hasMoreElements() && count++ < MAX_SELECTION_ITEMS) {
+            Object value = enumeration.nextElement();
+            if (value == null) continue;
+            Map<String, Object> candidate = describeSelectedObject(value);
+            Map<String, Object> state = safeRenderedAccessors(value);
+            if (!state.isEmpty()) candidate.put("rendered_state", state);
+            candidates.add(candidate);
+        }
+        result.put("elements", candidates);
+        result.put("sampled_count", Integer.valueOf(candidates.size()));
+        return result;
+    }
+
+    private static Map<String, Object> safeRenderedAccessors(Object value) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        String[] accessors = {"getPosition", "getVelocityPosition", "getDrawLayer", "getTrackClass"};
+        for (String accessor : accessors) {
+            Object observed = invokePublicZeroArg(value, accessor);
+            if (observed == null) continue;
+            if (isSimple(observed.getClass())) result.put(accessor, String.valueOf(observed));
+            else if (observed instanceof java.awt.Point) {
+                java.awt.Point point = (java.awt.Point)observed;
+                Map<String, Object> coordinates = new LinkedHashMap<String, Object>();
+                coordinates.put("x", Integer.valueOf(point.x));
+                coordinates.put("y", Integer.valueOf(point.y));
+                result.put(accessor, coordinates);
+            } else result.put(accessor, describeRuntimeObject(observed));
+        }
+        Object track = invokePublicZeroArg(value, "getTrack");
+        if (track != null) {
+            Map<String, Object> trackInfo = describeRuntimeObject(track);
+            Map<String, Object> identity = new LinkedHashMap<String, Object>();
+            String[] trackAccessors = {"getName", "getId", "getID", "getIdentifier", "getCallsign", "getTrackId", "getNumber", "getKey", "getDescription"};
+            for (String accessor : trackAccessors) {
+                Object observed = invokePublicZeroArg(track, accessor);
+                if (observed != null && isSimple(observed.getClass())) identity.put(accessor, String.valueOf(observed));
+            }
+            if (!identity.isEmpty()) trackInfo.put("identity", identity);
+            trackInfo.put("candidate_fields", shallowFieldTypes(track));
+            result.put("getTrack", trackInfo);
+        }
         return result;
     }
 
