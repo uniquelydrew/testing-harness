@@ -219,7 +219,10 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         String[] fields = {"viewSelectionManager", "viewObjects", "models", "drawables", "regions"};
         for (String fieldName : fields) {
             Object value = readNamedField(view, fieldName);
-            if (value != null) result.put(fieldName, describeValue(value));
+            if (value != null) {
+                result.put(fieldName, describeValue(value));
+                if ("regions".equals(fieldName)) result.put("region_elements", regionElementsSnapshot(value));
+            }
         }
         Object manager = readNamedField(view, "viewSelectionManager");
         if (manager != null) {
@@ -246,6 +249,24 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (nodes != null) result.put("selection_nodes", describeEnumeration(nodes));
         Object detailed = invokePublicZeroArg(manager, "getDetailedSelections");
         if (detailed != null) result.put("detailed_selections", describeEnumeration(detailed));
+        return result;
+    }
+
+    /**
+     * Enumerate the live region container through its public read-only getElements() API.
+     * Region containers are the first runtime structure discovered that can expose the
+     * Selectable/rendered objects behind AWTViewCanvas without changing selection state.
+     */
+    private static Map<String, Object> regionElementsSnapshot(Object regions) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("container_type", regions.getClass().getName());
+        Object elements = invokePublicZeroArg(regions, "getElements");
+        if (elements == null) {
+            result.put("available", false);
+            return result;
+        }
+        result.put("available", true);
+        result.put("elements", describeEnumeration(elements));
         return result;
     }
 
