@@ -194,7 +194,7 @@ def test_solipsys_track_identity_matches_across_runtime_ref_and_position_changes
         "mandatory": {
             "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
             "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
-            "track_identity_key": "field:identity",
+            "track_identity_key": "getTrackId",
             "track_identity_value": "2",
         },
         "assistive": {

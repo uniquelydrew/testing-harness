@@ -6,11 +6,11 @@ from automation_harness.core.solipsys_identity import (
 )
 
 
-def _identity(value="2"):
+def _identity(value="2", key="getTrackId"):
     return {
         "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
         "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
-        "track_identity_key": "field:identity",
+        "track_identity_key": key,
         "track_identity_value": value,
     }
 
@@ -22,6 +22,12 @@ def test_semantic_identity_requires_all_four_locator_values():
     complete.pop("track_class")
     assert not locator_is_complete(complete)
     assert semantic_identity(complete) is None
+
+
+def test_field_identity_is_explicitly_disqualified_as_durable_identity():
+    identity = _identity(key="field:identity")
+    assert not locator_is_complete(identity)
+    assert semantic_identity(identity) is None
 
 
 def test_locator_matching_ignores_runtime_state():

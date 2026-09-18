@@ -556,10 +556,14 @@ def _solipsys_capture_locator(capture):
 
 
 def _same_solipsys_target(left, right):
-    from automation_harness.core.solipsys_identity import locators_match
+    from automation_harness.core.solipsys_identity import locators_match, runtime_correlation_key
     left_mandatory, left_assistive = _solipsys_capture_locator(left)
     right_mandatory, right_assistive = _solipsys_capture_locator(right)
-    return locators_match(left_mandatory, left_assistive, right_mandatory, right_assistive)
+    if locators_match(left_mandatory, left_assistive, right_mandatory, right_assistive):
+        return True
+    left_runtime = runtime_correlation_key(left)
+    right_runtime = runtime_correlation_key(right)
+    return left_runtime is not None and left_runtime == right_runtime
 
 
 def _matches_solipsys_capture(identity, capture):
@@ -592,10 +596,12 @@ def _solipsys_diagnostic_summary(capture):
         "identity_rejection_reason": properties.get("identity_rejection_reason"),
         "scope": assistive,
         "runtime": {
+            "track_runtime_ref": properties.get("track_runtime_ref"),
             "rendered_object_ref": properties.get("rendered_object_ref") or properties.get("ref"),
             "surface_ref": properties.get("surface_ref"),
             "bounds": capture.bounds,
         },
+        "track_instance_candidates": properties.get("track_instance_candidates", {}),
     }
 
 

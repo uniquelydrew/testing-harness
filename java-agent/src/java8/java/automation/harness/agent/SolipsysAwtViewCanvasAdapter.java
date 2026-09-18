@@ -40,6 +40,11 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
 
     public String name() { return "solipsys_awt_view_canvas"; }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castObjectMap(Object value) {
+        return (Map<String, Object>)value;
+    }
+
     public Map<String, Object> inspect(Component component) {
         if (!supports(component)) throw new IllegalArgumentException("component is not an AWTViewCanvas");
         Map<String, Object> result = new LinkedHashMap<String, Object>();
@@ -340,7 +345,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         return result;
     }
 
-    static Map<String, Object> selectedRenderedNode(Component surface) {
+    static Map<String, Object> selectedRenderedNode(Component surface, int screenX, int screenY) {
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
         if (view == null) return null;
         Object manager = readNamedField(view, "viewSelectionManager");
@@ -348,13 +353,34 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         Object selections = invokePublicZeroArg(manager, "getSelections");
         if (!(selections instanceof Enumeration)) return null;
         Enumeration<?> values = (Enumeration<?>)selections;
+        Object nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        java.awt.Point origin = new java.awt.Point(0, 0);
+        try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
         while (values.hasMoreElements()) {
             Object selectable = values.nextElement();
             if (selectable == null) continue;
-            Map<String, Object> node = renderedNode(surface, selectable);
-            if (node != null) return node;
+            Object position = invokePublicZeroArg(selectable, "getPosition");
+            if (!(position instanceof java.awt.Point)) continue;
+            java.awt.Point point = (java.awt.Point)position;
+            double dx = (origin.x + point.x) - screenX;
+            double dy = (origin.y + point.y) - screenY;
+            double distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < nearestDistance) {
+                nearest = selectable;
+                nearestDistance = distance;
+            }
         }
-        return null;
+        // A stale selection is worse than a canvas-level capture. Native track
+        // symbols and their immediate hit area are bounded well inside 64 px.
+        if (nearest == null || nearestDistance > 64.0) return null;
+        Map<String, Object> node = renderedNode(surface, nearest);
+        if (node != null) {
+            Map<String, Object> properties = castObjectMap(node.get("properties"));
+            properties.put("selection_click_distance", Double.valueOf(nearestDistance));
+            properties.put("selection_click_proximity_qualified", Boolean.TRUE);
+        }
+        return node;
     }
 
     static Map<String, Object> resolveRenderedNode(
@@ -439,8 +465,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (track == null) return null;
         Map<String, String> identity = trackIdentity(track);
         String identityKey = preferredIdentityKey(identity);
-        if (identityKey == null) return null;
-        String identityValue = identity.get(identityKey);
+        String identityValue = identityKey == null ? null : identity.get(identityKey);
 
         Map<String, Object> node = new LinkedHashMap<String, Object>();
         node.put("framework", "solipsys_rendered");
@@ -486,18 +511,21 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         properties.put("surface_accessible_id", surface.getName());
         properties.put("surface_ref", Integer.toHexString(System.identityHashCode(surface)));
         properties.put("rendered_object_ref", Integer.toHexString(System.identityHashCode(selectable)));
+        properties.put("track_runtime_ref", Integer.toHexString(System.identityHashCode(track)));
         properties.put("rendered_class", selectable.getClass().getName());
         properties.put("track_class", track.getClass().getName());
         properties.put("track_identity", new LinkedHashMap<String, Object>(identity));
-        properties.put("track_identity_key", identityKey);
-        properties.put("track_identity_value", identityValue);
+        if (identityKey != null) properties.put("track_identity_key", identityKey);
+        if (identityValue != null) properties.put("track_identity_value", identityValue);
+        properties.put("track_instance_candidates", diagnosticSimpleInstanceFields(track));
         properties.put("geometry_source", geometry.get("source"));
         properties.put("geometry_is_fallback", geometry.get("fallback"));
-        properties.put("identity_state", "candidate");
-        properties.put("identity_rejection_reason", null);
+        properties.put("identity_state", identityKey == null ? "runtime_only" : "candidate");
+        properties.put("identity_rejection_reason",
+                identityKey == null ? "no validated durable track identity" : null);
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
         Object regions = view == null ? null : readNamedField(view, "regions");
-        if (regions != null) {
+        if (regions != null && identityKey != null && identityValue != null) {
             List<Object> visibleMatches = new ArrayList<Object>();
             collectRenderedCandidates(
                     regions, selectable.getClass().getName(), track.getClass().getName(),
@@ -506,8 +534,29 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             properties.put("identity_unique_in_visible_scope", Boolean.valueOf(visibleMatches.size() == 1));
         }
         node.put("properties", properties);
-        node.put("name", identityValue);
+        node.put("name", identityValue == null
+                ? "track@" + Integer.toHexString(System.identityHashCode(track)) : identityValue);
         return node;
+    }
+
+    private static Map<String, Object> diagnosticSimpleInstanceFields(Object value) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        Class<?> current = value.getClass();
+        int count = 0;
+        while (current != null && count < 64) {
+            Field[] fields;
+            try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
+            for (Field field : fields) {
+                if (count >= 64 || Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) continue;
+                Object observed = readField(field, value);
+                if (observed == null || !isSimple(observed.getClass())) continue;
+                String name = current.getName() + "#" + field.getName();
+                result.put(name, String.valueOf(observed));
+                count++;
+            }
+            current = current.getSuperclass();
+        }
+        return result;
     }
 
     /** Resolve current hit geometry after semantic identity resolution.
@@ -612,7 +661,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         };
         for (String key : preferred) if (identity.containsKey(key)) return key;
         String[] fieldPreferred = {
-            "field:identity", "field:trackId", "field:trackID", "field:identifier",
+            "field:trackId", "field:trackID", "field:identifier",
             "field:id", "field:ID", "field:key", "field:trackNumber",
             "field:number", "field:callsign"
         };
@@ -632,7 +681,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         try {
             Class<?> ignored = String.class; // keeps this helper Java-8-simple; field trust is name based here.
             String lower = fieldName.toLowerCase(Locale.ROOT);
-            return "identity".equals(lower) || "id".equals(lower) || "identifier".equals(lower)
+            return "id".equals(lower) || "identifier".equals(lower)
                     || "key".equals(lower) || "number".equals(lower) || "callsign".equals(lower)
                     || "trackid".equals(lower) || "track_id".equals(lower)
                     || "tracknumber".equals(lower) || "track_number".equals(lower)
@@ -649,11 +698,11 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (field.isSynthetic()) return false;
         String raw = field.getName();
         String name = raw.toLowerCase(Locale.ROOT);
-        if ("identity".equals(name) || "id".equals(name) || "identifier".equals(name)
+        if ("id".equals(name) || "identifier".equals(name)
                 || "key".equals(name) || "number".equals(name) || "callsign".equals(name)
                 || "trackid".equals(name) || "track_id".equals(name)
                 || "tracknumber".equals(name) || "track_number".equals(name)) return true;
-        return name.endsWith("identity") || name.endsWith("identifier")
+        return name.endsWith("identifier")
                 || name.endsWith("trackid") || name.endsWith("track_id")
                 || name.endsWith("tracknumber") || name.endsWith("track_number")
                 || name.endsWith("callsign");

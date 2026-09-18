@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.core.object_hierarchy import hierarchy_contract
-from automation_harness.core.solipsys_identity import visible_identity_status
+from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts, visible_identity_status
 from automation_harness.core.capture_boundaries import annotate_capture_boundary, classify_capture_boundary
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
@@ -199,6 +199,12 @@ class HybridObjectCaptureService(ObjectCaptureService):
             if not isinstance(raw_identity, Mapping) or not isinstance(raw_identity.get("mandatory"), Mapping) or not raw_identity.get("mandatory"):
                 raise ValueError("captured Java agent object requires mandatory identity evidence")
             if captured.framework == "solipsys_rendered":
+                mandatory, _assistive = strategy_parts({"identification": raw_identity})
+                if not locator_is_complete(mandatory):
+                    raise ValueError(
+                        "captured Solipsys object has no validated durable identity; "
+                        "runtime references and field:identity cannot be persisted"
+                    )
                 matches = captured.backend_properties.get("identity_visible_match_count")
                 if visible_identity_status(captured.backend_properties) == "ambiguous":
                     raise ValueError(

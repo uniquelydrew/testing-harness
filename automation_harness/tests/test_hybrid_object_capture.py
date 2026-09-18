@@ -103,7 +103,7 @@ def _solipsys_capture(*, visible_matches=1):
             "mandatory": {
                 "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
                 "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
-                "track_identity_key": "field:identity",
+                "track_identity_key": "getTrackId",
                 "track_identity_value": "2",
             },
             "assistive": {
@@ -140,6 +140,29 @@ def test_solipsys_definition_rejects_identity_duplicated_in_visible_scope():
     with pytest.raises(ValueError, match="ambiguous in the visible surface scope"):
         service.definition_from_capture(
             "msct.track.2", _solipsys_capture(visible_matches=2), validate_live=False,
+        )
+
+
+def test_solipsys_definition_rejects_disqualified_field_identity():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    capture = _solipsys_capture()
+    identification = dict(capture.authored_strategy.options["identification"])
+    identification["mandatory"] = dict(
+        identification["mandatory"], track_identity_key="field:identity",
+    )
+    capture = CapturedComponent(**{
+        **capture.__dict__,
+        "authored_strategy": ComponentStrategy(
+            "java_agent", {"identification": identification},
+        ),
+    })
+
+    with pytest.raises(ValueError, match="no validated durable identity"):
+        service.definition_from_capture(
+            "msct.track.2", capture, validate_live=False,
         )
 
 

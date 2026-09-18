@@ -19,8 +19,9 @@ SEMANTIC_KEYS = (
 SCOPE_KEYS = ("native_class", "accessible_id", "window", "application")
 RUNTIME_KEYS = frozenset({
     "bounds", "coordinates", "position", "ref", "rendered_object_ref",
-    "surface_ref", "runtime_ref", "selected", "selection_state",
+    "surface_ref", "runtime_ref", "track_runtime_ref", "selected", "selection_state",
 })
+DISQUALIFIED_IDENTITY_KEYS = frozenset({"field:identity"})
 
 
 def strategy_parts(options: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -38,7 +39,10 @@ def strategy_parts(options: Mapping[str, Any] | None) -> tuple[dict[str, Any], d
 
 
 def locator_is_complete(mandatory: Mapping[str, Any]) -> bool:
-    return all(mandatory.get(key) not in (None, "") for key in SEMANTIC_KEYS)
+    return (
+        all(mandatory.get(key) not in (None, "") for key in SEMANTIC_KEYS)
+        and str(mandatory.get("track_identity_key")) not in DISQUALIFIED_IDENTITY_KEYS
+    )
 
 
 def semantic_identity(mandatory: Mapping[str, Any]) -> tuple[str, str, str, str] | None:
@@ -87,3 +91,14 @@ def visible_identity_status(properties: Mapping[str, Any] | None) -> str:
     if isinstance(matches, int) and not isinstance(matches, bool) and matches == 0:
         return "unavailable"
     return "unverified"
+
+
+def runtime_correlation_key(capture) -> tuple[str, str, str] | None:
+    """Return process-local evidence for recording correlation only."""
+    properties = getattr(capture, "backend_properties", {}) or {}
+    runtime_ref = properties.get("track_runtime_ref") or properties.get("rendered_object_ref")
+    scope = getattr(capture, "window", None) or getattr(capture, "application", None)
+    if runtime_ref in (None, "") or scope in (None, ""):
+        return None
+    native_class = getattr(capture, "native_class", None) or properties.get("rendered_class") or ""
+    return str(scope).casefold(), str(native_class), str(runtime_ref)

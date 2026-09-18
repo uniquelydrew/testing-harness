@@ -150,7 +150,7 @@ final class SwingRecorder {
         if (deepest == null) deepest = physical;
         Map<String, Object> target = target(deepest, Double.valueOf(screen.x), Double.valueOf(screen.y));
         Map<String, Object> after = selectionSnapshot(deepest);
-        promoteRenderedSelection(target, deepest);
+        promoteRenderedSelection(target, deepest, screen);
         if (before != null || after != null) {
             Map<String, Object> node = castMap(target.get("semantic_node"));
             Map<String, Object> properties = castMap(node.get("properties"));
@@ -177,11 +177,12 @@ final class SwingRecorder {
         }
     }
 
-    private static void promoteRenderedSelection(Map<String, Object> target, Component component) {
+    private static void promoteRenderedSelection(Map<String, Object> target, Component component, Point screen) {
         Component surface = RenderedSurfaceRegistry.nearestSurface(component);
         if (surface == null || !(RenderedSurfaceRegistry.adapterFor(surface) instanceof SolipsysAwtViewCanvasAdapter)) return;
         try {
-            Map<String, Object> semantic = SolipsysAwtViewCanvasAdapter.selectedRenderedNode(surface);
+            Map<String, Object> semantic = SolipsysAwtViewCanvasAdapter.selectedRenderedNode(
+                    surface, screen.x, screen.y);
             if (semantic == null) return;
             target.put("semantic_node", semantic);
             Map<String, Object> promotion = castMap(target.get("promotion"));
