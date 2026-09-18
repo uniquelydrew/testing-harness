@@ -1,10 +1,12 @@
 package automation.harness.agent;
 
 import java.awt.Component;
+import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -18,6 +20,7 @@ import java.util.Set;
 final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
     private static final String TARGET_CLASS = "com.solipsys.view.AWTViewCanvas";
     private static final int MAX_BACKING_OBJECTS = 24;
+    private static final int MAX_SELECTION_ITEMS = 32;
     private static final String[] DISCOVERY_TERMS = {
         "pick", "hit", "select", "track", "entity", "object", "model", "view",
         "screen", "world", "coordinate", "render", "layer", "symbol", "display",
@@ -47,6 +50,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         result.put("candidate_methods", candidateMethods(component.getClass()));
         result.put("candidate_fields", candidateFields(component));
         result.put("backing_objects", backingObjects(component));
+        result.put("selection_model", selectionSnapshot(component));
         result.put("diagnostic_only", true);
         return result;
     }
@@ -199,6 +203,120 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             item.put("runtime_ref", Integer.toHexString(System.identityHashCode(value)));
         }
         return item;
+    }
+
+    /** Targeted, bounded snapshot of Solipsys/TDF selection and rendered-object state. */
+    static Map<String, Object> selectionSnapshot(Component component) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        Object view = findReferencedObject(component, "com.solipsys.view.View", "view");
+        if (view == null) {
+            result.put("available", false);
+            return result;
+        }
+        result.put("available", true);
+        result.put("view", describeRuntimeObject(view));
+        String[] fields = {"viewSelectionManager", "viewObjects", "models", "drawables", "regions"};
+        for (String fieldName : fields) {
+            Object value = readNamedField(view, fieldName);
+            if (value != null) result.put(fieldName, describeValue(value));
+        }
+        Object manager = readNamedField(view, "viewSelectionManager");
+        if (manager != null) {
+            result.put("selection_manager", describeRuntimeObject(manager));
+            result.put("selection_manager_state", targetedFields(manager));
+        }
+        return result;
+    }
+
+    private static Object findReferencedObject(Object target, String exactType, String fieldTerm) {
+        if (target == null) return null;
+        Class<?> current = target.getClass();
+        while (current != null) {
+            Field[] fields;
+            try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
+            for (Field field : fields) {
+                Object value = readField(field, target);
+                if (value == null) continue;
+                if (exactType.equals(value.getClass().getName())) return value;
+                if (field.getName().toLowerCase(Locale.ROOT).contains(fieldTerm) &&
+                        value.getClass().getName().startsWith("com.solipsys.")) return value;
+            }
+            current = current.getSuperclass();
+        }
+        return null;
+    }
+
+    private static Object readNamedField(Object target, String name) {
+        Class<?> current = target.getClass();
+        while (current != null) {
+            try { return readField(current.getDeclaredField(name), target); }
+            catch (Throwable ignored) { current = current.getSuperclass(); }
+        }
+        return null;
+    }
+
+    private static Map<String, Object> describeRuntimeObject(Object value) {
+        Map<String, Object> item = new LinkedHashMap<String, Object>();
+        item.put("runtime_type", value.getClass().getName());
+        item.put("runtime_ref", Integer.toHexString(System.identityHashCode(value)));
+        item.put("interfaces", interfaces(value.getClass()));
+        item.put("candidate_methods", candidateMethods(value.getClass()));
+        return item;
+    }
+
+    private static Object describeValue(Object value) {
+        Map<String, Object> item = describeRuntimeObject(value);
+        List<Map<String, Object>> elements = new ArrayList<Map<String, Object>>();
+        if (value.getClass().isArray()) {
+            int length = Math.min(Array.getLength(value), MAX_SELECTION_ITEMS);
+            item.put("size", Integer.valueOf(Array.getLength(value)));
+            for (int i = 0; i < length; i++) {
+                Object element = Array.get(value, i);
+                if (element != null) elements.add(describeRuntimeObject(element));
+            }
+        } else if (value instanceof Collection) {
+            Collection<?> collection = (Collection<?>)value;
+            item.put("size", Integer.valueOf(collection.size()));
+            int count = 0;
+            for (Object element : collection) {
+                if (count++ >= MAX_SELECTION_ITEMS) break;
+                if (element != null) elements.add(describeRuntimeObject(element));
+            }
+        } else if (value instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>)value;
+            item.put("size", Integer.valueOf(map.size()));
+            int count = 0;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (count++ >= MAX_SELECTION_ITEMS) break;
+                Object element = entry.getValue();
+                if (element != null) elements.add(describeRuntimeObject(element));
+            }
+        }
+        if (!elements.isEmpty()) item.put("elements", elements);
+        return item;
+    }
+
+    private static List<Map<String, Object>> targetedFields(Object target) {
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        Class<?> current = target.getClass();
+        int count = 0;
+        while (current != null && count < MAX_SELECTION_ITEMS) {
+            Field[] fields;
+            try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
+            for (Field field : fields) {
+                if (count >= MAX_SELECTION_ITEMS) break;
+                String key = field.getName().toLowerCase(Locale.ROOT);
+                if (!(key.contains("select") || key.contains("rollover") || key.contains("pick") ||
+                        key.contains("object") || key.contains("model") || key.contains("view"))) continue;
+                Map<String, Object> item = describeField(field, target);
+                Object value = readField(field, target);
+                if (value != null && !isSimple(value.getClass())) item.put("value", describeValue(value));
+                result.add(item);
+                count++;
+            }
+            current = current.getSuperclass();
+        }
+        return result;
     }
 
     private static Object readField(Field field, Object target) {
