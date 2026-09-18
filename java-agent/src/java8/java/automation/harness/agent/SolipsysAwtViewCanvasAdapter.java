@@ -22,6 +22,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
     private static final String TARGET_CLASS = "com.solipsys.view.AWTViewCanvas";
     private static final int MAX_BACKING_OBJECTS = 24;
     private static final int MAX_SELECTION_ITEMS = 32;
+    private static final int MAX_VIEW_ASSOCIATIONS = 64;
     private static final String[] DISCOVERY_TERMS = {
         "pick", "hit", "select", "track", "entity", "object", "model", "view",
         "screen", "world", "coordinate", "render", "layer", "symbol", "display",
@@ -221,6 +222,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         }
         result.put("available", true);
         result.put("view", describeRuntimeObject(view));
+        result.put("view_associations", viewAssociationsSnapshot(view));
         String[] fields = {"viewSelectionManager", "viewObjects", "models", "drawables", "regions"};
         for (String fieldName : fields) {
             Object value = readNamedField(view, fieldName);
@@ -236,6 +238,105 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             result.put("native_selection", nativeSelectionSnapshot(manager));
         }
         return result;
+    }
+
+    /**
+     * Enumerate the public View key/object association API without retaining or
+     * mutating target objects.  A scalar key may eventually provide a durable
+     * locator; opaque keys remain useful evidence about the model/view graph.
+     */
+    private static Map<String, Object> viewAssociationsSnapshot(Object view) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        Object rawKeys = invokePublicZeroArg(view, "getAllViewKeys");
+        if (!(rawKeys instanceof Enumeration)) {
+            result.put("available", false);
+            return result;
+        }
+        result.put("available", true);
+        List<Map<String, Object>> associations = new ArrayList<Map<String, Object>>();
+        Enumeration<?> keys = (Enumeration<?>)rawKeys;
+        int observed = 0;
+        while (keys.hasMoreElements() && observed++ < MAX_VIEW_ASSOCIATIONS) {
+            Object key = keys.nextElement();
+            if (key == null) continue;
+            Object viewObject = invokePublicOneArg(view, "getViewObject", key);
+            associations.add(describeViewAssociation(key, viewObject));
+        }
+        result.put("associations", associations);
+        result.put("sampled_count", Integer.valueOf(associations.size()));
+        result.put("truncated", Boolean.valueOf(keys.hasMoreElements()));
+        return result;
+    }
+
+    private static Map<String, Object> describeViewAssociation(Object key, Object viewObject) {
+        Map<String, Object> item = new LinkedHashMap<String, Object>();
+        item.put("key_class", key.getClass().getName());
+        item.put("key_runtime_ref", Integer.toHexString(System.identityHashCode(key)));
+        item.put("key_reconstructible", Boolean.valueOf(isReconstructibleViewKey(key)));
+        if (isReconstructibleViewKey(key)) item.put("key_value", String.valueOf(key));
+        else {
+            item.put("key_instance_candidates", diagnosticSimpleInstanceFields(key));
+            item.put("key_field_types", shallowFieldTypes(key));
+            Map<String, Object> accessors = safeScalarIdentityAccessors(key);
+            if (!accessors.isEmpty()) item.put("key_accessor_candidates", accessors);
+        }
+        if (viewObject != null) {
+            item.put("view_object_class", viewObject.getClass().getName());
+            item.put("view_object_ref", Integer.toHexString(System.identityHashCode(viewObject)));
+            Object track = invokePublicZeroArg(viewObject, "getTrack");
+            if (track != null) {
+                item.put("track_class", track.getClass().getName());
+                item.put("track_runtime_ref", Integer.toHexString(System.identityHashCode(track)));
+            }
+        }
+        return item;
+    }
+
+    private static Map<String, Object> safeScalarIdentityAccessors(Object value) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        String[] accessors = {
+            "getName", "getId", "getID", "getIdentifier", "getKey", "getNumber",
+            "getTrackId", "getTrackID", "getTrackNumber", "getCallsign", "getDescription"
+        };
+        for (String accessor : accessors) {
+            Object observed = invokePublicZeroArg(value, accessor);
+            if (observed != null && isSimple(observed.getClass()))
+                result.put(accessor, String.valueOf(observed));
+        }
+        return result;
+    }
+
+    private static boolean isReconstructibleViewKey(Object key) {
+        if (key == null) return false;
+        Class<?> type = key.getClass();
+        return CharSequence.class.isAssignableFrom(type)
+                || Number.class.isAssignableFrom(type)
+                || Boolean.class.equals(type)
+                || Character.class.equals(type)
+                || type.isEnum();
+    }
+
+    /** Find the View association that points at this rendered object or its track. */
+    private static Map<String, Object> viewAssociationForRendered(
+            Object view, Object rendered, Object track) {
+        Object rawKeys = invokePublicZeroArg(view, "getAllViewKeys");
+        if (!(rawKeys instanceof Enumeration)) return null;
+        Enumeration<?> keys = (Enumeration<?>)rawKeys;
+        int observed = 0;
+        while (keys.hasMoreElements() && observed++ < MAX_VIEW_ASSOCIATIONS) {
+            Object key = keys.nextElement();
+            if (key == null) continue;
+            Object viewObject = invokePublicOneArg(view, "getViewObject", key);
+            if (viewObject == null) continue;
+            Object associatedTrack = invokePublicZeroArg(viewObject, "getTrack");
+            if (viewObject == rendered || viewObject == track || associatedTrack == track) {
+                Map<String, Object> association = describeViewAssociation(key, viewObject);
+                association.put("match", viewObject == rendered ? "rendered_object"
+                        : viewObject == track ? "track" : "view_object_track");
+                return association;
+            }
+        }
+        return null;
     }
 
     /**
@@ -525,6 +626,10 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
                 identityKey == null ? "no validated durable track identity" : null);
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
         Object regions = view == null ? null : readNamedField(view, "regions");
+        if (view != null) {
+            Map<String, Object> association = viewAssociationForRendered(view, selectable, track);
+            if (association != null) properties.put("view_association", association);
+        }
         if (regions != null && identityKey != null && identityValue != null) {
             List<Object> visibleMatches = new ArrayList<Object>();
             collectRenderedCandidates(
@@ -714,6 +819,21 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             if (!Modifier.isPublic(method.getModifiers()) || method.getParameterTypes().length != 0) return null;
             return method.invoke(target);
         } catch (Throwable ignored) { return null; }
+    }
+
+    private static Object invokePublicOneArg(Object target, String name, Object argument) {
+        if (target == null || argument == null) return null;
+        Method[] methods;
+        try { methods = target.getClass().getMethods(); }
+        catch (Throwable ignored) { return null; }
+        for (Method method : methods) {
+            if (!name.equals(method.getName()) || !Modifier.isPublic(method.getModifiers())) continue;
+            Class<?>[] parameters = method.getParameterTypes();
+            if (parameters.length != 1 || !parameters[0].isAssignableFrom(argument.getClass())) continue;
+            try { return method.invoke(target, argument); }
+            catch (Throwable ignored) { return null; }
+        }
+        return null;
     }
 
     private static Map<String, Object> describeEnumeration(Object value) {
