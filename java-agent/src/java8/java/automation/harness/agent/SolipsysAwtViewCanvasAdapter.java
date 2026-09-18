@@ -322,6 +322,19 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             }
             if (!identity.isEmpty()) trackInfo.put("identity", identity);
             trackInfo.put("candidate_fields", shallowFieldTypes(track));
+            Map<String, String> durableIdentity = trackIdentity(track);
+            if (!durableIdentity.isEmpty()) {
+                trackInfo.put("durable_identity_candidates", new LinkedHashMap<String, Object>(durableIdentity));
+                String preferred = preferredIdentityKey(durableIdentity);
+                if (preferred != null) {
+                    trackInfo.put("preferred_identity_key", preferred);
+                    trackInfo.put("preferred_identity_value", durableIdentity.get(preferred));
+                } else {
+                    trackInfo.put("identity_status", "no-trusted-instance-identity");
+                }
+            } else {
+                trackInfo.put("identity_status", "no-trusted-instance-identity");
+            }
             result.put("getTrack", trackInfo);
         }
         return result;
@@ -462,8 +475,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             Field[] fields;
             try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
             for (Field field : fields) {
-                String name = field.getName().toLowerCase(Locale.ROOT);
-                if (!(name.contains("id") || name.contains("key") || name.contains("number") || name.contains("callsign"))) continue;
+                if (!isInstanceIdentityField(field)) continue;
                 Object observed = readField(field, track);
                 if (observed != null && isSimple(observed.getClass())) {
                     String value = String.valueOf(observed);
@@ -481,8 +493,29 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             "getKey", "getNumber", "getTrackNumber", "getCallsign"
         };
         for (String key : preferred) if (identity.containsKey(key)) return key;
-        for (String key : identity.keySet()) if (key.startsWith("field:")) return key;
+        String[] fieldPreferred = {
+            "field:identity", "field:trackId", "field:trackID", "field:identifier",
+            "field:id", "field:ID", "field:key", "field:trackNumber",
+            "field:number", "field:callsign"
+        };
+        for (String key : fieldPreferred) if (identity.containsKey(key)) return key;
         return null;
+    }
+
+    private static boolean isInstanceIdentityField(Field field) {
+        int modifiers = field.getModifiers();
+        if (Modifier.isStatic(modifiers)) return false;
+        if (field.isSynthetic()) return false;
+        String raw = field.getName();
+        String name = raw.toLowerCase(Locale.ROOT);
+        if ("identity".equals(name) || "id".equals(name) || "identifier".equals(name)
+                || "key".equals(name) || "number".equals(name) || "callsign".equals(name)
+                || "trackid".equals(name) || "track_id".equals(name)
+                || "tracknumber".equals(name) || "track_number".equals(name)) return true;
+        return name.endsWith("identity") || name.endsWith("identifier")
+                || name.endsWith("trackid") || name.endsWith("track_id")
+                || name.endsWith("tracknumber") || name.endsWith("track_number")
+                || name.endsWith("callsign");
     }
 
     private static Object invokePublicZeroArg(Object target, String name) {
