@@ -449,6 +449,73 @@ def _matches_capture_details(definition: ComponentDefinition, capture: CapturedC
         if not isinstance(mandatory, Mapping):
             details.append({"strategy": strategy.type, "matched": False, "reason": "mandatory_not_mapping"})
             continue
+
+        # Native/custom backends (notably Solipsys rendered objects) author
+        # durable locator keys that are intentionally not CapturedComponent
+        # attributes. Compare those keys against the capture's own authored
+        # strategy instead of discarding them as unsupported.
+        capture_strategy = capture.candidate_strategy()
+        capture_identity = (
+            capture_strategy.options.get("identification", {})
+            if capture_strategy.type == strategy.type and isinstance(capture_strategy.options, Mapping)
+            else {}
+        )
+        capture_mandatory = (
+            capture_identity.get("mandatory", capture_identity)
+            if isinstance(capture_identity, Mapping)
+            else {}
+        )
+        capture_assistive = (
+            capture_identity.get("assistive", {})
+            if isinstance(capture_identity, Mapping)
+            else {}
+        )
+        authored_assistive = (
+            identity.get("assistive", {})
+            if isinstance(identity, Mapping)
+            else {}
+        )
+        if (
+            capture_strategy.type == strategy.type
+            and isinstance(capture_mandatory, Mapping)
+            and mandatory
+        ):
+            mandatory_comparisons = {
+                key: {
+                    "expected": value,
+                    "actual": capture_mandatory.get(key),
+                    "matched": key in capture_mandatory and capture_mandatory.get(key) == value,
+                }
+                for key, value in mandatory.items()
+            }
+            assistive_comparisons = {
+                key: {
+                    "expected": value,
+                    "actual": capture_assistive.get(key) if isinstance(capture_assistive, Mapping) else None,
+                    "matched": (
+                        isinstance(capture_assistive, Mapping)
+                        and key in capture_assistive
+                        and capture_assistive.get(key) == value
+                    ),
+                }
+                for key, value in authored_assistive.items()
+            } if isinstance(authored_assistive, Mapping) else {}
+            matched = (
+                all(item["matched"] for item in mandatory_comparisons.values())
+                and all(item["matched"] for item in assistive_comparisons.values())
+            )
+            details.append({
+                "strategy": strategy.type,
+                "mandatory": dict(mandatory),
+                "comparisons": mandatory_comparisons,
+                "assistive_comparisons": assistive_comparisons,
+                "matched": matched,
+                "unsupported_mandatory_keys": [],
+            })
+            if matched:
+                return True, details
+            continue
+
         supported = {key: value for key, value in mandatory.items() if key in {"name", "role", "accessible_id", "application", "window"}}
         comparisons = {
             key: {"expected": value, "actual": getattr(capture, key, None), "matched": getattr(capture, key, None) == value}
