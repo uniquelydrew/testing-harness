@@ -394,6 +394,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
                 && !renderedClass.equals(rendered.getClass().getName())) return false;
         if (trackClass != null && !trackClass.isEmpty()
                 && !trackClass.equals(track.getClass().getName())) return false;
+        if (!isTrustedIdentityKey(identityKey)) return false;
         Map<String, String> identity = trackIdentity(track);
         String actual = identity.get(identityKey);
         return actual != null && actual.equals(identityValue);
@@ -500,6 +501,29 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         };
         for (String key : fieldPreferred) if (identity.containsKey(key)) return key;
         return null;
+    }
+
+    private static boolean isTrustedIdentityKey(String key) {
+        if (key == null || key.isEmpty()) return false;
+        String[] accessors = {
+            "getTrackId", "getTrackID", "getIdentifier", "getID", "getId",
+            "getKey", "getNumber", "getTrackNumber", "getCallsign"
+        };
+        for (String accessor : accessors) if (accessor.equals(key)) return true;
+        if (!key.startsWith("field:")) return false;
+        String fieldName = key.substring("field:".length());
+        try {
+            Class<?> ignored = String.class; // keeps this helper Java-8-simple; field trust is name based here.
+            String lower = fieldName.toLowerCase(Locale.ROOT);
+            return "identity".equals(lower) || "id".equals(lower) || "identifier".equals(lower)
+                    || "key".equals(lower) || "number".equals(lower) || "callsign".equals(lower)
+                    || "trackid".equals(lower) || "track_id".equals(lower)
+                    || "tracknumber".equals(lower) || "track_number".equals(lower)
+                    || lower.endsWith("identity") || lower.endsWith("identifier")
+                    || lower.endsWith("trackid") || lower.endsWith("track_id")
+                    || lower.endsWith("tracknumber") || lower.endsWith("track_number")
+                    || lower.endsWith("callsign");
+        } catch (Throwable ignored) { return false; }
     }
 
     private static boolean isInstanceIdentityField(Field field) {
