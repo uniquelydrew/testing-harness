@@ -29,6 +29,7 @@ final class SwingRecorder {
     private static volatile RecordingBuffer buffer;
     private static volatile CompletableFuture<Map<String, Object>> captureFuture;
     private static volatile boolean listenerInstalled;
+    private static volatile Map<String, Object> selectionBefore;
     private SwingRecorder() { }
 
     static synchronized void start(RecordingBuffer destination) { buffer = destination; installListener(); }
@@ -102,19 +103,65 @@ final class SwingRecorder {
     }
     private static void event(AWTEvent value) {
         if (!(value instanceof MouseEvent)) return;
-        MouseEvent event = (MouseEvent)value;
+        final MouseEvent event = (MouseEvent)value;
+        if (event.getID() == MouseEvent.MOUSE_PRESSED) {
+            Component physical = event.getComponent();
+            if (physical == null) return;
+            Point screen = event.getLocationOnScreen();
+            Component deepest = componentAt(screen.x, screen.y);
+            if (deepest == null) deepest = physical;
+            selectionBefore = selectionSnapshot(deepest);
+            return;
+        }
         if (event.getID() != MouseEvent.MOUSE_RELEASED) return;
-        Component physical = event.getComponent(); if (physical == null) return;
-        Point screen = event.getLocationOnScreen(); Component deepest = componentAt(screen.x, screen.y); if (deepest == null) deepest = physical;
+        final Point screen = event.getLocationOnScreen();
+        final Component physical = event.getComponent();
+        final Map<String, Object> before = selectionBefore;
+        selectionBefore = null;
+        if (physical == null) return;
+        EventQueue.invokeLater(new Runnable() {
+            public void run() { processRelease(event, physical, screen, before); }
+        });
+    }
+
+    private static void processRelease(MouseEvent event, Component physical, Point screen, Map<String, Object> before) {
+        Component deepest = componentAt(screen.x, screen.y);
+        if (deepest == null) deepest = physical;
         Map<String, Object> target = target(deepest, Double.valueOf(screen.x), Double.valueOf(screen.y));
-        CompletableFuture<Map<String, Object>> pending = captureFuture; if (pending != null) pending.complete(target);
+        Map<String, Object> after = selectionSnapshot(deepest);
+        if (before != null || after != null) {
+            Map<String, Object> node = castMap(target.get("semantic_node"));
+            Map<String, Object> properties = castMap(node.get("properties"));
+            Map<String, Object> transition = new LinkedHashMap<String, Object>();
+            if (before != null) transition.put("before", before);
+            if (after != null) transition.put("after", after);
+            transition.put("changed", !String.valueOf(before).equals(String.valueOf(after)));
+            properties.put("render_surface_selection_transition", transition);
+        }
+        CompletableFuture<Map<String, Object>> pending = captureFuture;
+        if (pending != null) pending.complete(target);
         RecordingBuffer destination = buffer;
         if (destination != null) {
-            Map<String, Object> observation = new LinkedHashMap<String, Object>(); observation.put("type", "pointer");
-            observation.put("timestamp", System.nanoTime() / 1000000000.0); observation.put("target", target);
-            observation.put("button", event.getButton() == MouseEvent.BUTTON3 ? "secondary" : "primary"); observation.put("phase", "released");
-            List<Object> coordinates = new ArrayList<Object>(); coordinates.add(screen.x); coordinates.add(screen.y); observation.put("coordinates", coordinates); destination.offer(observation);
+            Map<String, Object> observation = new LinkedHashMap<String, Object>();
+            observation.put("type", "pointer");
+            observation.put("timestamp", System.nanoTime() / 1000000000.0);
+            observation.put("target", target);
+            observation.put("button", event.getButton() == MouseEvent.BUTTON3 ? "secondary" : "primary");
+            observation.put("phase", "released");
+            List<Object> coordinates = new ArrayList<Object>();
+            coordinates.add(screen.x); coordinates.add(screen.y);
+            observation.put("coordinates", coordinates);
+            destination.offer(observation);
         }
+    }
+
+    private static Map<String, Object> selectionSnapshot(Component component) {
+        Component surface = RenderedSurfaceRegistry.nearestSurface(component);
+        if (surface == null) return null;
+        RenderedSurfaceAdapter adapter = RenderedSurfaceRegistry.adapterFor(surface);
+        if (!(adapter instanceof SolipsysAwtViewCanvasAdapter)) return null;
+        try { return SolipsysAwtViewCanvasAdapter.selectionSnapshot(surface); }
+        catch (Throwable ignored) { return null; }
     }
 
     private static Component componentAt(int screenX, int screenY) {
