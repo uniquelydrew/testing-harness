@@ -9,6 +9,8 @@ from typing import Iterable
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.captured_repository import materialize_capture
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
+from automation_harness.core.object_hierarchy import hierarchy_contract
+from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 
 
@@ -66,11 +68,58 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
     if len(matches) > 1:
         raise ValueError("captured target matches multiple repository objects: %s" % ", ".join(matches))
     component_id = _unique_component_id(repository, capture)
+    if _is_runtime_only_solipsys_capture(capture):
+        definition = _runtime_only_solipsys_definition(component_id, capture)
+        return repository.with_component(definition), definition.component_id, True
     repository, definition, _created = materialize_capture(
         HybridObjectCaptureService(), repository, component_id, capture,
         validate_live=False,
     )
     return repository, definition.component_id, True
+
+
+def _is_runtime_only_solipsys_capture(capture: CapturedComponent) -> bool:
+    if capture.framework != "solipsys_rendered":
+        return False
+    strategy = capture.candidate_strategy()
+    if strategy.type != "java_agent":
+        return False
+    mandatory, _assistive = strategy_parts(strategy.options)
+    return not locator_is_complete(mandatory)
+
+
+def _runtime_only_solipsys_definition(
+    component_id: str, capture: CapturedComponent,
+) -> ComponentDefinition:
+    """Retain a discovered live track without claiming durable resolution.
+
+    Runtime correlation is useful for review, inspection, and de-duplication in
+    the current MSCT process.  The durable capture service continues to reject
+    this strategy if a user later attempts to promote it as executable identity.
+    """
+    properties = dict(capture.backend_properties or {})
+    properties.update({
+        "identity_state": "runtime_only",
+        "locator_status": "provisional",
+        "cross_session_resolution": False,
+        "persistence_warning": (
+            "Captured track has no validated durable identity; its runtime "
+            "reference is valid only for the current MSCT process."
+        ),
+    })
+    actions = frozenset(capture.actions or ("resolve", "click"))
+    return ComponentDefinition(
+        component_id=component_id,
+        description=capture.description or capture.name or "Captured MSCT track (runtime only)",
+        strategies=(capture.candidate_strategy(),),
+        actions=actions,
+        object_type=capture.semantic_type(),
+        properties=properties,
+        framework=capture.framework,
+        native_class=capture.native_class,
+        scope=hierarchy_contract(capture),
+        subobjects={str(key): dict(value) for key, value in capture.logical_subobjects.items()},
+    )
 
 
 def matching_component_ids(repository: ComponentRepository, capture: CapturedComponent) -> list[str]:

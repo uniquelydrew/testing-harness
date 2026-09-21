@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 from automation_harness.models.plan import StepCall, TestPlan
+from automation_harness.core.solipsys_identity import locators_match, strategy_parts
 
 
 _ID_KEYS = frozenset({"id", "accessible_id"})
@@ -20,6 +21,9 @@ _SCOPE_KEYS = frozenset({"window", "application"})
 _STRONG_KEYS = frozenset({
     "id", "accessible_id", "properties", "user_data", "name",
     "accessible_text", "text", "component_path",
+    # Durable semantic identity emitted by the Java agent for objects rendered
+    # inside opaque Solipsys canvases. Runtime refs and geometry are excluded.
+    "track_identity_value", "track_identity_key", "track_class", "rendered_class",
 })
 
 
@@ -47,13 +51,24 @@ def find_existing_component_ids(
             and definition.object_type != captured.semantic_type()
         ):
             continue
-        if any(
-            strategy.type == capture_strategy.type
-            and _identity_matches(_strategy_identity(strategy.options), capture_values)
-            for strategy in definition.strategies
-        ):
+        if any(_strategy_matches_capture(strategy, capture_strategy, capture_values)
+               for strategy in definition.strategies):
             result.append(component_id)
     return tuple(result)
+
+
+def _strategy_matches_capture(strategy, capture_strategy, capture_values):
+    if strategy.type != capture_strategy.type:
+        return False
+    if strategy.type == "java_agent":
+        expected_mandatory, expected_assistive = strategy_parts(strategy.options)
+        actual_mandatory, actual_assistive = strategy_parts(capture_strategy.options)
+        if "track_identity_key" in expected_mandatory or "track_identity_key" in actual_mandatory:
+            return locators_match(
+                expected_mandatory, expected_assistive,
+                actual_mandatory, actual_assistive,
+            )
+    return _identity_matches(_strategy_identity(strategy.options), capture_values)
 
 
 def rename_repository_component(

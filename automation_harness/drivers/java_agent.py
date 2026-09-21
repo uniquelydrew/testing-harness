@@ -19,16 +19,31 @@ class JavaAgentUnavailable(RuntimeError):
 
 class JavaAgentDriver:
     def __init__(self, _context=None) -> None:
-        self.transports = configured_java_agent_transports()
+        self._transports = ()
+        self.refresh_transports()
+
+    @property
+    def transports(self):
+        """Return a fresh view of live mixed-agent endpoints.
+
+        Discovery files are process-scoped and can appear after the harness has
+        already started. Refreshing here prevents a driver instance from
+        permanently caching an empty process set when the SUT is launched later.
+        """
+        return self.refresh_transports()
+
+    def refresh_transports(self):
+        self._transports = configured_java_agent_transports()
+        return self._transports
 
     @property
     def available(self) -> bool:
-        return bool(self.transports)
+        return bool(self.refresh_transports())
 
     def capture_at_point(
         self, x: int, y: int, *, process_id: int | None = None,
     ) -> CapturedComponent:
-        transports = self.transports
+        transports = self.refresh_transports()
         if process_id is not None:
             transports = tuple(
                 item for item in transports
@@ -43,11 +58,53 @@ class JavaAgentDriver:
             "hit_test", {"x": int(x), "y": int(y)}, transports=transports,
         )
 
+    def inspect_render_surface(
+        self, x: int, y: int, *, process_id: int | None = None,
+    ) -> Mapping[str, Any]:
+        """Inspect the rendered surface under a point without invoking target methods.
+
+        This is intentionally diagnostic-only for now. The Java-side adapter
+        reports class hierarchy, interfaces, candidate fields/methods, surface
+        geometry, and canvas-relative coordinates so a stable Solipsys picking
+        API can be identified before production resolution is enabled.
+        """
+        transports = self.refresh_transports()
+        if process_id is not None:
+            transports = tuple(
+                item for item in transports
+                if getattr(item, "pid", None) == process_id
+            )
+            if not transports:
+                raise JavaAgentUnavailable(
+                    "no Automation Harness Java agent endpoint was discovered for pid %s"
+                    % process_id
+                )
+        if not transports:
+            raise JavaAgentUnavailable("no configured Automation Harness Java agent endpoint")
+        errors = []
+        for transport in transports:
+            try:
+                return transport.request(
+                    "render_surface_inspect", {"x": int(x), "y": int(y)}
+                )
+            except Exception as exc:
+                errors.append("%s: %s" % (type(exc).__name__, exc))
+        raise JavaAgentUnavailable(
+            "all configured Java agents failed rendered-surface inspection: "
+            + "; ".join(errors)
+        )
+
     def capture_next_click(self, *, timeout: float = 30.0) -> CapturedComponent:
-        return self._first("capture_next_click", {"timeout": float(timeout)})
+        return self._first(
+            "capture_next_click", {"timeout": float(timeout)},
+            transports=self.refresh_transports(),
+        )
 
     def inspect(self, *, identification: Mapping[str, Any] | None = None, **_kwargs) -> CapturedComponent:
-        return self._first("resolve", _identity_payload(identification))
+        return self._first(
+            "resolve", _identity_payload(identification),
+            transports=self.refresh_transports(),
+        )
 
     def resolve(self, component_id: str, *, identification=None, **kwargs) -> ResolvedComponent:
         captured = self.inspect(identification=identification, **kwargs)
@@ -59,11 +116,14 @@ class JavaAgentDriver:
         return self.inspect(identification=identification, **kwargs).state
 
     def activate(self, *, identification=None, **_kwargs):
-        captured = self._first("activate", _identity_payload(identification))
+        captured = self._first(
+            "activate", _identity_payload(identification),
+            transports=self.refresh_transports(),
+        )
         return {"action": "activate", "component": captured.to_dict()}
 
     def _first(self, operation: str, payload: Mapping[str, Any], *, transports=None) -> CapturedComponent:
-        transports = self.transports if transports is None else tuple(transports)
+        transports = self.refresh_transports() if transports is None else tuple(transports)
         if not transports:
             raise JavaAgentUnavailable("no configured Automation Harness Java agent endpoint")
         errors = []
@@ -158,7 +218,7 @@ def _identity_payload(identification):
     if not isinstance(mandatory, Mapping) or not isinstance(assistive, Mapping):
         raise ValueError("Java agent identification must be a mapping")
     payload = {}
-    for key in ("name", "accessible_id", "native_class", "window", "component_path"):
+    for key in ("name", "accessible_id", "native_class", "window", "component_path", "rendered_class", "track_class", "track_identity_key", "track_identity_value"):
         value = mandatory.get(key, assistive.get(key))
         if value not in (None, ""):
             payload[key] = str(value)

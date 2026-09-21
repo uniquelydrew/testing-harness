@@ -28,7 +28,7 @@ def test_java_agent_resolves_swing_locator_without_atspi(monkeypatch):
     monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
     driver = JavaAgentDriver()
     transport = _Transport()
-    driver.transports = (transport,)
+    driver.refresh_transports = lambda: (transport,)
 
     capture = driver.inspect(identification={
         "mandatory": {"accessible_id": "display"},
@@ -49,7 +49,7 @@ def test_java_agent_point_capture_is_restricted_to_x11_owner_pid(monkeypatch):
     covered = _Transport(pid=7001)
     owner = _Transport(pid=7804)
     driver = JavaAgentDriver()
-    driver.transports = (covered, owner)
+    driver.refresh_transports = lambda: (covered, owner)
 
     capture = driver.capture_at_point(945, 331, process_id=7804)
 
@@ -105,3 +105,34 @@ def test_recording_uses_mixed_and_legacy_endpoints_without_duplicates(monkeypatc
         ("http://127.0.0.1:9418", "mixed"),
         ("http://127.0.0.1:9417", "legacy"),
     ]
+
+
+def test_java_agent_forwards_solipsys_rendered_identity(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _Transport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+
+    driver.inspect(identification={
+        "mandatory": {
+            "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+            "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+            "track_identity_key": "getTrackId",
+            "track_identity_value": "T-1234",
+        },
+        "assistive": {
+            "native_class": "com.solipsys.view.AWTViewCanvas",
+            "accessible_id": "panel0",
+            "window": "MSCT",
+        },
+    })
+
+    assert transport.calls == [("resolve", {
+        "accessible_id": "panel0",
+        "native_class": "com.solipsys.view.AWTViewCanvas",
+        "window": "MSCT",
+        "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+        "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+        "track_identity_key": "getTrackId",
+        "track_identity_value": "T-1234",
+    })]

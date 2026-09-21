@@ -187,3 +187,39 @@ def test_plan_uuid_references_are_migrated_to_readable_component_names():
     assert migrated.steps[0].inputs["component_id"] == "File Menu"
     assert migrated.steps[0].completion["object"] == "File Menu"
     assert repository.get("File Menu").object_id == definition.object_id
+
+
+def test_solipsys_track_identity_matches_across_runtime_ref_and_position_changes():
+    identification = {
+        "mandatory": {
+            "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+            "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+            "track_identity_key": "getTrackId",
+            "track_identity_value": "2",
+        },
+        "assistive": {
+            "accessible_id": "panel0",
+            "native_class": "com.solipsys.view.AWTViewCanvas",
+            "window": "MSCT Domain 12",
+        },
+    }
+    definition = ComponentDefinition(
+        component_id="Track 2", object_type=ObjectType.CUSTOM,
+        framework="solipsys_rendered",
+        native_class="com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+        strategies=(ComponentStrategy("java_agent", {"identification": identification}),),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    capture = CapturedComponent(
+        name="2", role="rendered_object", description=None, accessible_id=None,
+        application="MSCT Domain 12", window="MSCT Domain 12",
+        hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
+        actions=("resolve", "click"), bounds=(1297, 227, 1, 1),
+        state=ComponentState(present=True, visible=True, showing=True),
+        backend_properties={"ref": "different-runtime-display-object"},
+        authored_strategy=ComponentStrategy("java_agent", {"identification": identification}),
+        object_type=ObjectType.CUSTOM, framework="solipsys_rendered",
+        native_class="com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+    )
+
+    assert find_existing_component_ids(repository, capture) == ("Track 2",)

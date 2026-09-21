@@ -780,9 +780,40 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         )
     except ValueError:
         object_type = classify_accessibility(role, native_class)
-    properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    properties = {}
+    if isinstance(node.get("backend_properties"), Mapping):
+        properties.update(node["backend_properties"])
+    if isinstance(node.get("properties"), Mapping):
+        properties.update(node["properties"])
     framework = str(node.get("framework") or "javafx").casefold()
-    if framework in {"swing", "awt", "java", "jogl"}:
+    if framework == "solipsys_rendered":
+        mandatory = {}
+        assistive = {}
+        for key in ("rendered_class", "track_class", "track_identity_key", "track_identity_value"):
+            value = properties.get(key)
+            if value not in (None, ""):
+                mandatory[key] = str(value)
+        surface_class = properties.get("surface_native_class")
+        surface_id = properties.get("surface_accessible_id")
+        if surface_class not in (None, ""):
+            assistive["native_class"] = str(surface_class)
+        if surface_id not in (None, ""):
+            assistive["accessible_id"] = str(surface_id)
+        if node.get("window") not in (None, ""):
+            assistive["window"] = str(node.get("window"))
+        strategy = ComponentStrategy("java_agent", {"identification": {
+            "mandatory": mandatory,
+            **({"assistive": assistive} if assistive else {}),
+        }}) if len(mandatory) == 4 else ComponentStrategy("java_agent", {
+            "runtime_correlation": {
+                key: str(value) for key, value in (
+                    ("track_runtime_ref", properties.get("track_runtime_ref")),
+                    ("rendered_object_ref", properties.get("rendered_object_ref")),
+                    ("window", node.get("window")),
+                ) if value not in (None, "")
+            }
+        })
+    elif framework in {"swing", "awt", "java", "jogl"}:
         mandatory = {}
         assistive = {}
         accessible_id = node.get("accessible_id")
