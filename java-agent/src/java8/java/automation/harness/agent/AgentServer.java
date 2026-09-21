@@ -31,7 +31,7 @@ final class AgentServer {
         this.token = token;
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
         HttpHandler handler = new HttpHandler() { public void handle(HttpExchange exchange) throws IOException { AgentServer.this.handle(exchange); }};
-        String[] paths = {"/health", "/runtime", "/record_start", "/record_read", "/record_stop", "/capture_next_click", "/hit_test", "/resolve", "/activate", "/windows"};
+        String[] paths = {"/health", "/runtime", "/record_start", "/record_read", "/record_stop", "/capture_next_click", "/hit_test", "/resolve", "/activate", "/windows", "/render_surface_inspect"};
         for (String path : paths) server.createContext(path, handler);
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
@@ -62,7 +62,7 @@ final class AgentServer {
         if (!"POST".equals(exchange.getRequestMethod()) || !token.equals(exchange.getRequestHeaders().getFirst("X-Automation-Harness-Token"))) { exchange.sendResponseHeaders(401, -1); exchange.close(); return; }
         String path = exchange.getRequestURI().getPath(); String request = read(exchange.getRequestBody()); Map<String, Object> result = new LinkedHashMap<String, Object>();
         try {
-            if (path.equals("/health")) { result.put("status", "ok"); result.put("recording", recording.active()); result.put("runtime", RuntimeDiagnostics.snapshot()); result.put("capabilities", java.util.Arrays.asList("swing", "awt", "jogl", "tdf-surface")); }
+            if (path.equals("/health")) { result.put("status", "ok"); result.put("recording", recording.active()); result.put("runtime", RuntimeDiagnostics.snapshot()); result.put("capabilities", java.util.Arrays.asList("swing", "awt", "jogl", "tdf-surface", "solipsys-awt-view-canvas")); }
             else if (path.equals("/runtime")) result.putAll(RuntimeDiagnostics.snapshot());
             else if (path.equals("/record_start")) { recording.start(); SwingRecorder.start(recording); result.put("observations", recording.drain()); }
             else if (path.equals("/record_read")) result.put("observations", recording.awaitAndDrain((long)(number(request, "timeout", 0.25) * 1000)));
@@ -72,6 +72,7 @@ final class AgentServer {
             else if (path.equals("/resolve")) result.putAll(SwingRecorder.resolve(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/activate")) result.putAll(SwingRecorder.activate(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/windows")) result.put("windows", SwingRecorder.windows());
+            else if (path.equals("/render_surface_inspect")) result.putAll(RenderedSurfaceDiagnostics.inspectAt(number(request, "x", Double.NaN), number(request, "y", Double.NaN)));
             else { send(exchange, 404, error("unknown operation")); return; }
         } catch (Exception exception) { send(exchange, 404, error(exception.getMessage() == null ? exception.toString() : exception.getMessage())); return; }
         Map<String, Object> payload = new LinkedHashMap<String, Object>(); payload.put("ok", true); payload.put("result", result); send(exchange, 200, payload);

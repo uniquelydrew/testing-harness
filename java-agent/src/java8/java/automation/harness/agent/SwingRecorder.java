@@ -29,6 +29,7 @@ final class SwingRecorder {
     private static volatile RecordingBuffer buffer;
     private static volatile CompletableFuture<Map<String, Object>> captureFuture;
     private static volatile boolean listenerInstalled;
+    private static volatile Map<String, Object> selectionBefore;
     private SwingRecorder() { }
 
     static synchronized void start(RecordingBuffer destination) { buffer = destination; installListener(); }
@@ -44,7 +45,7 @@ final class SwingRecorder {
         final Map<String, Object>[] result = new Map[]{null};
         runOnEdtAndWait(new Runnable() { public void run() {
             Component component = componentAt((int)Math.round(screenX), (int)Math.round(screenY));
-            if (component != null) result[0] = target(component);
+            if (component != null) result[0] = target(component, screenX, screenY);
         }});
         if (result[0] == null) throw new IllegalArgumentException("no Swing/AWT component found at screen coordinate");
         return result[0];
@@ -63,7 +64,7 @@ final class SwingRecorder {
     }
 
     static Map<String, Object> resolve(String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
-        return target(find(name, accessibleId, nativeClass, windowTitle, componentPath));
+        return target(find(name, accessibleId, nativeClass, windowTitle, componentPath), null, null);
     }
 
     static Map<String, Object> activate(String name, String accessibleId, String nativeClass, String windowTitle, String componentPath) {
@@ -73,7 +74,7 @@ final class SwingRecorder {
             if (owner != null) { owner.toFront(); owner.requestFocus(); }
             component.requestFocusInWindow();
         }});
-        Map<String, Object> result = new LinkedHashMap<String, Object>(target(component)); result.put("activated", true); return result;
+        Map<String, Object> result = new LinkedHashMap<String, Object>(target(component, null, null)); result.put("activated", true); return result;
     }
 
     private static Component find(final String name, final String accessibleId, final String nativeClass, final String windowTitle, final String componentPath) {
@@ -102,19 +103,65 @@ final class SwingRecorder {
     }
     private static void event(AWTEvent value) {
         if (!(value instanceof MouseEvent)) return;
-        MouseEvent event = (MouseEvent)value;
+        final MouseEvent event = (MouseEvent)value;
+        if (event.getID() == MouseEvent.MOUSE_PRESSED) {
+            Component physical = event.getComponent();
+            if (physical == null) return;
+            Point screen = event.getLocationOnScreen();
+            Component deepest = componentAt(screen.x, screen.y);
+            if (deepest == null) deepest = physical;
+            selectionBefore = selectionSnapshot(deepest);
+            return;
+        }
         if (event.getID() != MouseEvent.MOUSE_RELEASED) return;
-        Component physical = event.getComponent(); if (physical == null) return;
-        Point screen = event.getLocationOnScreen(); Component deepest = componentAt(screen.x, screen.y); if (deepest == null) deepest = physical;
-        Map<String, Object> target = target(deepest);
-        CompletableFuture<Map<String, Object>> pending = captureFuture; if (pending != null) pending.complete(target);
+        final Point screen = event.getLocationOnScreen();
+        final Component physical = event.getComponent();
+        final Map<String, Object> before = selectionBefore;
+        selectionBefore = null;
+        if (physical == null) return;
+        EventQueue.invokeLater(new Runnable() {
+            public void run() { processRelease(event, physical, screen, before); }
+        });
+    }
+
+    private static void processRelease(MouseEvent event, Component physical, Point screen, Map<String, Object> before) {
+        Component deepest = componentAt(screen.x, screen.y);
+        if (deepest == null) deepest = physical;
+        Map<String, Object> target = target(deepest, Double.valueOf(screen.x), Double.valueOf(screen.y));
+        Map<String, Object> after = selectionSnapshot(deepest);
+        if (before != null || after != null) {
+            Map<String, Object> node = castMap(target.get("semantic_node"));
+            Map<String, Object> properties = castMap(node.get("properties"));
+            Map<String, Object> transition = new LinkedHashMap<String, Object>();
+            if (before != null) transition.put("before", before);
+            if (after != null) transition.put("after", after);
+            transition.put("changed", !String.valueOf(before).equals(String.valueOf(after)));
+            properties.put("render_surface_selection_transition", transition);
+        }
+        CompletableFuture<Map<String, Object>> pending = captureFuture;
+        if (pending != null) pending.complete(target);
         RecordingBuffer destination = buffer;
         if (destination != null) {
-            Map<String, Object> observation = new LinkedHashMap<String, Object>(); observation.put("type", "pointer");
-            observation.put("timestamp", System.nanoTime() / 1000000000.0); observation.put("target", target);
-            observation.put("button", event.getButton() == MouseEvent.BUTTON3 ? "secondary" : "primary"); observation.put("phase", "released");
-            List<Object> coordinates = new ArrayList<Object>(); coordinates.add(screen.x); coordinates.add(screen.y); observation.put("coordinates", coordinates); destination.offer(observation);
+            Map<String, Object> observation = new LinkedHashMap<String, Object>();
+            observation.put("type", "pointer");
+            observation.put("timestamp", System.nanoTime() / 1000000000.0);
+            observation.put("target", target);
+            observation.put("button", event.getButton() == MouseEvent.BUTTON3 ? "secondary" : "primary");
+            observation.put("phase", "released");
+            List<Object> coordinates = new ArrayList<Object>();
+            coordinates.add(screen.x); coordinates.add(screen.y);
+            observation.put("coordinates", coordinates);
+            destination.offer(observation);
         }
+    }
+
+    private static Map<String, Object> selectionSnapshot(Component component) {
+        Component surface = RenderedSurfaceRegistry.nearestSurface(component);
+        if (surface == null) return null;
+        RenderedSurfaceAdapter adapter = RenderedSurfaceRegistry.adapterFor(surface);
+        if (!(adapter instanceof SolipsysAwtViewCanvasAdapter)) return null;
+        try { return SolipsysAwtViewCanvasAdapter.selectionSnapshot(surface); }
+        catch (Throwable ignored) { return null; }
     }
 
     private static Component componentAt(int screenX, int screenY) {
@@ -127,11 +174,33 @@ final class SwingRecorder {
         return null;
     }
 
-    private static Map<String, Object> target(Component component) {
-        Map<String, Object> node = snapshot(component); Map<String, Object> promotion = new LinkedHashMap<String, Object>();
-        promotion.put("promoted", false); promotion.put("descendant_depth", 0); promotion.put("reason", "deepest-awt-component");
+    private static Map<String, Object> target(Component component, Double screenX, Double screenY) {
+        Component surface = RenderedSurfaceRegistry.nearestSurface(component);
+        Component semantic = surface == null ? component : surface;
+        Map<String, Object> node = snapshot(semantic);
+        Map<String, Object> promotion = new LinkedHashMap<String, Object>();
+        promotion.put("promoted", surface != null && surface != component);
+        promotion.put("descendant_depth", surface != null && surface != component ? 1 : 0);
+        promotion.put("reason", surface == null ? "deepest-awt-component" : "rendered-surface-boundary");
+        if (surface != null) {
+            RenderedSurfaceAdapter adapter = RenderedSurfaceRegistry.adapterFor(surface);
+            Map<String, Object> properties = castMap(node.get("properties"));
+            properties.put("opaque_render_surface", true);
+            properties.put("render_surface_adapter", adapter.name());
+            if (screenX != null && screenY != null) {
+                try {
+                    Map<String, Object> inspection = RenderedSurfaceDiagnostics.inspectAt(screenX.doubleValue(), screenY.doubleValue());
+                    properties.put("render_surface_inspection", inspection);
+                } catch (Throwable error) {
+                    properties.put("render_surface_inspection_error", error.getClass().getName() + ": " + String.valueOf(error.getMessage()));
+                }
+            }
+        }
         Map<String, Object> result = new LinkedHashMap<String, Object>(); result.put("physical_node", node); result.put("semantic_node", node); result.put("promotion", promotion); return result;
     }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castMap(Object value) { return (Map<String, Object>) value; }
 
     private static Map<String, Object> snapshot(Component component) {
         Map<String, Object> result = new LinkedHashMap<String, Object>(); String className = component.getClass().getName();
@@ -156,10 +225,10 @@ final class SwingRecorder {
     }
     private static String componentPath(Component component) { List<String> segments = new ArrayList<String>(); Component current = component; while (current != null) { segments.add(current.getClass().getName() + "[" + siblingIndex(current) + "]"); current = current.getParent(); } Collections.reverse(segments); return join(segments, "/"); }
     private static int siblingIndex(Component component) { Container parent = component.getParent(); if (parent == null) return 0; int index = 0; for (Component sibling : parent.getComponents()) { if (sibling == component) return index; if (sibling.getClass().equals(component.getClass())) index++; } return index; }
-    private static boolean isRenderSurface(Component component) { String name = component.getClass().getName().toLowerCase(Locale.ROOT); return name.startsWith("com.jogamp.opengl.") || name.startsWith("javax.media.opengl.") || name.contains("glcanvas") || name.contains("gljpanel") || name.contains("tdf"); }
+    private static boolean isRenderSurface(Component component) { if (RenderedSurfaceRegistry.adapterFor(component) != null) return true; String name = component.getClass().getName().toLowerCase(Locale.ROOT); return name.startsWith("com.jogamp.opengl.") || name.startsWith("javax.media.opengl.") || name.contains("glcanvas") || name.contains("gljpanel") || name.contains("tdf"); }
     private static List<String> hierarchy(Component component) { List<String> result = new ArrayList<String>(); Component current = component; while (current != null) { result.add(current.getClass().getName()); current = current.getParent(); } Collections.reverse(result); return result; }
     private static String authoredText(Component component) { if (component instanceof AbstractButton) return ((AbstractButton)component).getText(); if (component instanceof JLabel) return ((JLabel)component).getText(); if (component instanceof JTextComponent) return ((JTextComponent)component).getText(); return null; }
-    private static String role(Component component) { AccessibleContext context = component instanceof Accessible ? ((Accessible)component).getAccessibleContext() : null; if (context != null && context.getAccessibleRole() != null) return context.getAccessibleRole().toDisplayString(Locale.ROOT).toLowerCase(Locale.ROOT); return isRenderSurface(component) ? "canvas" : (component instanceof Container ? "panel" : "custom"); }
+    private static String role(Component component) { AccessibleContext context = component instanceof Accessible ? ((Accessible)component).getAccessibleContext() : null; if (context != null && context.getAccessibleRole() != null && RenderedSurfaceRegistry.adapterFor(component) == null) return context.getAccessibleRole().toDisplayString(Locale.ROOT).toLowerCase(Locale.ROOT); return isRenderSurface(component) ? "canvas" : (component instanceof Container ? "panel" : "custom"); }
     private static String objectType(Component component) { if (isRenderSurface(component)) return "canvas"; if (component instanceof AbstractButton) return "button"; if (component instanceof JTextComponent) return "text_field"; if (component instanceof JLabel) return "label"; if (component instanceof Window) return "window"; if (component instanceof Container) return "panel"; return "custom"; }
     private static List<String> actions(Component component) { List<String> result = new ArrayList<String>(); result.add("resolve"); result.add("click"); if (component instanceof AbstractButton) result.add("activate"); return result; }
     private static String windowTitle(Window window) { if (window instanceof java.awt.Frame) return ((java.awt.Frame)window).getTitle(); if (window instanceof java.awt.Dialog) return ((java.awt.Dialog)window).getTitle(); return window.getName() == null ? window.getClass().getSimpleName() : window.getName(); }
