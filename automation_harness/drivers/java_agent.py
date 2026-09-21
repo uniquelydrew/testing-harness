@@ -218,7 +218,7 @@ def _identity_payload(identification):
     if not isinstance(mandatory, Mapping) or not isinstance(assistive, Mapping):
         raise ValueError("Java agent identification must be a mapping")
     payload = {}
-    for key in ("name", "accessible_id", "native_class", "window", "component_path"):
+    for key in ("name", "accessible_id", "native_class", "window", "component_path", "rendered_class", "track_class", "track_identity_key", "track_identity_value"):
         value = mandatory.get(key, assistive.get(key))
         if value not in (None, ""):
             payload[key] = str(value)

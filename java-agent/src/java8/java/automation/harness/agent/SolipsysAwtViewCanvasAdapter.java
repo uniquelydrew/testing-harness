@@ -322,9 +322,224 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
             }
             if (!identity.isEmpty()) trackInfo.put("identity", identity);
             trackInfo.put("candidate_fields", shallowFieldTypes(track));
+            Map<String, String> durableIdentity = trackIdentity(track);
+            if (!durableIdentity.isEmpty()) {
+                trackInfo.put("durable_identity_candidates", new LinkedHashMap<String, Object>(durableIdentity));
+                String preferred = preferredIdentityKey(durableIdentity);
+                if (preferred != null) {
+                    trackInfo.put("preferred_identity_key", preferred);
+                    trackInfo.put("preferred_identity_value", durableIdentity.get(preferred));
+                } else {
+                    trackInfo.put("identity_status", "no-trusted-instance-identity");
+                }
+            } else {
+                trackInfo.put("identity_status", "no-trusted-instance-identity");
+            }
             result.put("getTrack", trackInfo);
         }
         return result;
+    }
+
+    static Map<String, Object> selectedRenderedNode(Component surface) {
+        Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
+        if (view == null) return null;
+        Object manager = readNamedField(view, "viewSelectionManager");
+        if (manager == null) return null;
+        Object selections = invokePublicZeroArg(manager, "getSelections");
+        if (!(selections instanceof Enumeration)) return null;
+        Enumeration<?> values = (Enumeration<?>)selections;
+        while (values.hasMoreElements()) {
+            Object selectable = values.nextElement();
+            if (selectable == null) continue;
+            Map<String, Object> node = renderedNode(surface, selectable);
+            if (node != null) return node;
+        }
+        return null;
+    }
+
+    static Map<String, Object> resolveRenderedNode(
+            Component surface, String renderedClass, String trackClass,
+            String identityKey, String identityValue) {
+        Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
+        if (view == null) return null;
+        Object regions = readNamedField(view, "regions");
+        if (regions == null) return null;
+        Object candidate = findRenderedCandidate(regions, renderedClass, trackClass, identityKey, identityValue, 0);
+        return candidate == null ? null : renderedNode(surface, candidate);
+    }
+
+    private static Object findRenderedCandidate(
+            Object container, String renderedClass, String trackClass,
+            String identityKey, String identityValue, int depth) {
+        if (container == null || depth > 8) return null;
+        Object raw = invokePublicZeroArg(container, "getElements");
+        if (!(raw instanceof Enumeration)) return null;
+        Enumeration<?> values = (Enumeration<?>)raw;
+        while (values.hasMoreElements()) {
+            Object value = values.nextElement();
+            if (value == null) continue;
+            Object track = invokePublicZeroArg(value, "getTrack");
+            if (track != null && matchesRenderedIdentity(
+                    value, track, renderedClass, trackClass, identityKey, identityValue)) return value;
+            Object nested = findRenderedCandidate(value, renderedClass, trackClass, identityKey, identityValue, depth + 1);
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    private static boolean matchesRenderedIdentity(
+            Object rendered, Object track, String renderedClass, String trackClass,
+            String identityKey, String identityValue) {
+        if (renderedClass != null && !renderedClass.isEmpty()
+                && !renderedClass.equals(rendered.getClass().getName())) return false;
+        if (trackClass != null && !trackClass.isEmpty()
+                && !trackClass.equals(track.getClass().getName())) return false;
+        if (!isTrustedIdentityKey(identityKey)) return false;
+        Map<String, String> identity = trackIdentity(track);
+        String actual = identity.get(identityKey);
+        return actual != null && actual.equals(identityValue);
+    }
+
+    private static Map<String, Object> renderedNode(Component surface, Object selectable) {
+        Object track = invokePublicZeroArg(selectable, "getTrack");
+        if (track == null) return null;
+        Map<String, String> identity = trackIdentity(track);
+        String identityKey = preferredIdentityKey(identity);
+        if (identityKey == null) return null;
+        String identityValue = identity.get(identityKey);
+
+        Map<String, Object> node = new LinkedHashMap<String, Object>();
+        node.put("framework", "solipsys_rendered");
+        node.put("class", selectable.getClass().getName());
+        node.put("native_class", selectable.getClass().getName());
+        node.put("role", "rendered_object");
+        node.put("object_type", "custom");
+        node.put("actions", java.util.Arrays.asList("resolve", "click"));
+        node.put("ref", Integer.toHexString(System.identityHashCode(selectable)));
+        Object position = invokePublicZeroArg(selectable, "getPosition");
+        if (position instanceof java.awt.Point) {
+            java.awt.Point point = (java.awt.Point)position;
+            java.awt.Point origin = new java.awt.Point(0, 0);
+            try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
+            node.put("bounds", java.util.Arrays.asList(
+                    Integer.valueOf(origin.x + point.x), Integer.valueOf(origin.y + point.y),
+                    Integer.valueOf(1), Integer.valueOf(1)));
+        }
+        java.awt.Window owner = javax.swing.SwingUtilities.getWindowAncestor(surface);
+        if (owner != null) {
+            String title = owner instanceof java.awt.Frame ? ((java.awt.Frame)owner).getTitle()
+                    : owner instanceof java.awt.Dialog ? ((java.awt.Dialog)owner).getTitle()
+                    : owner.getName();
+            node.put("window", title);
+            node.put("application", title);
+        }
+        Map<String, Object> parent = new LinkedHashMap<String, Object>();
+        parent.put("native_class", surface.getClass().getName());
+        if (surface.getName() != null && !surface.getName().isEmpty()) parent.put("accessible_id", surface.getName());
+        parent.put("role", "canvas");
+        node.put("parent", parent);
+        Map<String, Object> state = new LinkedHashMap<String, Object>();
+        state.put("present", true); state.put("visible", true); state.put("showing", surface.isShowing());
+        node.put("state", state);
+        Map<String, Object> properties = new LinkedHashMap<String, Object>();
+        properties.put("process_id", RuntimeDiagnostics.snapshot().get("pid"));
+        properties.put("render_surface_adapter", "solipsys_awt_view_canvas");
+        properties.put("surface_native_class", surface.getClass().getName());
+        properties.put("surface_accessible_id", surface.getName());
+        properties.put("surface_ref", Integer.toHexString(System.identityHashCode(surface)));
+        properties.put("rendered_object_ref", Integer.toHexString(System.identityHashCode(selectable)));
+        properties.put("rendered_class", selectable.getClass().getName());
+        properties.put("track_class", track.getClass().getName());
+        properties.put("track_identity", new LinkedHashMap<String, Object>(identity));
+        properties.put("track_identity_key", identityKey);
+        properties.put("track_identity_value", identityValue);
+        node.put("properties", properties);
+        node.put("name", identityValue);
+        return node;
+    }
+
+    private static Map<String, String> trackIdentity(Object track) {
+        Map<String, String> result = new LinkedHashMap<String, String>();
+        String[] accessors = {
+            "getTrackId", "getTrackID", "getIdentifier", "getID", "getId",
+            "getKey", "getNumber", "getTrackNumber", "getCallsign", "getName", "getDescription"
+        };
+        for (String accessor : accessors) {
+            Object observed = invokePublicZeroArg(track, accessor);
+            if (observed != null && isSimple(observed.getClass())) {
+                String value = String.valueOf(observed);
+                if (!value.isEmpty()) result.put(accessor, value);
+            }
+        }
+        Class<?> current = track.getClass();
+        while (current != null) {
+            Field[] fields;
+            try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
+            for (Field field : fields) {
+                if (!isInstanceIdentityField(field)) continue;
+                Object observed = readField(field, track);
+                if (observed != null && isSimple(observed.getClass())) {
+                    String value = String.valueOf(observed);
+                    if (!value.isEmpty()) result.put("field:" + field.getName(), value);
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return result;
+    }
+
+    private static String preferredIdentityKey(Map<String, String> identity) {
+        String[] preferred = {
+            "getTrackId", "getTrackID", "getIdentifier", "getID", "getId",
+            "getKey", "getNumber", "getTrackNumber", "getCallsign"
+        };
+        for (String key : preferred) if (identity.containsKey(key)) return key;
+        String[] fieldPreferred = {
+            "field:identity", "field:trackId", "field:trackID", "field:identifier",
+            "field:id", "field:ID", "field:key", "field:trackNumber",
+            "field:number", "field:callsign"
+        };
+        for (String key : fieldPreferred) if (identity.containsKey(key)) return key;
+        return null;
+    }
+
+    private static boolean isTrustedIdentityKey(String key) {
+        if (key == null || key.isEmpty()) return false;
+        String[] accessors = {
+            "getTrackId", "getTrackID", "getIdentifier", "getID", "getId",
+            "getKey", "getNumber", "getTrackNumber", "getCallsign"
+        };
+        for (String accessor : accessors) if (accessor.equals(key)) return true;
+        if (!key.startsWith("field:")) return false;
+        String fieldName = key.substring("field:".length());
+        try {
+            Class<?> ignored = String.class; // keeps this helper Java-8-simple; field trust is name based here.
+            String lower = fieldName.toLowerCase(Locale.ROOT);
+            return "identity".equals(lower) || "id".equals(lower) || "identifier".equals(lower)
+                    || "key".equals(lower) || "number".equals(lower) || "callsign".equals(lower)
+                    || "trackid".equals(lower) || "track_id".equals(lower)
+                    || "tracknumber".equals(lower) || "track_number".equals(lower)
+                    || lower.endsWith("identity") || lower.endsWith("identifier")
+                    || lower.endsWith("trackid") || lower.endsWith("track_id")
+                    || lower.endsWith("tracknumber") || lower.endsWith("track_number")
+                    || lower.endsWith("callsign");
+        } catch (Throwable ignored) { return false; }
+    }
+
+    private static boolean isInstanceIdentityField(Field field) {
+        int modifiers = field.getModifiers();
+        if (Modifier.isStatic(modifiers)) return false;
+        if (field.isSynthetic()) return false;
+        String raw = field.getName();
+        String name = raw.toLowerCase(Locale.ROOT);
+        if ("identity".equals(name) || "id".equals(name) || "identifier".equals(name)
+                || "key".equals(name) || "number".equals(name) || "callsign".equals(name)
+                || "trackid".equals(name) || "track_id".equals(name)
+                || "tracknumber".equals(name) || "track_number".equals(name)) return true;
+        return name.endsWith("identity") || name.endsWith("identifier")
+                || name.endsWith("trackid") || name.endsWith("track_id")
+                || name.endsWith("tracknumber") || name.endsWith("track_number")
+                || name.endsWith("callsign");
     }
 
     private static Object invokePublicZeroArg(Object target, String name) {

@@ -782,7 +782,26 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         object_type = classify_accessibility(role, native_class)
     properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
     framework = str(node.get("framework") or "javafx").casefold()
-    if framework in {"swing", "awt", "java", "jogl"}:
+    if framework == "solipsys_rendered":
+        mandatory = {}
+        assistive = {}
+        for key in ("rendered_class", "track_class", "track_identity_key", "track_identity_value"):
+            value = properties.get(key)
+            if value not in (None, ""):
+                mandatory[key] = str(value)
+        surface_class = properties.get("surface_native_class")
+        surface_id = properties.get("surface_accessible_id")
+        if surface_class not in (None, ""):
+            assistive["native_class"] = str(surface_class)
+        if surface_id not in (None, ""):
+            assistive["accessible_id"] = str(surface_id)
+        if node.get("window") not in (None, ""):
+            assistive["window"] = str(node.get("window"))
+        strategy = ComponentStrategy("java_agent", {"identification": {
+            "mandatory": mandatory,
+            **({"assistive": assistive} if assistive else {}),
+        }}) if len(mandatory) == 4 else None
+    elif framework in {"swing", "awt", "java", "jogl"}:
         mandatory = {}
         assistive = {}
         accessible_id = node.get("accessible_id")

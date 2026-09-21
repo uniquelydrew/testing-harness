@@ -20,6 +20,9 @@ _SCOPE_KEYS = frozenset({"window", "application"})
 _STRONG_KEYS = frozenset({
     "id", "accessible_id", "properties", "user_data", "name",
     "accessible_text", "text", "component_path",
+    # Durable semantic identity emitted by the Java agent for objects rendered
+    # inside opaque Solipsys canvases. Runtime refs and geometry are excluded.
+    "track_identity_value", "track_identity_key", "track_class", "rendered_class",
 })
 
 
