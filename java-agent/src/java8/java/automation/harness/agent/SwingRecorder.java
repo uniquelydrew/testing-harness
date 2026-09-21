@@ -224,14 +224,6 @@ final class SwingRecorder {
             Map<String, Object> properties = castMap(node.get("properties"));
             properties.put("opaque_render_surface", true);
             properties.put("render_surface_adapter", adapter.name());
-            if (screenX != null && screenY != null) {
-                try {
-                    Map<String, Object> inspection = RenderedSurfaceDiagnostics.inspectAt(screenX.doubleValue(), screenY.doubleValue());
-                    properties.put("render_surface_inspection", inspection);
-                } catch (Throwable error) {
-                    properties.put("render_surface_inspection_error", error.getClass().getName() + ": " + String.valueOf(error.getMessage()));
-                }
-            }
         }
         Map<String, Object> result = new LinkedHashMap<String, Object>(); result.put("physical_node", node); result.put("semantic_node", node); result.put("promotion", promotion); return result;
     }

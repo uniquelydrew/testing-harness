@@ -208,6 +208,24 @@ def test_verbose_debug_log_persists_runtime_observations_and_match_decisions(tmp
     assert "<redacted>" in contents
 
 
+def test_verbose_debug_log_omits_reflective_graphs_and_bounds_collections(tmp_path):
+    debug_log = RecordingDebugLog(tmp_path)
+    debug_log.write(
+        "adapter.normalized_observation",
+        target={
+            "render_surface_inspection": {"backing_objects": [{"candidate_methods": list(range(500))}]},
+            "track_instance_candidates": {"field-%03d" % index: index for index in range(150)},
+        },
+        repeated=list(range(100)),
+    )
+
+    contents = debug_log.path.read_text(encoding="utf-8")
+    assert "<verbose reflective detail omitted>" in contents
+    assert "36 sequence entries omitted" in contents
+    assert "54 mapping entries omitted" in contents
+    assert len(contents) < 30000
+
+
 def test_stop_correlates_final_adapter_event_before_closing_session():
     target = _capture("Open")
 

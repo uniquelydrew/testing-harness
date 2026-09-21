@@ -16,6 +16,19 @@ from typing import Any, Mapping
 
 
 _SENSITIVE = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "CREDENTIAL", "API_KEY")
+_MAX_DEPTH = 8
+_MAX_MAPPING_ITEMS = 96
+_MAX_SEQUENCE_ITEMS = 64
+_MAX_TEXT_LENGTH = 4096
+_OMITTED_DETAIL_KEYS = frozenset({
+    # These reflective graphs repeat for every pointer observation and can
+    # expand a short recording into hundreds of megabytes.  Semantic capture
+    # summaries are logged separately by RecordingSession.
+    "render_surface_inspection",
+    "backing_objects",
+    "candidate_methods",
+    "selection_manager_state",
+})
 
 
 class RecordingDebugLog:
@@ -82,12 +95,17 @@ def _safe_monotonic():
 
 
 def _serializable(value: Any, _depth: int = 0) -> Any:
-    if _depth > 16:
+    if _depth > _MAX_DEPTH:
         return "<maximum diagnostic depth reached>"
     if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, str):
-        return _redact_text(value)
+        redacted = _redact_text(value)
+        if len(redacted) > _MAX_TEXT_LENGTH:
+            return redacted[:_MAX_TEXT_LENGTH] + "<%d characters omitted>" % (
+                len(redacted) - _MAX_TEXT_LENGTH
+            )
+        return redacted
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Enum):
@@ -96,12 +114,24 @@ def _serializable(value: Any, _depth: int = 0) -> Any:
         return _serializable(asdict(value), _depth + 1)
     if isinstance(value, Mapping):
         result = {}
-        for key, item in value.items():
+        items = list(value.items())
+        for key, item in items[:_MAX_MAPPING_ITEMS]:
             key_text = str(key)
-            result[key_text] = "<redacted>" if any(token in key_text.upper() for token in _SENSITIVE) else _serializable(item, _depth + 1)
+            if key_text in _OMITTED_DETAIL_KEYS:
+                result[key_text] = "<verbose reflective detail omitted>"
+            else:
+                result[key_text] = "<redacted>" if any(token in key_text.upper() for token in _SENSITIVE) else _serializable(item, _depth + 1)
+        if len(items) > _MAX_MAPPING_ITEMS:
+            result["<truncated>"] = "%d mapping entries omitted" % (
+                len(items) - _MAX_MAPPING_ITEMS
+            )
         return result
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_serializable(item, _depth + 1) for item in value]
+        items = list(value)
+        result = [_serializable(item, _depth + 1) for item in items[:_MAX_SEQUENCE_ITEMS]]
+        if len(items) > _MAX_SEQUENCE_ITEMS:
+            result.append("<%d sequence entries omitted>" % (len(items) - _MAX_SEQUENCE_ITEMS))
+        return result
     if isinstance(value, bytes):
         return "<%d bytes omitted>" % len(value)
     try:
