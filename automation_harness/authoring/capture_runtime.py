@@ -367,6 +367,10 @@ def _install_javafx_authoring(app_module):
                             captured = self.capture.javafx_driver.inspect(
                                 identification=strategy.options.get("identification"),
                             )
+                    elif strategy.type == "java_agent":
+                        captured = self.capture.java_agent_driver.inspect(
+                            identification=strategy.options.get("identification"),
+                        )
                     else:
                         continue
                     GLib.idle_add(self._finish_repository_highlight, captured, None)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import (
@@ -290,7 +291,7 @@ def _solipsys_track_capture(identity="2", *, bounds=(737, 480, 1, 1), runtime_re
         "mandatory": {
             "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
             "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
-            "track_identity_key": "field:identity",
+            "track_identity_key": "getTrackId",
             "track_identity_value": identity,
         },
         "assistive": {
@@ -348,6 +349,129 @@ def test_repository_matching_rejects_different_solipsys_track_identity():
     session.observe(PointerInteraction(
         1.0, "solipsys_rendered", _solipsys_track_capture("3"),
         phase="released", coordinates=(900, 300),
+    ))
+
+    assert session.stop()[0].repository_match.status == "new_candidate"
+
+
+def _runtime_only_solipsys_capture(track_ref, rendered_ref, bounds):
+    return CapturedComponent(
+        name="track@%s" % track_ref, role="rendered_object", description=None,
+        accessible_id=None, application="MSCT Domain 12", window="MSCT Domain 12",
+        hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
+        actions=("resolve", "click"), bounds=bounds,
+        state=ComponentState(present=True, visible=True, showing=True),
+        backend_properties={
+            "track_runtime_ref": track_ref,
+            "rendered_object_ref": rendered_ref,
+            "identity_state": "runtime_only",
+            "identity_rejection_reason": "no validated durable track identity",
+        },
+        authored_strategy=ComponentStrategy("java_agent", {
+            "runtime_correlation": {
+                "track_runtime_ref": track_ref,
+                "rendered_object_ref": rendered_ref,
+                "window": "MSCT Domain 12",
+            }
+        }),
+        object_type=ObjectType.CUSTOM, framework="solipsys_rendered",
+        native_class="com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
+    )
+
+
+def test_runtime_track_reference_correlates_same_live_track_after_movement():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered",
+        _runtime_only_solipsys_capture("track-a", "display-a", (1128, 584, 13, 13)),
+        phase="pressed", coordinates=(1134, 590),
+    ))
+    session.observe(PointerInteraction(
+        1.1, "solipsys_rendered",
+        _runtime_only_solipsys_capture("track-a", "display-a", (1185, 574, 13, 13)),
+        phase="released", coordinates=(1191, 580),
+    ))
+
+    assert len(session.stop()) == 1
+
+
+def test_runtime_correlation_rejects_distinct_tracks_that_share_bad_identity_value():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered",
+        _runtime_only_solipsys_capture("track-a", "display-a", (265, 295, 13, 13)),
+        phase="released", coordinates=(271, 301),
+    ))
+    session.observe(PointerInteraction(
+        2.0, "solipsys_rendered",
+        _runtime_only_solipsys_capture("track-b", "display-b", (790, 655, 13, 13)),
+        phase="released", coordinates=(796, 661),
+    ))
+
+    assert len(session.stop()) == 2
+
+
+def test_recording_correlates_same_solipsys_identity_across_geometry_and_runtime_changes():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", _solipsys_track_capture(
+            "2", bounds=(737, 480, 1, 1), runtime_ref="display-a",
+        ), phase="pressed", coordinates=(737, 480),
+    ))
+    session.observe(PointerInteraction(
+        2.0, "solipsys_rendered", _solipsys_track_capture(
+            "2", bounds=(1297, 227, 1, 1), runtime_ref="display-b",
+        ), phase="released", coordinates=(1297, 227),
+    ))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].target.candidate_strategy().options["identification"]["mandatory"]["track_identity_value"] == "2"
+
+
+def test_recording_does_not_correlate_distinct_solipsys_identities_at_same_geometry():
+    session = RecordingSession()
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", _solipsys_track_capture("2"),
+        phase="released", coordinates=(737, 480),
+    ))
+    session.observe(PointerInteraction(
+        2.0, "solipsys_rendered", _solipsys_track_capture("3"),
+        phase="released", coordinates=(737, 480),
+    ))
+
+    interactions = session.stop()
+
+    assert len(interactions) == 2
+
+
+def test_repository_matching_rejects_same_track_identity_in_different_explicit_scope():
+    persisted = _solipsys_track_capture("2")
+    repository = ComponentRepository({
+        "Track 2": ComponentDefinition(
+            component_id="Track 2", strategies=(persisted.candidate_strategy(),),
+            object_type=persisted.semantic_type(), framework="solipsys_rendered",
+            native_class=persisted.native_class,
+        ),
+    })
+    different_scope = _solipsys_track_capture("2")
+    identity = dict(different_scope.candidate_strategy().options["identification"])
+    identity["assistive"] = dict(identity["assistive"], window="MSCT Domain 99")
+    different_scope = replace(
+        different_scope,
+        authored_strategy=ComponentStrategy("java_agent", {"identification": identity}),
+        application="MSCT Domain 99", window="MSCT Domain 99",
+    )
+    session = RecordingSession(repository=repository)
+    session.start()
+    session.observe(PointerInteraction(
+        1.0, "solipsys_rendered", different_scope,
+        phase="released", coordinates=(737, 480),
     ))
 
     assert session.stop()[0].repository_match.status == "new_candidate"

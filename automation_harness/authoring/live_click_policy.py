@@ -48,6 +48,10 @@ def install(app_module) -> None:
                     captured = self.capture.javafx_driver.inspect(
                         identification=strategy.options.get("identification")
                     )
+                elif strategy.type == "java_agent":
+                    captured = self.capture.java_agent_driver.inspect(
+                        identification=strategy.options.get("identification")
+                    )
                 else:
                     continue
                 if captured.bounds is None:

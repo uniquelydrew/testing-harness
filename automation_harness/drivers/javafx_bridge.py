@@ -780,7 +780,11 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         )
     except ValueError:
         object_type = classify_accessibility(role, native_class)
-    properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    properties = {}
+    if isinstance(node.get("backend_properties"), Mapping):
+        properties.update(node["backend_properties"])
+    if isinstance(node.get("properties"), Mapping):
+        properties.update(node["properties"])
     framework = str(node.get("framework") or "javafx").casefold()
     if framework == "solipsys_rendered":
         mandatory = {}
@@ -800,7 +804,15 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         strategy = ComponentStrategy("java_agent", {"identification": {
             "mandatory": mandatory,
             **({"assistive": assistive} if assistive else {}),
-        }}) if len(mandatory) == 4 else None
+        }}) if len(mandatory) == 4 else ComponentStrategy("java_agent", {
+            "runtime_correlation": {
+                key: str(value) for key, value in (
+                    ("track_runtime_ref", properties.get("track_runtime_ref")),
+                    ("rendered_object_ref", properties.get("rendered_object_ref")),
+                    ("window", node.get("window")),
+                ) if value not in (None, "")
+            }
+        })
     elif framework in {"swing", "awt", "java", "jogl"}:
         mandatory = {}
         assistive = {}

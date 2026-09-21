@@ -40,6 +40,11 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
 
     public String name() { return "solipsys_awt_view_canvas"; }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castObjectMap(Object value) {
+        return (Map<String, Object>)value;
+    }
+
     public Map<String, Object> inspect(Component component) {
         if (!supports(component)) throw new IllegalArgumentException("component is not an AWTViewCanvas");
         Map<String, Object> result = new LinkedHashMap<String, Object>();
@@ -340,7 +345,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         return result;
     }
 
-    static Map<String, Object> selectedRenderedNode(Component surface) {
+    static Map<String, Object> selectedRenderedNode(Component surface, int screenX, int screenY) {
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
         if (view == null) return null;
         Object manager = readNamedField(view, "viewSelectionManager");
@@ -348,43 +353,98 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         Object selections = invokePublicZeroArg(manager, "getSelections");
         if (!(selections instanceof Enumeration)) return null;
         Enumeration<?> values = (Enumeration<?>)selections;
+        Object nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        java.awt.Point origin = new java.awt.Point(0, 0);
+        try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
         while (values.hasMoreElements()) {
             Object selectable = values.nextElement();
             if (selectable == null) continue;
-            Map<String, Object> node = renderedNode(surface, selectable);
-            if (node != null) return node;
+            Object position = invokePublicZeroArg(selectable, "getPosition");
+            if (!(position instanceof java.awt.Point)) continue;
+            java.awt.Point point = (java.awt.Point)position;
+            double dx = (origin.x + point.x) - screenX;
+            double dy = (origin.y + point.y) - screenY;
+            double distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < nearestDistance) {
+                nearest = selectable;
+                nearestDistance = distance;
+            }
         }
-        return null;
+        // A stale selection is worse than a canvas-level capture. Native track
+        // symbols and their immediate hit area are bounded well inside 64 px.
+        if (nearest == null || nearestDistance > 64.0) return null;
+        Map<String, Object> node = renderedNode(surface, nearest);
+        if (node != null) {
+            Map<String, Object> properties = castObjectMap(node.get("properties"));
+            properties.put("selection_click_distance", Double.valueOf(nearestDistance));
+            properties.put("selection_click_proximity_qualified", Boolean.TRUE);
+        }
+        return node;
     }
 
     static Map<String, Object> resolveRenderedNode(
             Component surface, String renderedClass, String trackClass,
             String identityKey, String identityValue) {
+        Map<String, Object> resolution = new LinkedHashMap<String, Object>();
         Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
-        if (view == null) return null;
+        if (view == null) {
+            resolution.put("resolution_status", "surface_not_present");
+            return resolution;
+        }
         Object regions = readNamedField(view, "regions");
-        if (regions == null) return null;
-        Object candidate = findRenderedCandidate(regions, renderedClass, trackClass, identityKey, identityValue, 0);
-        return candidate == null ? null : renderedNode(surface, candidate);
+        if (regions == null) {
+            resolution.put("resolution_status", "surface_not_present");
+            return resolution;
+        }
+        if (!isTrustedIdentityKey(identityKey) || identityValue == null || identityValue.isEmpty()) {
+            resolution.put("resolution_status", "identity_unavailable");
+            resolution.put("identity_key", identityKey);
+            return resolution;
+        }
+        List<Object> candidates = new ArrayList<Object>();
+        collectRenderedCandidates(regions, renderedClass, trackClass, identityKey, identityValue, 0, candidates);
+        resolution.put("candidate_count", Integer.valueOf(candidates.size()));
+        resolution.put("identity_key", identityKey);
+        resolution.put("identity_value", identityValue);
+        if (candidates.isEmpty()) {
+            resolution.put("resolution_status", "not_present");
+            return resolution;
+        }
+        if (candidates.size() > 1) {
+            resolution.put("resolution_status", "ambiguous_identity");
+            return resolution;
+        }
+        Map<String, Object> node = renderedNode(surface, candidates.get(0));
+        if (node == null) {
+            resolution.put("resolution_status", "identity_unavailable");
+            return resolution;
+        }
+        node.put("resolution_status", "resolved");
+        node.put("candidate_count", Integer.valueOf(1));
+        return node;
     }
 
-    private static Object findRenderedCandidate(
+    private static void collectRenderedCandidates(
             Object container, String renderedClass, String trackClass,
-            String identityKey, String identityValue, int depth) {
-        if (container == null || depth > 8) return null;
+            String identityKey, String identityValue, int depth, List<Object> result) {
+        if (container == null || depth > 8) return;
         Object raw = invokePublicZeroArg(container, "getElements");
-        if (!(raw instanceof Enumeration)) return null;
+        if (!(raw instanceof Enumeration)) return;
         Enumeration<?> values = (Enumeration<?>)raw;
         while (values.hasMoreElements()) {
             Object value = values.nextElement();
             if (value == null) continue;
             Object track = invokePublicZeroArg(value, "getTrack");
             if (track != null && matchesRenderedIdentity(
-                    value, track, renderedClass, trackClass, identityKey, identityValue)) return value;
-            Object nested = findRenderedCandidate(value, renderedClass, trackClass, identityKey, identityValue, depth + 1);
-            if (nested != null) return nested;
+                    value, track, renderedClass, trackClass, identityKey, identityValue)) addUniqueReference(result, value);
+            collectRenderedCandidates(value, renderedClass, trackClass, identityKey, identityValue, depth + 1, result);
         }
-        return null;
+    }
+
+    private static void addUniqueReference(List<Object> values, Object candidate) {
+        for (Object existing : values) if (existing == candidate) return;
+        values.add(candidate);
     }
 
     private static boolean matchesRenderedIdentity(
@@ -405,8 +465,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (track == null) return null;
         Map<String, String> identity = trackIdentity(track);
         String identityKey = preferredIdentityKey(identity);
-        if (identityKey == null) return null;
-        String identityValue = identity.get(identityKey);
+        String identityValue = identityKey == null ? null : identity.get(identityKey);
 
         Map<String, Object> node = new LinkedHashMap<String, Object>();
         node.put("framework", "solipsys_rendered");
@@ -416,15 +475,19 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         node.put("object_type", "custom");
         node.put("actions", java.util.Arrays.asList("resolve", "click"));
         node.put("ref", Integer.toHexString(System.identityHashCode(selectable)));
-        Object position = invokePublicZeroArg(selectable, "getPosition");
-        if (position instanceof java.awt.Point) {
-            java.awt.Point point = (java.awt.Point)position;
-            java.awt.Point origin = new java.awt.Point(0, 0);
-            try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
-            node.put("bounds", java.util.Arrays.asList(
-                    Integer.valueOf(origin.x + point.x), Integer.valueOf(origin.y + point.y),
-                    Integer.valueOf(1), Integer.valueOf(1)));
+        List<String> lineage = new ArrayList<String>();
+        List<Component> ancestors = new ArrayList<Component>();
+        Component currentComponent = surface;
+        while (currentComponent != null) {
+            ancestors.add(currentComponent);
+            currentComponent = currentComponent.getParent();
         }
+        for (int index = ancestors.size() - 1; index >= 0; index--)
+            lineage.add(ancestors.get(index).getClass().getName());
+        lineage.add(selectable.getClass().getName());
+        node.put("hierarchy", lineage);
+        Map<String, Object> geometry = renderedGeometry(surface, selectable);
+        if (geometry.get("bounds") != null) node.put("bounds", geometry.get("bounds"));
         java.awt.Window owner = javax.swing.SwingUtilities.getWindowAncestor(surface);
         if (owner != null) {
             String title = owner instanceof java.awt.Frame ? ((java.awt.Frame)owner).getTitle()
@@ -448,14 +511,117 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         properties.put("surface_accessible_id", surface.getName());
         properties.put("surface_ref", Integer.toHexString(System.identityHashCode(surface)));
         properties.put("rendered_object_ref", Integer.toHexString(System.identityHashCode(selectable)));
+        properties.put("track_runtime_ref", Integer.toHexString(System.identityHashCode(track)));
         properties.put("rendered_class", selectable.getClass().getName());
         properties.put("track_class", track.getClass().getName());
         properties.put("track_identity", new LinkedHashMap<String, Object>(identity));
-        properties.put("track_identity_key", identityKey);
-        properties.put("track_identity_value", identityValue);
+        if (identityKey != null) properties.put("track_identity_key", identityKey);
+        if (identityValue != null) properties.put("track_identity_value", identityValue);
+        properties.put("track_instance_candidates", diagnosticSimpleInstanceFields(track));
+        properties.put("geometry_source", geometry.get("source"));
+        properties.put("geometry_is_fallback", geometry.get("fallback"));
+        properties.put("identity_state", identityKey == null ? "runtime_only" : "candidate");
+        properties.put("identity_rejection_reason",
+                identityKey == null ? "no validated durable track identity" : null);
+        Object view = findReferencedObject(surface, "com.solipsys.view.View", "view");
+        Object regions = view == null ? null : readNamedField(view, "regions");
+        if (regions != null && identityKey != null && identityValue != null) {
+            List<Object> visibleMatches = new ArrayList<Object>();
+            collectRenderedCandidates(
+                    regions, selectable.getClass().getName(), track.getClass().getName(),
+                    identityKey, identityValue, 0, visibleMatches);
+            properties.put("identity_visible_match_count", Integer.valueOf(visibleMatches.size()));
+            properties.put("identity_unique_in_visible_scope", Boolean.valueOf(visibleMatches.size() == 1));
+        }
         node.put("properties", properties);
-        node.put("name", identityValue);
+        node.put("name", identityValue == null
+                ? "track@" + Integer.toHexString(System.identityHashCode(track)) : identityValue);
         return node;
+    }
+
+    private static Map<String, Object> diagnosticSimpleInstanceFields(Object value) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        Class<?> current = value.getClass();
+        int count = 0;
+        while (current != null && count < 64) {
+            Field[] fields;
+            try { fields = current.getDeclaredFields(); } catch (Throwable ignored) { fields = new Field[0]; }
+            for (Field field : fields) {
+                if (count >= 64 || Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) continue;
+                Object observed = readField(field, value);
+                if (observed == null || !isSimple(observed.getClass())) continue;
+                String name = current.getName() + "#" + field.getName();
+                result.put(name, String.valueOf(observed));
+                count++;
+            }
+            current = current.getSuperclass();
+        }
+        return result;
+    }
+
+    /** Resolve current hit geometry after semantic identity resolution.
+     *
+     * Geometry is deliberately not used by {@link #matchesRenderedIdentity}; it
+     * is transient state for highlighting and pointer injection only.
+     */
+    private static Map<String, Object> renderedGeometry(Component surface, Object selectable) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        java.awt.Point origin = new java.awt.Point(0, 0);
+        try { javax.swing.SwingUtilities.convertPointToScreen(origin, surface); } catch (Throwable ignored) { }
+
+        String[] boundsAccessors = {"getBounds", "getBoundingBox", "getDisplayBounds", "getSymbolBounds"};
+        for (String accessor : boundsAccessors) {
+            Object value = invokePublicZeroArg(selectable, accessor);
+            java.awt.Rectangle bounds = rectangleValue(value);
+            if (bounds == null || bounds.width <= 0 || bounds.height <= 0) continue;
+            result.put("bounds", java.util.Arrays.asList(
+                    Integer.valueOf(origin.x + bounds.x), Integer.valueOf(origin.y + bounds.y),
+                    Integer.valueOf(bounds.width), Integer.valueOf(bounds.height)));
+            result.put("source", accessor);
+            result.put("fallback", Boolean.FALSE);
+            return result;
+        }
+
+        Object selectionNode = invokePublicZeroArg(selectable, "getSelectionNode");
+        if (selectionNode != null) {
+            for (String accessor : boundsAccessors) {
+                java.awt.Rectangle bounds = rectangleValue(invokePublicZeroArg(selectionNode, accessor));
+                if (bounds == null || bounds.width <= 0 || bounds.height <= 0) continue;
+                result.put("bounds", java.util.Arrays.asList(
+                        Integer.valueOf(origin.x + bounds.x), Integer.valueOf(origin.y + bounds.y),
+                        Integer.valueOf(bounds.width), Integer.valueOf(bounds.height)));
+                result.put("source", "getSelectionNode." + accessor);
+                result.put("fallback", Boolean.FALSE);
+                return result;
+            }
+        }
+
+        Object position = invokePublicZeroArg(selectable, "getPosition");
+        if (position instanceof java.awt.Point) {
+            java.awt.Point point = (java.awt.Point)position;
+            int radius = 6;
+            result.put("bounds", java.util.Arrays.asList(
+                    Integer.valueOf(origin.x + point.x - radius), Integer.valueOf(origin.y + point.y - radius),
+                    Integer.valueOf(radius * 2 + 1), Integer.valueOf(radius * 2 + 1)));
+            result.put("source", "getPosition");
+            result.put("fallback", Boolean.TRUE);
+            return result;
+        }
+        result.put("source", "unavailable");
+        result.put("fallback", Boolean.TRUE);
+        return result;
+    }
+
+    private static java.awt.Rectangle rectangleValue(Object value) {
+        if (value instanceof java.awt.Rectangle) return new java.awt.Rectangle((java.awt.Rectangle)value);
+        if (value instanceof java.awt.geom.Rectangle2D) {
+            java.awt.geom.Rectangle2D rectangle = (java.awt.geom.Rectangle2D)value;
+            return new java.awt.Rectangle(
+                    (int)Math.floor(rectangle.getX()), (int)Math.floor(rectangle.getY()),
+                    Math.max(1, (int)Math.ceil(rectangle.getWidth())),
+                    Math.max(1, (int)Math.ceil(rectangle.getHeight())));
+        }
+        return null;
     }
 
     private static Map<String, String> trackIdentity(Object track) {
@@ -495,7 +661,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         };
         for (String key : preferred) if (identity.containsKey(key)) return key;
         String[] fieldPreferred = {
-            "field:identity", "field:trackId", "field:trackID", "field:identifier",
+            "field:trackId", "field:trackID", "field:identifier",
             "field:id", "field:ID", "field:key", "field:trackNumber",
             "field:number", "field:callsign"
         };
@@ -515,7 +681,7 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         try {
             Class<?> ignored = String.class; // keeps this helper Java-8-simple; field trust is name based here.
             String lower = fieldName.toLowerCase(Locale.ROOT);
-            return "identity".equals(lower) || "id".equals(lower) || "identifier".equals(lower)
+            return "id".equals(lower) || "identifier".equals(lower)
                     || "key".equals(lower) || "number".equals(lower) || "callsign".equals(lower)
                     || "trackid".equals(lower) || "track_id".equals(lower)
                     || "tracknumber".equals(lower) || "track_number".equals(lower)
@@ -532,11 +698,11 @@ final class SolipsysAwtViewCanvasAdapter implements RenderedSurfaceAdapter {
         if (field.isSynthetic()) return false;
         String raw = field.getName();
         String name = raw.toLowerCase(Locale.ROOT);
-        if ("identity".equals(name) || "id".equals(name) || "identifier".equals(name)
+        if ("id".equals(name) || "identifier".equals(name)
                 || "key".equals(name) || "number".equals(name) || "callsign".equals(name)
                 || "trackid".equals(name) || "track_id".equals(name)
                 || "tracknumber".equals(name) || "track_number".equals(name)) return true;
-        return name.endsWith("identity") || name.endsWith("identifier")
+        return name.endsWith("identifier")
                 || name.endsWith("trackid") || name.endsWith("track_id")
                 || name.endsWith("tracknumber") || name.endsWith("track_number")
                 || name.endsWith("callsign");

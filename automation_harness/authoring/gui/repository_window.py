@@ -175,6 +175,10 @@ class ObjectRepositoryWindow(ArtifactWindow):
                     if activate_window:
                         driver.activate_window(identification=identification)
                     return driver.resolve(component_id, identification=identification)
+                if strategy.type == "java_agent":
+                    from automation_harness.drivers.java_agent import JavaAgentDriver
+                    driver = JavaAgentDriver()
+                    return driver.resolve(component_id, identification=identification)
                 if strategy.type == "atspi":
                     driver = AtspiDriver()
                     kwargs = {
