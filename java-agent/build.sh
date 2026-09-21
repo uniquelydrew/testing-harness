@@ -5,14 +5,30 @@ unset JAVA_TOOL_OPTIONS
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$ROOT/build"
 CLASSES="$BUILD/classes"
+SOURCE="$ROOT/src/java8/java"
 rm -rf "$BUILD"
 mkdir -p "$CLASSES"
-find "$ROOT/src/main/java" -name '*.java' -print0 |
-    xargs -0 javac --release 17 --add-modules jdk.httpserver -d "$CLASSES"
+
+# MSCT is deployed on Java 8. Compile the instrumentation agent to Java 8
+# bytecode so the same JAR can be loaded by Java 8 and newer target JVMs.
+# com.sun.net.httpserver is part of JDK 8; it does not require the Java 9+
+# module-system --add-modules option.
+find "$SOURCE" -name '*.java' -print0 |
+    xargs -0 javac -source 8 -target 8 -d "$CLASSES"
+
+# Fail the build if the compiler silently emits anything newer than Java 8
+# class-file version 52. This catches accidental target-level regressions.
+while IFS= read -r -d '' class_file; do
+    major="$(javap -verbose "$class_file" | awk '/major version:/ {print $3; exit}')"
+    [[ "$major" == "52" ]] || {
+        echo "Java agent class is not Java 8 bytecode: $class_file (major=$major)" >&2
+        exit 1
+    }
+done < <(find "$CLASSES" -name '*.class' -print0)
+
 cat > "$BUILD/MANIFEST.MF" <<'MANIFEST'
 Manifest-Version: 1.0
 Premain-Class: automation.harness.agent.AutomationAgent
-Add-Modules: jdk.httpserver
 Can-Redefine-Classes: false
 Can-Retransform-Classes: false
 MANIFEST
