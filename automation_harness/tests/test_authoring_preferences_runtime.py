@@ -79,12 +79,14 @@ def test_preferences_round_trip(tmp_path):
     assert loaded.resolved_runs_dir() == runs.resolve()
 
 
-def test_preferences_without_user_override_preserve_project_defaults(tmp_path):
+def test_preferences_without_user_override_keep_runtime_artifacts_outside_project(monkeypatch, tmp_path):
     project = SimpleNamespace(root=tmp_path / "project", runs_dir=tmp_path / "project" / "runs")
     preferences = AuthoringPreferences()
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("AUTOMATION_HARNESS_RUNTIME_DIR", str(runtime))
 
     assert preferences.resolved_files_dir(project) == project.root.resolve()
-    assert preferences.resolved_runs_dir(project) == project.runs_dir.resolve()
+    assert preferences.resolved_runs_dir(project) == runtime / "runs"
 
 
 def test_run_suspension_minimizes_harness_windows_and_discards_highlight_overlay():

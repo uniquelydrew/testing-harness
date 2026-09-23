@@ -27,16 +27,16 @@ The bootstrap performs the following work automatically:
 8. Builds the native JavaFX bridge agent when `javac` and `jar` are available.
 9. Locates the Java ATK wrapper without assuming one exact RPM layout.
 10. Qualifies CLI import, required Python bindings, Pillow screen capture, GTK authoring, AT-SPI, the JavaFX agent, and the available display mode.
-11. Writes `.automation-harness-env` with the resulting runtime paths.
+11. Writes `$XDG_STATE_HOME/automation-harness/bootstrap-env` (or `~/.local/state/automation-harness/bootstrap-env`) with the resulting runtime paths, outside the source tree.
 
 After a successful bootstrap:
 
 ```bash
-source .automation-harness-env
+source "${XDG_STATE_HOME:-$HOME/.local/state}/automation-harness/bootstrap-env"
 automation-run selftest
 ```
 
-The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER` when the wrapper is discovered.
+The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER` when the wrapper is discovered. Set `AUTOMATION_HARNESS_RUNTIME_DIR` before bootstrapping to use another external runtime location; the virtual environment, diagnostic logs, and run evidence are placed beneath it.
 
 ## RHEL privilege and repository requirements
 

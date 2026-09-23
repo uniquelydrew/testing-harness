@@ -1,10 +1,14 @@
-version: 1
+version: 3
 components:
   gtk_demo.listbox.items:
     description: GTK 4.14 selectable list box; captured baseline locator.
-    actions: [resolve]
+    actions:
+    - resolve
     strategies:
-      - type: atspi
-        identification:
-          mandatory: {role: list}
-          assistive: {application: gtk4-demo}
+    - type: atspi
+      identification:
+        mandatory:
+          role: list
+        assistive:
+          application: gtk4-demo
+    object_id: 8200e3e7-c5a2-5bf7-b55b-9d9d7ee996bc

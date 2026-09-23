@@ -410,12 +410,10 @@ class ComponentHandle:
                     "menu path %r is not defined under %r"
                     % (segment, ".".join(walked[:-1]) or self.definition.component_id)
                 )
-            selector_source = raw.get("selector") if isinstance(raw.get("selector"), dict) else raw
             selector = {
-                key: value for key, value in selector_source.items()
+                key: value for key, value in raw.items()
                 if key in {"kind", "criteria", "ordinal", "relative_offset"}
             }
-            selector.setdefault("kind", raw.get("kind"))
             criteria = selector.get("criteria")
             if not isinstance(selector.get("kind"), str) or not isinstance(criteria, dict):
                 raise ValueError("menu path %r has an invalid persisted selector" % ".".join(walked))

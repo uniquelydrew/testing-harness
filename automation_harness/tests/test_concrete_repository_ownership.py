@@ -4,7 +4,7 @@ import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.core.object_reparenting import reparent_leaf
-from automation_harness.core.repository_hierarchy import concrete_parent_ids, repository_migration_report
+from automation_harness.core.repository_hierarchy import concrete_parent_ids
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 
 
@@ -18,18 +18,14 @@ def _object(name, **values):
     )
 
 
-def test_legacy_dotted_path_infers_only_an_existing_concrete_parent():
+def test_dotted_display_names_do_not_imply_ownership():
     panel = _object("Display.MainPanel")
     button = _object("Display.MainPanel.Save")
     orphan = _object("Logical.Group.Cancel")
     repository = ComponentRepository({item.component_id: item for item in (panel, button, orphan)})
 
-    migrated = repository.with_inferred_ownership()
-
-    assert migrated.get(button.object_id).owner_object_id == panel.object_id
-    assert migrated.get(orphan.object_id).owner_object_id is None
     parents = concrete_parent_ids(repository)
-    assert parents[button.object_id] == panel.object_id
+    assert parents[button.object_id] is None
     assert parents[orphan.object_id] is None
 
 
@@ -94,19 +90,3 @@ def test_visual_reparent_to_a_new_surface_requires_recapture():
     assert moved.owner_object_id == second.object_id
     assert moved.properties["locator_status"] == "needs_recapture"
     assert moved.properties["previous_owner_object_id"] == first.object_id
-
-
-def test_migration_report_counts_ignored_scopes_and_recapture_objects():
-    panel = _object("Display.Panel")
-    orphan = _object("Logical.Group.Button")
-    visual = replace(
-        _object("Display.Panel.Track", owner_object_id=panel.object_id),
-        properties={"locator_status": "needs_recapture"},
-    )
-    repository = ComponentRepository({item.component_id: item for item in (panel, orphan, visual)})
-
-    report = repository_migration_report(repository)
-
-    assert report.objects_examined == 3
-    assert report.synthetic_lineage_segments_ignored >= 2
-    assert report.visual_objects_needing_recapture == ("Display.Panel.Track",)

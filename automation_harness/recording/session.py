@@ -7,7 +7,13 @@ import threading
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.logical_menu import find_logical_menu_targets, is_javafx_menu_skin_capture
+from automation_harness.core.logical_menu import (
+    find_logical_menu_targets,
+    is_javafx_menu_capture,
+    is_javafx_menu_skin_capture,
+    is_terminal_menu_capture,
+    logical_menu_route,
+)
 from automation_harness.core.locator_matching import _javafx_node_matches
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 from automation_harness.models.gui import ActionType
@@ -86,6 +92,9 @@ class RecordingSession:
         self._active = False
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
+        self._menu_route_active = False
+        self._menu_route_started_at: float | None = None
+        self._menu_route_target: CapturedComponent | None = None
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
         # must be serialized as one transaction.
@@ -163,6 +172,8 @@ class RecordingSession:
             finally:
                 with self._lock:
                     self._active = False
+                    if self._menu_route_active:
+                        self._abandon_menu_route("recording_stopped")
                     self._flush()
                     result = tuple(self._interactions)
                     self.diagnostic("session_stopped", interactions=result)
@@ -196,6 +207,8 @@ class RecordingSession:
                         observation=observation,
                     )
                     return
+                if self._observe_menu_interaction(observation):
+                    return
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
                 self._begin(action, observation, self._pointer_parameters(observation))
             elif isinstance(observation, TextChanged):
@@ -203,6 +216,8 @@ class RecordingSession:
                     self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
             elif isinstance(observation, ActionFired):
                 if observation.target is None:
+                    return
+                if self._observe_menu_interaction(observation):
                     return
                 if self._pending and _same_logical_target(self._pending.target, observation.target):
                     self._merge_action(observation)
@@ -214,6 +229,69 @@ class RecordingSession:
             elif isinstance(observation, FocusChanged):
                 self.diagnostic("observation_ignored", reason="focus_change", observation=observation)
                 return
+
+    def _observe_menu_interaction(self, observation: Observation) -> bool:
+        target = observation.target
+        if not is_javafx_menu_capture(target):
+            if self._menu_route_active:
+                self._abandon_menu_route("focus_left_menu")
+            return False
+
+        route = logical_menu_route(target)
+        if not is_terminal_menu_capture(target):
+            if self._pending is not None:
+                self._flush()
+            if not self._menu_route_active:
+                self._menu_route_started_at = observation.timestamp
+            self._menu_route_active = True
+            self._menu_route_target = target
+            self.diagnostic(
+                "menu_route_extended",
+                route=route,
+                target=target,
+                terminal=False,
+            )
+            return True
+
+        started_at = self._menu_route_started_at or observation.timestamp
+        self._menu_route_active = False
+        self._menu_route_started_at = None
+        self._menu_route_target = None
+        action = ActionType.RIGHT_CLICK if (
+            isinstance(observation, PointerInteraction) and observation.button == "secondary"
+        ) else ActionType.CLICK
+        parameters = self._pointer_parameters(observation) if isinstance(observation, PointerInteraction) else {}
+        self._begin(action, observation, parameters)
+        if self._pending is not None:
+            self._pending = RecordedInteraction(
+                self._pending.action,
+                self._pending.target,
+                self._pending.parameters,
+                min(started_at, self._pending.started_at),
+                self._pending.completed_at,
+                self._pending.resulting_changes,
+                {**dict(self._pending.evidence), "menu_route": [dict(item) for item in route]},
+                self._pending.confidence,
+                self._pending.repository_match,
+            )
+        self.diagnostic("menu_route_committed", route=route, interaction=self._pending)
+        return True
+
+    def _reset_menu_route(self) -> None:
+        self._menu_route_active = False
+        self._menu_route_started_at = None
+        self._menu_route_target = None
+
+    def _abandon_menu_route(self, reason: str) -> None:
+        self.diagnostic("menu_route_cancelled", reason=reason, target=self._menu_route_target)
+        if self._menu_route_target is not None:
+            timestamp = self._menu_route_started_at or 0.0
+            self._interactions.append(RecordedInteraction(
+                ActionType.CLICK, self._menu_route_target, {}, timestamp, timestamp,
+                evidence={"menu_route_error": reason}, confidence=0.0,
+                repository_match=RepositoryMatch("unresolved"),
+            ))
+        self._reset_menu_route()
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
         self.diagnostic(
@@ -318,17 +396,22 @@ class RecordingSession:
             logical = find_logical_menu_targets(self.repository.components.values(), target)
             if len(logical) == 1:
                 match = logical[0]
-                return RepositoryMatch("known_subobject", (match.owner_component_id,), match.subobject_path)
+                owner_object_id = self.repository.get(match.owner_component_id).object_id
+                return RepositoryMatch("known_subobject", (owner_object_id,), match.subobject_path)
             if len(logical) > 1:
-                owners = tuple(dict.fromkeys(item.owner_component_id for item in logical))
+                owners = tuple(dict.fromkeys(
+                    self.repository.get(item.owner_component_id).object_id for item in logical
+                ))
                 return RepositoryMatch("ambiguous", owners)
+            if is_terminal_menu_capture(target):
+                return RepositoryMatch("unresolved")
         evaluations = []
         matches = []
         for component_id, definition in self.repository.components.items():
             matched, details = _matches_capture_details(definition, target)
             evaluations.append({"component_id": component_id, "matched": matched, "details": details})
             if matched:
-                matches.append(component_id)
+                matches.append(definition.object_id)
         if len(matches) == 1:
             result = RepositoryMatch("known_unique", tuple(matches))
             self.diagnostic("repository_match", target=target, result=result, evaluations=evaluations)

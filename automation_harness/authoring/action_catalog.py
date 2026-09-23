@@ -61,7 +61,10 @@ def _interaction(action: ActionType, name: str, description: str, *inputs: Actio
 
 _VALUE = ActionInput("value", "any", description="Value supplied to the object action.")
 _SELECTOR = ActionInput("selector", "object", description="Logical child/item selector.")
-_MENU_PATH = ActionInput("path", "menu_path", description="Nested menu path from the captured menu hierarchy.")
+_MENU_PATH = ActionInput(
+    "path", "menu_path",
+    description="Menu route using captured names or IDs, for example File > Export > PDF.",
+)
 
 INTERACTIONS: dict[ActionType, ActionDefinition] = {
     ActionType.CLICK: _interaction(ActionType.CLICK, "Click", "Click the selected object."),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -9,8 +10,12 @@ from automation_harness.core.object_capture import LocatorAssessment, ObjectCapt
 from automation_harness.core.object_hierarchy import hierarchy_contract
 from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts, visible_identity_status
 from automation_harness.core.capture_boundaries import annotate_capture_boundary, classify_capture_boundary
+from automation_harness.core.routed_capture import RoutedCaptureResult, RoutedCaptureService
+from automation_harness.core.technology_router import AdapterKind, TargetContext
+from automation_harness.core.test_object_factory import TestObjectFactory, TestObjectProposal
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
+from automation_harness.recording.x11_pointer import X11PointerMonitor
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
 
@@ -26,10 +31,11 @@ class HybridObjectCaptureService(ObjectCaptureService):
     returned.
     """
 
-    def __init__(self, driver=None, javafx_driver=None, java_agent_driver=None) -> None:
+    def __init__(self, driver=None, javafx_driver=None, java_agent_driver=None, pointer_monitor_factory=None) -> None:
         super().__init__(driver=driver)
         self.javafx_driver = javafx_driver or JavaFxBridgeDriver()
         self.java_agent_driver = java_agent_driver or JavaAgentDriver()
+        self.pointer_monitor_factory = pointer_monitor_factory or X11PointerMonitor
         self._log(
             "capture_backends_ready",
             atspi_available=bool(getattr(self.driver, "available", False)),
@@ -42,8 +48,53 @@ class HybridObjectCaptureService(ObjectCaptureService):
     def available(self) -> bool:
         return bool(getattr(self.driver, "available", False)) or self._javafx_available() or bool(self.java_agent_driver.available)
 
+    def observe_next_click(
+        self,
+        target: TargetContext,
+        *,
+        timeout: float = 30.0,
+    ) -> RoutedCaptureResult:
+        """Capture through the deterministic object-lifecycle pipeline.
+
+        Callers must first correlate the pointer target to a window and PID.
+        The legacy ``capture_next_click`` entry point remains available while
+        authoring surfaces migrate, but new capture and recording paths should
+        use this method so only the routed adapter observes the input.
+        """
+        adapters = {
+            AdapterKind.ATSPI: self.driver,
+            AdapterKind.JAVAFX: self.javafx_driver,
+            AdapterKind.JAVA_AGENT: self.java_agent_driver,
+            # Rendered surfaces are discovered and operated by the mixed Java
+            # agent, but remain a separate routing classification.
+            AdapterKind.RENDERED: self.java_agent_driver,
+        }
+        return RoutedCaptureService(adapters).capture(target, timeout=timeout)
+
+    def definition_from_observation(
+        self,
+        observation,
+        *,
+        display_name: str,
+        owner_object_id: str | None = None,
+        ordinal: int | None = None,
+    ) -> TestObjectProposal:
+        """Materialize a routed observation through the canonical factory."""
+        return TestObjectFactory().materialize(
+            observation,
+            display_name=display_name,
+            owner_object_id=owner_object_id,
+            ordinal=ordinal,
+        )
+
     def capture_next_click(self, *, timeout: float = 30.0, click_count: int = 1) -> CapturedComponent:
-        """Capture click number 1 through 9 using the shared live backends."""
+        """Capture against the topmost X11 client and its authoritative adapter.
+
+        X11 owns window stacking and supplies the PID at the physical press.
+        Backends are therefore never raced: a covered window cannot win by
+        responding faster, and a JavaFX process cannot silently degrade to an
+        AWT canvas or a desktop accessibility object.
+        """
         if isinstance(click_count, bool) or not isinstance(click_count, int) or not 1 <= click_count <= 9:
             raise ValueError("click_count must be an integer from 1 through 9")
         if click_count != 1:
@@ -52,102 +103,59 @@ class HybridObjectCaptureService(ObjectCaptureService):
                 captured = self.capture_next_click(timeout=timeout, click_count=1)
             assert captured is not None
             return captured
-        atspi_available = bool(getattr(self.driver, "available", False))
-        javafx_available = self._javafx_available()
-        java_agent_available = bool(self.java_agent_driver.available)
-        self._log(
-            "hybrid_capture_next_click_started",
-            timeout=timeout,
-            atspi_available=atspi_available,
-            javafx_bridge_available=javafx_available,
-            javafx_bridge_pids=self._javafx_pids(),
-        )
+        result = queue.Queue(maxsize=1)
+        monitor = self.pointer_monitor_factory()
 
-        if java_agent_available:
-            backends = []
-            if atspi_available:
-                backends.append(("atspi", self.driver))
-            if javafx_available:
-                backends.append(("javafx", self.javafx_driver))
-            backends.append(("java-agent", self.java_agent_driver))
-        elif not javafx_available:
-            captured = super().capture_next_click(timeout=timeout)
-            return self._annotated(captured, backend="atspi")
-        elif not atspi_available:
-            return self._capture_javafx_next_click(timeout)
-        else:
-            backends = [("atspi", self.driver), ("javafx", self.javafx_driver)]
-
-        results = queue.Queue()
-
-        def worker(name, backend):
+        def pointer(event_type, coordinates, _timestamp, owner_pid=None):
+            if not event_type.endswith(("1p", "3p")) or not result.empty():
+                return
             try:
-                captured = backend.capture_next_click(timeout=timeout)
+                if owner_pid is None:
+                    raise LookupError("X11 did not identify the topmost client process")
+                if owner_pid == os.getpid():
+                    raise LookupError("the selected point belongs to Automation Harness")
+                captured, backend = self._capture_owned_point(coordinates, owner_pid)
+                result.put_nowait((captured, backend, None))
             except Exception as exc:
-                results.put((name, None, exc))
-            else:
-                results.put((name, captured, None))
+                result.put_nowait((None, None, exc))
 
-        for name, backend in backends:
-            thread = threading.Thread(
-                target=worker,
-                args=(name, backend),
-                name="automation-%s-click-capture" % name,
-                daemon=True,
-            )
-            thread.start()
-
-        errors = []
-        deadline = time.monotonic() + timeout + 2.5
-        atspi_candidate = None
-        arbitration_deadline = None
-        remaining = len(backends)
-        while remaining:
-            now = time.monotonic()
-            effective_deadline = min(deadline, arbitration_deadline) if arbitration_deadline else deadline
-            if effective_deadline <= now:
-                break
-            wait = max(0.01, effective_deadline - now)
+        self._log("owned_capture_started", timeout=timeout, javafx_bridge_pids=self._javafx_pids())
+        monitor.start(pointer)
+        try:
             try:
-                name, captured, error = results.get(timeout=wait)
+                captured, backend, error = result.get(timeout=timeout)
             except queue.Empty:
-                break
-            remaining -= 1
-            if captured is not None:
-                if name == "atspi" and remaining:
-                    # Instrumented JavaFX is authoritative for its scene graph.
-                    # Give its event filter a bounded opportunity to resolve the
-                    # same click before accepting the generic desktop result.
-                    atspi_candidate = captured
-                    arbitration_deadline = min(deadline, time.monotonic() + 0.2)
-                    continue
-                self._log(
-                    "hybrid_capture_next_click_succeeded",
-                    backend=name,
-                    capture=captured.to_dict(),
-                )
-                return self._annotated(captured, backend=name)
-            errors.append("%s: %s: %s" % (name, type(error).__name__, error))
-            self._log(
-                "hybrid_capture_backend_failed",
-                backend=name,
-                error_type=type(error).__name__,
-                error=str(error),
-            )
+                raise TimeoutError("timed out waiting for a click on an application window")
+        finally:
+            monitor.stop()
+        if error is not None:
+            self._log("owned_capture_failed", error_type=type(error).__name__, error=str(error))
+            raise error
+        self._log("owned_capture_succeeded", backend=backend, capture=captured.to_dict())
+        return self._annotated(captured, backend=backend)
 
-        if atspi_candidate is not None:
-            self._log(
-                "hybrid_capture_next_click_succeeded",
-                backend="atspi",
-                capture=atspi_candidate.to_dict(),
-                arbitration="javafx-timeout",
-            )
-            return self._annotated(atspi_candidate, backend="atspi")
-        message = "no capture backend resolved the selected object"
-        if errors:
-            message += "; " + "; ".join(errors)
-        self._log("hybrid_capture_next_click_failed", error=message)
-        raise LookupError(message)
+    def _capture_owned_point(self, coordinates, owner_pid):
+        javafx_pids = set(self._javafx_pids())
+        if owner_pid in javafx_pids:
+            captured = self.javafx_driver.capture_at_point(*coordinates, process_id=owner_pid)
+            if _capture_process_id(captured) != owner_pid:
+                raise LookupError("JavaFX bridge returned an object from the wrong process")
+            return captured, "javafx"
+
+        if bool(self.java_agent_driver.available):
+            try:
+                captured = self.java_agent_driver.capture_at_point(*coordinates, process_id=owner_pid)
+            except Exception as exc:
+                raise LookupError("authoritative Java agent could not resolve the X11 owner: %s" % exc) from exc
+            if _capture_process_id(captured) != owner_pid:
+                raise LookupError("Java agent returned an object from the wrong process")
+            return captured, "java-agent"
+
+        snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
+        captured = snapshot(*coordinates) if snapshot is not None else self.driver.capture_scoped_at_point(*coordinates)
+        if _capture_process_id(captured) != owner_pid:
+            raise LookupError("accessibility returned an object from a covered or unrelated process")
+        return captured, "atspi"
 
     def assess(self, captured: CapturedComponent) -> tuple[LocatorAssessment, ...]:
         strategy = captured.candidate_strategy()
@@ -361,8 +369,10 @@ def _normalize_javafx_identity(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _capture_process_id(captured):
+    properties = dict(captured.backend_properties or {})
+    raw = properties.get("bridge_pid", properties.get("process_id", properties.get("pid")))
     try:
-        value = int(dict(captured.backend_properties or {}).get("bridge_pid"))
+        value = int(raw)
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None

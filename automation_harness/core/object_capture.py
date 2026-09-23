@@ -14,6 +14,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.core.visual_baselines import VisualProfile, stage_visual_candidate
+from automation_harness.runtime_paths import ensure_external_runtime_path, runtime_path
 
 
 @dataclass(frozen=True)
@@ -53,10 +54,9 @@ class ObjectCaptureService:
         if configured == "":
             self._diagnostic_path = None
         elif configured:
-            self._diagnostic_path = Path(configured).expanduser()
+            self._diagnostic_path = ensure_external_runtime_path(Path(configured))
         else:
-            root = Path(os.environ.get("AUTOMATION_HARNESS_ROOT", Path.cwd()))
-            self._diagnostic_path = root / "logs" / "object-capture.jsonl"
+            self._diagnostic_path = runtime_path("logs", "object-capture.jsonl")
         self._diagnostic_lock = threading.Lock()
         self._log(
             "capture_service_started",

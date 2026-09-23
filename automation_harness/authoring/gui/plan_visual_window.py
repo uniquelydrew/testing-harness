@@ -160,7 +160,8 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                         continue
                     try: values[name] = json.loads(raw)
                     except ValueError: values[name] = raw
-                call = replace(definition.to_step_call(_next_node_id(self.plan.steps), component_id, values), group=group)
+                object_id = self.repository.get(component_id).object_id
+                call = replace(definition.to_step_call(_next_node_id(self.plan.steps), object_id, values), group=group)
             self.plan = replace(self.plan, steps=(*self.plan.steps, call))
         except Exception as exc:
             dialog.destroy(); return self.error("Object Action", "%s: %s" % (type(exc).__name__, exc))

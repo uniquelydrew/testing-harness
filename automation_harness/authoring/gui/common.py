@@ -121,6 +121,12 @@ class ArtifactWindow:
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save" if save else "Open", Gtk.ResponseType.OK)
         if save:
             dialog.set_do_overwrite_confirmation(True)
+        from automation_harness.authoring.preferences_runtime import AuthoringPreferences
+        preferred = AuthoringPreferences.load().resolved_files_dir(
+            getattr(self, "project", None)
+        )
+        if preferred.is_dir():
+            dialog.set_current_folder(str(preferred))
         if suffix:
             filt = Gtk.FileFilter(); filt.set_name("Automation Harness artifact")
             filt.add_pattern("*" + suffix); dialog.add_filter(filt)

@@ -5,11 +5,18 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.captured_repository import materialize_capture
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_hierarchy import hierarchy_contract
+from automation_harness.core.repository_scope import (
+    OVERRIDE_PROPERTY,
+    RepositoryAssociation,
+    RepositoryScope,
+    RepositorySet,
+)
 from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 
@@ -17,33 +24,59 @@ from automation_harness.models.component import CapturedComponent, ComponentDefi
 _METADATA_KEY = "__authoring_object_repository__"
 
 
-def assigned_repository_path(plan, plan_path: Path) -> Path | None:
+def assigned_repositories(plan, plan_path: Path) -> tuple[RepositoryAssociation, ...]:
     metadata = plan.step_definitions.get(_METADATA_KEY) if isinstance(plan.step_definitions, Mapping) else None
     if not isinstance(metadata, Mapping):
-        return None
-    value = metadata.get("path")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = Path(plan_path).resolve().parent / candidate
-    return candidate.resolve()
+        return ()
+    raw_items = metadata.get("repositories")
+    if isinstance(raw_items, list):
+        result = []
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                raise ValueError("object repository association must be a mapping")
+            value = item.get("path")
+            try:
+                scope = RepositoryScope(str(item.get("scope")))
+            except ValueError as exc:
+                raise ValueError("object repository association scope must be 'local' or 'shared'") from exc
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("object repository association requires a path")
+            result.append(RepositoryAssociation(_resolve_repository_path(value, plan_path), scope))
+        return tuple(result)
+    return ()
 
 
-def assign_repository(plan, plan_path: Path, repository_path: Path):
+def assigned_repository_path(plan, plan_path: Path) -> Path | None:
+    associations = assigned_repositories(plan, plan_path)
+    local = next((item.path for item in associations if item.scope is RepositoryScope.LOCAL), None)
+    return local or (associations[0].path if associations else None)
+
+
+def assign_repositories(plan, plan_path: Path, associations: Iterable[RepositoryAssociation]):
     plan_path = Path(plan_path).resolve()
-    repository_path = Path(repository_path).resolve()
-    try:
-        stored = repository_path.relative_to(plan_path.parent).as_posix()
-    except ValueError:
-        stored = str(repository_path)
+    items = tuple(associations)
+    # Validate cardinality and ordering semantics before persisting metadata.
+    RepositorySet(items, tuple(ComponentRepository({}) for _ in items))
+    payload = []
+    for item in items:
+        path = Path(item.path).resolve()
+        try:
+            stored = path.relative_to(plan_path.parent).as_posix()
+        except ValueError:
+            stored = str(path)
+        payload.append({"path": stored, "scope": item.scope.value})
     definitions = dict(plan.step_definitions)
-    definitions[_METADATA_KEY] = {"kind": "object_repository", "path": stored}
+    definitions[_METADATA_KEY] = {"kind": "object_repositories", "repositories": payload}
     return replace(plan, step_definitions=definitions)
 
 
+def load_repository_set(plan, plan_path: Path) -> RepositorySet:
+    return RepositorySet.load(assigned_repositories(plan, plan_path))
+
+
 def ensure_default_repository(plan, plan_path: Path):
-    existing = assigned_repository_path(plan, plan_path)
+    associations = assigned_repositories(plan, plan_path)
+    existing = next((item.path for item in associations if item.scope is RepositoryScope.LOCAL), None)
     if existing is not None:
         if not existing.exists():
             ComponentRepository({}).save(existing)
@@ -51,14 +84,36 @@ def ensure_default_repository(plan, plan_path: Path):
     default_path = Path(plan_path).resolve().with_suffix(".ahobjects")
     if not default_path.exists():
         ComponentRepository({}).save(default_path)
-    return assign_repository(plan, plan_path, default_path), default_path
+    if associations:
+        plan = assign_repositories(
+            plan, plan_path,
+            (RepositoryAssociation(default_path, RepositoryScope.LOCAL), *associations),
+        )
+    else:
+        plan = assign_repositories(plan, plan_path, (
+            RepositoryAssociation(default_path, RepositoryScope.LOCAL),
+        ))
+    return plan, default_path
 
 
 def load_authoring_repository(plan, plan_path: Path) -> tuple[ComponentRepository, Path | None]:
-    path = assigned_repository_path(plan, plan_path)
-    if path is None:
+    associations = assigned_repositories(plan, plan_path)
+    if not associations:
         return ComponentRepository({}), None
+    path = next((item.path for item in associations if item.scope is RepositoryScope.LOCAL), None)
+    # This API is used by editors which save the returned repository back to
+    # the returned path. Never return a composed view here: doing so would copy
+    # shared objects into the local file. Read-only/execution consumers use
+    # load_repository_set(...).compose().
+    path = path or associations[0].path
     return ComponentRepository.load((path,)), path
+
+
+def _resolve_repository_path(value: str, plan_path: Path) -> Path:
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = Path(plan_path).resolve().parent / candidate
+    return candidate.resolve()
 
 
 def materialize_captured_target(repository: ComponentRepository, capture: CapturedComponent) -> tuple[ComponentRepository, str, bool]:
@@ -70,12 +125,55 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
     component_id = _unique_component_id(repository, capture)
     if _is_runtime_only_solipsys_capture(capture):
         definition = _runtime_only_solipsys_definition(component_id, capture)
-        return repository.with_component(definition), definition.component_id, True
+        return repository.with_component(definition), definition.object_id, True
     repository, definition, _created = materialize_capture(
         HybridObjectCaptureService(), repository, component_id, capture,
         validate_live=False,
     )
-    return repository, definition.component_id, True
+    return repository, definition.object_id, True
+
+
+def persist_recorded_menu_owner(
+    local_repository: ComponentRepository,
+    effective_repository: ComponentRepository,
+    owner_object_id: str,
+) -> ComponentRepository:
+    """Persist recorded menu routes locally without mutating a shared repository."""
+    source = effective_repository.get(owner_object_id)
+    if local_repository.contains(owner_object_id):
+        existing = local_repository.get(owner_object_id)
+        return local_repository.with_component(replace(
+            source,
+            component_id=existing.component_id,
+            object_id=existing.object_id,
+            properties=dict(existing.properties),
+        ))
+    for existing in local_repository.components.values():
+        if existing.properties.get(OVERRIDE_PROPERTY) == owner_object_id:
+            return local_repository.with_component(replace(
+                source,
+                component_id=existing.component_id,
+                object_id=existing.object_id,
+                properties=dict(existing.properties),
+            ))
+
+    # A newly discovered ContextMenu belongs to the local repository directly.
+    if source.properties.get("logical_owner") == "context_menu":
+        return local_repository.with_component(source)
+
+    properties = dict(source.properties)
+    properties[OVERRIDE_PROPERTY] = owner_object_id
+    local_name = source.component_id
+    suffix = 2
+    while local_name in local_repository.components:
+        local_name = "%s-%d" % (source.component_id, suffix)
+        suffix += 1
+    return local_repository.with_component(replace(
+        source,
+        component_id=local_name,
+        object_id=str(uuid4()),
+        properties=properties,
+    ))
 
 
 def _is_runtime_only_solipsys_capture(capture: CapturedComponent) -> bool:
@@ -129,11 +227,11 @@ def matching_component_ids(repository: ComponentRepository, capture: CapturedCom
         if definition.object_type != capture.semantic_type() and definition.object_type.value != "custom":
             continue
         if candidate in definition.strategies:
-            result.append(component_id)
+            result.append(definition.object_id)
             continue
         for strategy in definition.strategies:
             if strategy.type == candidate.type and strategy.options == candidate.options:
-                result.append(component_id)
+                result.append(definition.object_id)
                 break
     return result
 

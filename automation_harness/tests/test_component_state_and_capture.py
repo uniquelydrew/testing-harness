@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from automation_harness.authoring.app import _highlight_rectangles
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_capture import ObjectCaptureService, _visual_region_at_point
 from automation_harness.drivers.atspi_driver import _matches_criteria
@@ -49,14 +48,6 @@ def test_capture_scoped_at_point_delegates_coordinates():
             return captured
 
     assert ObjectCaptureService(driver=PointDriver()).capture_scoped_at_point(123, 456) is captured
-
-
-def test_highlight_rectangles_outline_component_bounds():
-    assert _highlight_rectangles((10, 20, 100, 50), thickness=4) == (
-        (10, 20, 100, 4), (10, 66, 100, 4), (10, 20, 4, 50), (106, 20, 4, 50),
-    )
-    with pytest.raises(ValueError, match="positive"):
-        _highlight_rectangles((10, 20, 0, 50))
 
 
 def test_stale_atspi_proxy_is_not_a_matching_candidate():

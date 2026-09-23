@@ -1,4 +1,4 @@
-version: 1
+version: 3
 components:
   reference.threat.low:
     description: Set the synthetic threat state to LOW through the real desktop control.
@@ -11,6 +11,7 @@ components:
         mandatory:
           name: Low
           role: push button
+    object_id: f8cab22f-3efc-5e58-a60c-9e2307b99824
   reference.threat.medium:
     description: Set the synthetic threat state to MEDIUM through the real desktop
       control.
@@ -23,6 +24,7 @@ components:
         mandatory:
           name: Medium
           role: push button
+    object_id: 3588edca-79c6-5f25-abea-75a0284756f4
   reference.threat.high:
     description: Set the synthetic threat state to HIGH through the real desktop control.
     actions:
@@ -34,6 +36,7 @@ components:
         mandatory:
           name: High
           role: push button
+    object_id: 70c1bf05-7ef3-53b5-8e3e-d894e7986f34
   reference.mosaic.add_alpha:
     description: Add the Alpha synthetic tile through the real desktop control.
     actions:
@@ -45,6 +48,7 @@ components:
         mandatory:
           name: Add Alpha
           role: push button
+    object_id: 47517a69-2ba1-5f43-8d59-3c1904d1650e
   reference.mosaic.add_bravo:
     description: Add the Bravo synthetic tile through the real desktop control.
     actions:
@@ -56,6 +60,7 @@ components:
         mandatory:
           name: Add Bravo
           role: push button
+    object_id: bd0bdabe-67c6-50aa-b093-b7b0a8c1c8f7
   reference.mosaic.clear:
     description: Clear all synthetic mosaic tiles through the real desktop control.
     actions:
@@ -67,6 +72,7 @@ components:
         mandatory:
           name: Clear Tiles
           role: push button
+    object_id: 00844354-c9bc-598c-bf8a-8c2760659f20
   reference.track.canvas:
     description: Synthetic moving-target render surface; reference metadata is inspection-only.
     actions:
@@ -74,6 +80,7 @@ components:
     strategies:
     - type: reference_inspection
       component_id: track.canvas
+    object_id: dc5a75b8-b90f-566b-aec7-eb5c6165aee1
   reference.state.options_menu:
     description: Synthetic menu control exposed for read-only state inspection.
     actions:
@@ -81,6 +88,7 @@ components:
     strategies:
     - type: reference_inspection
       component_id: state.options_menu
+    object_id: 0d7e9a93-1588-54f5-8b0a-c10ba998c3b4
   reference.state.options_popup:
     description: Synthetic menu popup whose presence reflects the menu-open state.
     actions:
@@ -88,6 +96,7 @@ components:
     strategies:
     - type: reference_inspection
       component_id: state.options_popup
+    object_id: 79a4f69e-1d38-5fa8-bc2b-54c78b206f23
   reference.state.disabled_action:
     description: Synthetic disabled control for object-state qualification.
     actions:
@@ -95,3 +104,4 @@ components:
     strategies:
     - type: reference_inspection
       component_id: state.disabled_action
+    object_id: 6f9d12af-189a-5daa-8cbf-f6a2ac287209

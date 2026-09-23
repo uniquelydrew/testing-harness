@@ -36,9 +36,7 @@ setup(
             "automation-run=automation_harness.compat.live_cli:run_cli",
             "automation-plan=automation_harness.runner.plan_cli:run",
             "automation-reference=automation_harness.compat.python36:run_reference",
-            "automation-author=automation_harness.compat.live_author:run_author",
-            "automation-capture=automation_harness.compat.live_author:run_capture",
-            "automation-repository=automation_harness.compat.live_author:run_repository",
+            "automation-author=automation_harness.authoring.entrypoint:main",
             "automation-javafx=automation_harness.compat.python36:run_javafx",
         ]
     },

@@ -47,24 +47,62 @@ def durable_menu_criteria(capture: CapturedComponent) -> dict[str, Any]:
 def normalize_menu_subobjects(
     subobjects: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
+    """Validate and copy the canonical menu-subobject schema."""
     result: dict[str, dict[str, Any]] = {}
     for key, raw in subobjects.items():
         if not isinstance(raw, Mapping):
-            continue
+            raise ValueError("menu subobject %r must be a mapping" % key)
         item = dict(raw)
-        selector = item.pop("selector", None)
-        if isinstance(selector, Mapping):
-            if "criteria" not in item and isinstance(selector.get("criteria"), Mapping):
-                item["criteria"] = dict(selector["criteria"])
-            if "ordinal" not in item and selector.get("ordinal") is not None:
-                item["ordinal"] = selector.get("ordinal")
-            if "relative_offset" not in item and isinstance(selector.get("relative_offset"), Mapping):
-                item["relative_offset"] = dict(selector["relative_offset"])
+        if "selector" in item:
+            raise ValueError(
+                "menu subobject %r uses removed selector wrapper; store kind/criteria directly" % key
+            )
+        criteria = item.get("criteria")
+        if not isinstance(criteria, Mapping) or not criteria:
+            raise ValueError("menu subobject %r requires non-empty criteria" % key)
+        item["criteria"] = dict(criteria)
         nested = item.get("subobjects")
         if isinstance(nested, Mapping):
             item["subobjects"] = normalize_menu_subobjects(nested)
         result[str(key)] = item
     return result
+
+
+def logical_menu_route(capture: CapturedComponent | None) -> tuple[Mapping[str, Any], ...]:
+    if capture is None or capture.framework != "javafx":
+        return ()
+    metadata = capture.backend_properties.get("logical_menu")
+    if not isinstance(metadata, Mapping):
+        return ()
+    raw_path = metadata.get("path")
+    if not isinstance(raw_path, (list, tuple)):
+        return ()
+    return tuple(
+        selector for selector in (
+            _canonical_selector(item) for item in raw_path if isinstance(item, Mapping)
+        )
+        if selector.get("criteria")
+    )
+
+
+def is_javafx_menu_capture(capture: CapturedComponent | None) -> bool:
+    if capture is None or capture.framework != "javafx":
+        return False
+    role = (capture.role or "").casefold().replace("_", " ")
+    native = str(capture.native_class or "").rsplit(".", 1)[-1].casefold()
+    return bool(logical_menu_route(capture)) or role in _MENU_ROLES or native in {
+        "menubar", "menubutton", "splitmenubutton", "menubarbutton",
+    } or capture.semantic_type() in {
+        ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.MENU_ITEM, ObjectType.CONTEXT_MENU,
+    }
+
+
+def is_terminal_menu_capture(capture: CapturedComponent | None) -> bool:
+    route = logical_menu_route(capture)
+    if route:
+        kind = str(route[-1].get("kind") or "").casefold().replace("_", " ")
+        return kind not in {"menu", "menu bar", "menu button"}
+    return capture is not None and capture.semantic_type() == ObjectType.MENU_ITEM
 
 
 def ensure_recorded_menu_owner(repository, capture: CapturedComponent) -> ComponentDefinition | None:
@@ -134,16 +172,22 @@ def find_logical_menu_targets(
     definitions: Iterable[ComponentDefinition], capture: CapturedComponent
 ) -> tuple[LogicalMenuTarget, ...]:
     criteria = durable_menu_criteria(capture)
-    if not criteria:
+    route = logical_menu_route(capture)
+    metadata = capture.backend_properties.get("logical_menu")
+    owner = metadata.get("owner") if isinstance(metadata, Mapping) else None
+    if not criteria or not route or not isinstance(owner, Mapping):
         return ()
     definitions = tuple(definitions)
     matches: list[LogicalMenuTarget] = []
     for definition in definitions:
         if definition.framework not in (None, "javafx"):
             continue
+        if not _definition_matches_owner(definition, owner):
+            continue
         normalized = normalize_menu_subobjects(definition.subobjects)
         _replace_mutable_subobjects(definition.subobjects, normalized)
-        _walk_subobjects(definition.component_id, normalized, (), (), criteria, matches)
+        _walk_subobjects(definition.component_id, normalized, (), (), criteria, matches,
+                         expected_route=route)
     if matches:
         return tuple(matches)
     attached = _attach_recorded_menu_path(definitions, capture)
@@ -157,16 +201,10 @@ def _attach_recorded_menu_path(
     metadata = properties.get("logical_menu")
     if not isinstance(metadata, Mapping):
         return None
-    raw_path = metadata.get("path")
     owner = metadata.get("owner")
-    if not isinstance(raw_path, (list, tuple)) or not isinstance(owner, Mapping):
+    if not isinstance(owner, Mapping):
         return None
-
-    selectors = tuple(_canonical_selector(item) for item in raw_path if isinstance(item, Mapping))
-    selectors = tuple(
-        item for item in selectors
-        if item.get("criteria") or item.get("ordinal") is not None or item.get("relative_offset")
-    )
+    selectors = logical_menu_route(capture)
     if not selectors:
         return None
 
@@ -259,7 +297,8 @@ def _definition_matches_owner(definition: ComponentDefinition, owner: Mapping[st
         popup_id = popup.get("id")
         if popup_id and _definition_matches_criteria(definition, {"id": popup_id}):
             return True
-        return getattr(definition.object_type, "value", "") == "context_menu"
+        return (not popup_id and getattr(definition.object_type, "value", "") == "context_menu"
+                and definition.properties.get("logical_owner") == "context_menu")
     return False
 
 
@@ -296,8 +335,10 @@ def _definition_matches_criteria(definition: ComponentDefinition, criteria: Mapp
             continue
         if expected_id not in (None, ""):
             candidate = mandatory.get("id") or assistive.get("id")
-            if candidate == expected_id:
-                return True
+            if candidate is not None:
+                if candidate == expected_id:
+                    return True
+                continue
         if expected_text not in (None, ""):
             candidate = mandatory.get("text") or assistive.get("text")
             if candidate == expected_text:
@@ -354,6 +395,7 @@ def _walk_subobjects(
     selectors: tuple[Mapping[str, Any], ...],
     captured: Mapping[str, Any],
     matches: list[LogicalMenuTarget],
+    expected_route: tuple[Mapping[str, Any], ...] = (),
 ) -> None:
     for subobject_id, raw in subobjects.items():
         if not isinstance(raw, Mapping):
@@ -366,11 +408,23 @@ def _walk_subobjects(
         }
         next_path = path + (str(subobject_id),)
         next_selectors = selectors + (selector,)
-        if expected and _criteria_match(expected, captured):
+        route_matches = len(next_selectors) == len(expected_route) and all(
+            _selectors_equivalent(actual, wanted)
+            for actual, wanted in zip(next_selectors, expected_route)
+        )
+        # Menu owners represented by their top-level Menu omit that first
+        # selector from their persisted subobject path.
+        owner_relative = expected_route[1:] if expected_route and len(next_selectors) == len(expected_route) - 1 else ()
+        route_matches = route_matches or bool(owner_relative) and all(
+            _selectors_equivalent(actual, wanted)
+            for actual, wanted in zip(next_selectors, owner_relative)
+        )
+        if expected and _criteria_match(expected, captured) and route_matches:
             matches.append(LogicalMenuTarget(owner_component_id, next_path, next_selectors))
         nested = raw.get("subobjects", {})
         if isinstance(nested, Mapping):
-            _walk_subobjects(owner_component_id, nested, next_path, next_selectors, captured, matches)
+            _walk_subobjects(owner_component_id, nested, next_path, next_selectors, captured, matches,
+                             expected_route=expected_route)
 
 
 def _criteria_match(expected: Mapping[str, Any], captured: Mapping[str, Any]) -> bool:
@@ -390,3 +444,46 @@ def menu_action_payload(target: LogicalMenuTarget) -> dict[str, Any]:
         "type": "select_menu_item",
         "path": list(target.subobject_path),
     }
+
+
+def resolve_authored_menu_route(
+    definition: ComponentDefinition,
+    value: str | Iterable[str],
+) -> tuple[str, ...]:
+    """Resolve a readable route into the canonical owner-relative path."""
+    if isinstance(value, str):
+        segments = tuple(item.strip() for item in value.replace("/", ">").split(">") if item.strip())
+    else:
+        segments = tuple(str(item).strip() for item in value if str(item).strip())
+    if not segments:
+        raise ValueError("menu route must contain at least one segment")
+
+    current = normalize_menu_subobjects(definition.subobjects)
+    path: list[str] = []
+    terminal: Mapping[str, Any] | None = None
+    for segment in segments:
+        matches = []
+        wanted = segment.casefold()
+        for key, selector in current.items():
+            criteria = selector.get("criteria", {})
+            aliases = {
+                str(key).casefold(),
+                str(criteria.get("id") or "").casefold(),
+                str(criteria.get("text") or "").casefold(),
+            }
+            if wanted in aliases:
+                matches.append((str(key), selector))
+        if len(matches) != 1:
+            raise ValueError(
+                "menu route segment %r has %d matches under %r"
+                % (segment, len(matches), " > ".join(path) or definition.component_id)
+            )
+        key, terminal = matches[0]
+        path.append(key)
+        nested = terminal.get("subobjects", {})
+        current = nested if isinstance(nested, Mapping) else {}
+
+    kind = str((terminal or {}).get("kind") or "").casefold().replace("_", " ")
+    if kind in {"menu", "menu bar", "menu button"}:
+        raise ValueError("menu route must terminate at an actionable menu item")
+    return tuple(path)

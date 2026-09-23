@@ -12,6 +12,9 @@ dist/
 
 # Generated execution evidence
 runs/
+logs/
+recording-debug/
+.automation-harness-env
 
 # Unapproved visual-baseline review artifacts
 visual/.staging/

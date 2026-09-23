@@ -23,8 +23,8 @@ def _capture(name: str, *, kind: ObjectType = ObjectType.BUTTON) -> CapturedComp
 
 
 def _repository() -> ComponentRepository:
-    return ComponentRepository.from_document({"version": 2, "components": {
-        "open": {"object_type": "button", "actions": ["click"], "framework": "javafx", "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Open", "role": "button"}}}]},
+    return ComponentRepository.from_document({"version": 3, "components": {
+        "open": {"object_id": "11111111-1111-4111-8111-111111111111", "object_type": "button", "actions": ["click"], "framework": "javafx", "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Open", "role": "button"}}}]},
     }})
 
 
@@ -69,7 +69,7 @@ def test_click_correlates_action_and_meaningful_state_without_pressed_noise():
     assert len(interactions) == 1
     interaction = interactions[0]
     assert interaction.action.value == "click"
-    assert interaction.repository_match.component_id == "open"
+    assert interaction.repository_match.component_id == "11111111-1111-4111-8111-111111111111"
     assert [(delta.property, delta.before, delta.after) for delta in interaction.resulting_changes] == [("enabled", True, False)]
     assert "coordinates" not in interaction.parameters
     assert interactions_to_steps(interactions)[0].inputs["action"] == {"type": "click"}
@@ -163,7 +163,7 @@ def test_repository_matching_uses_javafx_lineage_and_sibling_evidence():
     interaction = session.stop()[0]
 
     assert interaction.repository_match.status == "known_unique"
-    assert interaction.repository_match.component_id == "sixth-region"
+    assert interaction.repository_match.component_id == repository.get("sixth-region").object_id
 
 
 def test_modal_visibility_is_retained_as_contextual_effect_of_click():
@@ -350,7 +350,7 @@ def test_repository_matching_recognizes_same_solipsys_track_after_it_moves():
     interaction = session.stop()[0]
 
     assert interaction.repository_match.status == "known_unique"
-    assert interaction.repository_match.component_id == "Track 2"
+    assert interaction.repository_match.component_id == repository.get("Track 2").object_id
 
 
 def test_repository_matching_rejects_different_solipsys_track_identity():

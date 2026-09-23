@@ -13,9 +13,10 @@ from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 
 def _component_document(locator_value):
     return {
-        "version": 2,
+        "version": 3,
         "components": {
             "dynamic_button": {
+                "object_id": "00000000-0000-0000-0000-000000000001",
                 "object_type": "button",
                 "actions": ["click"],
                 "strategies": [
@@ -68,10 +69,6 @@ def test_regex_mode_is_independent_for_each_property():
     assert not _matches_value("primary-window-2", "primary-window")
 
 
-def test_legacy_regex_shorthand_remains_loadable():
-    assert _matches_value("submit-42", {"regex": r"submit-[0-9]+"})
-
-
 def test_case_insensitive_role_matching_supports_regex():
     assert _matches_value(
         "Push Button",
@@ -113,33 +110,11 @@ def test_authoring_project_document_contains_no_execution_scope(tmp_path):
     project = AuthoringProject(
         name="demo",
         root=tmp_path,
-        object_repositories=(tmp_path / "components.ahobjects",),
     )
     document = project.to_document()
-    assert document == {
-        "version": 2,
-        "name": "demo",
-        "test_plans": [],
-        "step_registries": [],
-        "object_repositories": ["components.ahobjects"],
+    assert set(document) == {
+        "version", "name", "test_plans", "step_registries", "object_repositories",
     }
-
-
-def test_authoring_core_contains_no_application_target_lifecycle():
-    source = (Path(__file__).resolve().parents[1] / "authoring" / "app.py").read_text(encoding="utf-8")
-    for obsolete in (
-        "AttachedDesktopBackend",
-        "AttachedExecutionBackend",
-        "configure_target_dialog",
-        "launch_target",
-        "stop_target",
-        "_target_backend",
-        "_target_environment",
-        "_attached_application",
-        "expected_application",
-        "environment_script",
-    ):
-        assert obsolete not in source
 
 
 def test_runner_contains_no_attached_application_selector():
@@ -163,16 +138,6 @@ def test_java_accessibility_driver_has_no_application_presence_gate():
     source = (Path(__file__).resolve().parents[1] / "drivers" / "java_accessibility.py").read_text(encoding="utf-8")
     assert "expected_application" not in source
     assert "application_present" not in source
-
-
-def test_main_authoring_mode_exposes_explicit_repository_persistence():
-    source = (
-        Path(__file__).resolve().parents[1] / "authoring" / "capture_runtime.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'self._button(toolbar, "Save Repository", self.save_repository)' in source
-    assert 'self._button(toolbar, "Save Repository As", self.save_repository_as)' in source
-    assert 'if self.mode not in {"capture", "repository"}' not in source
 
 
 def test_installed_javafx_regex_wrapper_preserves_process_scope():

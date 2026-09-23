@@ -61,9 +61,7 @@ def test_removing_project_membership_does_not_delete_artifact(tmp_path):
     assert plan.is_file()
 
 
-def test_v1_project_migrates_repository_membership_without_runtime_configuration(tmp_path):
-    repository = tmp_path / "objects.ahobjects"
-    repository.write_text("version: 2\ncomponents: {}\n", encoding="utf-8")
+def test_v1_project_is_rejected(tmp_path):
     path = tmp_path / "legacy.ahproject"
     path.write_text(
         """version: 1
@@ -76,25 +74,7 @@ script_steps:
         encoding="utf-8",
     )
 
-    project = AuthoringProject.load(path)
-
-    assert project.object_repositories == (repository.resolve(),)
-    assert project.test_plans == ()
-    assert project.step_registries == ()
-    assert "runs_dir" not in project.to_document()
-    assert "script_steps" not in project.to_document()
-
-
-@pytest.mark.parametrize("obsolete", ["target", "environment_script"])
-def test_v1_project_rejects_obsolete_execution_scope_fields(tmp_path, obsolete):
-    path = tmp_path / "project.ahproject"
-    value = "{}" if obsolete == "target" else "legacy.sh"
-    path.write_text(
-        "version: 1\nname: Legacy\n%s: %s\n" % (obsolete, value),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ProjectError, match="obsolete project field"):
+    with pytest.raises(ProjectError, match="unsupported project version 1"):
         AuthoringProject.load(path)
 
 

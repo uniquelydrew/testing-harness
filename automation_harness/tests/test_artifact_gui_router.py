@@ -34,7 +34,8 @@ def test_rejects_suffix_schema_mismatch(tmp_path):
         detect_artifact(path)
 
 
-def test_supports_legacy_project_schema(tmp_path):
+def test_rejects_removed_legacy_project_schema(tmp_path):
     path = tmp_path / "legacy.yaml"
     path.write_text("version: 1\nname: Legacy\nrepository: objects.ahobjects\n", encoding="utf-8")
-    assert detect_artifact(path) is ArtifactType.PROJECT
+    with pytest.raises(ValueError, match="unable to determine"):
+        detect_artifact(path)

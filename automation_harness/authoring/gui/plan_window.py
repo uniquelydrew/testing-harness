@@ -18,7 +18,6 @@ from automation_harness.authoring.project_registry_service import save_plan_sele
 from automation_harness.authoring.step_registry import load_step_registry_resources
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.object_identity_sync import readable_plan_component_references
 from automation_harness.core.reusable_step_expansion import expand_reusable_steps
 from automation_harness.core.reusable_step_snapshot import load_snapshotted_reusable_steps, snapshot_reusable_dependencies
 from automation_harness.core.step_registry import default_step_registry
@@ -40,7 +39,6 @@ class TestPlanWindow(ArtifactWindow):
         self.repository = repository_from_plan(self.plan)
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
-        self.plan = readable_plan_component_references(self.plan, self.repository)
 
         self.button("Save", self.save)
         self.button("Validate", self.validate)

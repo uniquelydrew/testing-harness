@@ -2,9 +2,11 @@ name: environment-setup-example
 version: 1
 variables: {}
 steps:
-  - id: setup
-    step: environment.prepare
-    inputs:
-      configuration: integration
-    outputs:
-      workspace: workspace
+- id: setup
+  step: environment.prepare
+  inputs:
+    configuration: integration
+  outputs:
+    workspace: workspace
+objects: {}
+step_definitions: {}

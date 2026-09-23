@@ -1,5 +1,7 @@
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.javafx_menu_execution import _select_rendered_terminal
+from automation_harness.core.javafx_menu_execution import install_javafx_menu_execution
+from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+import pytest
 from automation_harness.models.component import CapturedComponent, ComponentState
 from automation_harness.models.gui import ObjectType
 from automation_harness.recording import RecordingSession
@@ -50,7 +52,7 @@ def test_recording_creates_one_context_menu_owner_and_nests_item():
     match = session._match(_logical_context_item())
 
     assert match.status == "known_subobject"
-    assert match.component_id == "ContextMenu"
+    assert match.component_id == repository.components["ContextMenu"].object_id
     assert match.subobject_path == ("cameraselectormenuitem",)
     owner = repository.components["ContextMenu"]
     assert owner.object_type == ObjectType.CONTEXT_MENU
@@ -73,43 +75,15 @@ def test_repeated_context_menu_recording_reuses_owner_and_subobject():
     assert list(repository.components["ContextMenu"].subobjects) == ["cameraselectormenuitem"]
 
 
-def test_context_menu_execution_falls_back_to_durable_terminal_selector(monkeypatch):
-    clicked = []
+def test_menu_execution_does_not_click_a_global_terminal_match(monkeypatch):
+    install_javafx_menu_execution()
 
-    class Endpoint:
-        pid = 4136
+    def missing_owner(self, identification):
+        raise LookupError("menu owner unavailable")
 
-    class Stage:
-        def to_dict(self):
-            return {"source": "mandatory", "criteria": {"id": "cameraSelectorMenuItem"}, "matches": 1}
-
-    class Driver:
-        def _find_unique(self, identification):
-            assert identification == {
-                "mandatory": {
-                    "id": "cameraSelectorMenuItem",
-                    "text": "Camera Selector",
-                }
-            }
-            return Endpoint(), {"bounds": [100, 200, 120, 24]}, (Stage(),)
-
-    monkeypatch.setattr(
-        "automation_harness.core.pointer_actions.click_bounds",
-        lambda bounds, action: clicked.append((bounds, action)) or {"clicked": True},
-    )
-
-    result = _select_rendered_terminal(
-        Driver(),
-        [{
-            "kind": "menu_item",
-            "criteria": {
-                "id": "cameraSelectorMenuItem",
-                "text": "Camera Selector",
-            },
-        }],
-        owner_error=LookupError("ContextMenu root is transient"),
-    )
-
-    assert result["fallback"] == "rendered_terminal"
-    assert result["selector"]["id"] == "cameraSelectorMenuItem"
-    assert clicked and clicked[0][0] == (100, 200, 120, 24)
+    monkeypatch.setattr(JavaFxBridgeDriver, "_find_unique", missing_owner)
+    with pytest.raises(RuntimeError, match="unscoped terminal click"):
+        JavaFxBridgeDriver().select_menu_path(
+            [{"kind": "menu_item", "criteria": {"id": "cameraSelectorMenuItem"}}],
+            identification={"mandatory": {"id": "fileMenu"}},
+        )

@@ -24,7 +24,7 @@ def gui_object_visual_assert(
     ctx: TestContext,
     component_id: str,
     variant_key: str,
-    minimum_match_percentage: float | None = None,
+    minimum_match_percentage: float = 99.0,
 ):
     handle = ctx.component(component_id)
     resolved = handle.resolve()
@@ -50,15 +50,9 @@ def gui_object_visual_assert(
         raise VisualBaselineError("component visual match escapes repository visual directory")
 
     pixel_tolerance = int(variant.get("pixel_tolerance", 12))
-    legacy_difference_ratio = float(variant.get("max_difference_ratio", 0.01))
-    if minimum_match_percentage is None:
-        # Backward compatibility for plans authored before the threshold became
-        # an explicit assertion input.
-        required_match_percentage = (1.0 - legacy_difference_ratio) * 100.0
-    else:
-        if isinstance(minimum_match_percentage, bool) or not isinstance(minimum_match_percentage, (int, float)):
-            raise ValueError("minimum_match_percentage must be a number from 0 through 100")
-        required_match_percentage = float(minimum_match_percentage)
+    if isinstance(minimum_match_percentage, bool) or not isinstance(minimum_match_percentage, (int, float)):
+        raise ValueError("minimum_match_percentage must be a number from 0 through 100")
+    required_match_percentage = float(minimum_match_percentage)
     if required_match_percentage < 0.0 or required_match_percentage > 100.0:
         raise ValueError("minimum_match_percentage must be between 0 and 100")
 

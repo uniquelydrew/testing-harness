@@ -79,15 +79,15 @@ def test_plan_round_trip_preserves_inline_objects_and_step_definitions(tmp_path:
 
 def test_plan_embeds_only_its_literal_object_dependencies():
     repository = ComponentRepository.from_document({
-        "version": 2,
+        "version": 3,
         "components": {
-            "submit": {"object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Submit"}}}]},
-            "unused": {"object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Unused"}}}]},
+            "submit": {"object_id": "10000000-0000-0000-0000-000000000001", "object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Submit"}}}]},
+            "unused": {"object_id": "10000000-0000-0000-0000-000000000002", "object_type": "button", "actions": ["click"], "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "Unused"}}}]},
         },
     })
     plan = TestPlan(name="embedded", steps=(StepCall(
         node_id="submit", step_id="gui.object.action",
-        inputs={"component_id": "submit", "action": {"type": "click"}},
+        inputs={"component_id": "10000000-0000-0000-0000-000000000001", "action": {"type": "click"}},
     ),))
     embedded = embed_plan_repository(plan, repository)
     assert set(embedded.objects) == {"submit"}

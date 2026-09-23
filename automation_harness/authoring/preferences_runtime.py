@@ -16,6 +16,7 @@ from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.test_plan import validate_plan, validate_plan_components
 from automation_harness.formats import with_artifact_suffix
 from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.runtime_paths import ensure_external_runtime_path, runtime_path
 
 
 _PREFERENCES_VERSION = 1
@@ -80,10 +81,8 @@ class AuthoringPreferences:
 
     def resolved_runs_dir(self, project=None):
         if self.runs_dir is not None:
-            return Path(self.runs_dir).expanduser().resolve()
-        if project is not None:
-            return Path(project.runs_dir).resolve()
-        return (Path.cwd() / "runs").resolve()
+            return ensure_external_runtime_path(Path(self.runs_dir))
+        return runtime_path("runs")
 
 
 def _optional_directory(value):

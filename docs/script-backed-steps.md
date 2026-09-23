@@ -100,7 +100,6 @@ The setup step is ordinary plan behavior. It may produce values used by later st
 version: 1
 name: Customer integration tests
 repository: objects.ahobjects
-runs_dir: runs
 script_steps:
   - script_steps/environment_prepare.ahstep
 ```

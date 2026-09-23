@@ -738,8 +738,8 @@ public final class AutomationHarnessJavaFxAgent {
             if (node == null || depth > 64) return null;
             String className = node.getClass().getName();
             if (className.startsWith("com.sun.javafx.scene.control.")) {
-                Object item = call(node, "getItem");
-                if (item == null) item = call(node, "getMenu");
+                Object item = callQuiet(node, "getItem");
+                if (item == null) item = callQuiet(node, "getMenu");
                 if (item == logical) return node;
             }
             for (Object child : children(node)) {
@@ -846,7 +846,12 @@ public final class AutomationHarnessJavaFxAgent {
             Object parentPopup = callQuiet(semantic, "getParentPopup");
             if (parentPopup == null) parentPopup = callQuiet(top, "getParentPopup");
             Map<String, Object> owner = new LinkedHashMap<String, Object>();
-            if (parentPopup != null) {
+            // A MenuBar submenu is rendered in a ContextMenu as well. The
+            // logical top-level Menu determines ownership, not the popup skin.
+            if (findMenuBarForMenu(top) != null) {
+                owner.put("kind", "menu");
+                owner.put("logical", menuSelector(top, null));
+            } else if (parentPopup != null) {
                 owner.put("kind", "context menu");
                 owner.put("popup", menuSnapshot(parentPopup));
             } else if (top != semantic && "menu".equals(menuRole(top))) {
@@ -883,7 +888,66 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 current = callQuiet(current, "getParent");
             }
+            // Public JavaFX menu objects are not necessarily reachable through
+            // reflective accessors on com.sun skin nodes (especially with Java
+            // module encapsulation). Correlate the visible skin with the public
+            // Menu/MenuItem graph while still on the FX application thread.
+            if (candidate.getClass().getName().startsWith("com.sun.javafx.scene.control.")) {
+                return menuObjectForSkin(candidate);
+            }
             return null;
+        }
+
+        private static Object menuObjectForSkin(Object skin) throws Exception {
+            String id = stringOrNull(callQuiet(skin, "getId"));
+            String text = optionalNoArgStringQuiet(skin, "getText");
+            double[] position = boundsOnScreen(skin);
+            List<Object> matches = new ArrayList<Object>();
+            Object scene = callQuiet(skin, "getScene");
+            Object window = callQuiet(scene, "getWindow");
+            if (window == null || !boolCall(window, "isShowing", false)) return null;
+            if (isInstance("javafx.scene.control.ContextMenu", window)) {
+                collectMatchingMenuItems(window, id, text, position, matches, 0);
+            } else {
+                collectMatchingMenuBars(callQuiet(scene, "getRoot"), id, text, position, matches, 0);
+            }
+            // The same logical object can be reached from a MenuBar and its
+            // popup. Ambiguity across distinct objects must remain unresolved.
+            List<Object> unique = new ArrayList<Object>();
+            for (Object match : matches) if (!unique.contains(match)) unique.add(match);
+            return unique.size() == 1 ? unique.get(0) : null;
+        }
+
+        private static void collectMatchingMenuBars(Object node, String id, String text,
+                double[] position, List<Object> matches, int depth) throws Exception {
+            if (node == null || depth > 64) return;
+            if (isInstance("javafx.scene.control.MenuBar", node)) {
+                collectMatchingMenuItems(node, id, text, position, matches, 0);
+            }
+            for (Object child : children(node)) {
+                collectMatchingMenuBars(child, id, text, position, matches, depth + 1);
+            }
+        }
+
+        private static void collectMatchingMenuItems(Object parent, String id, String text,
+                double[] position, List<Object> matches, int depth) throws Exception {
+            if (depth > 32) return;
+            for (Object item : menuChildrenIfPresent(parent)) {
+                String itemId = stringOrNull(callQuiet(item, "getId"));
+                String itemText = optionalNoArgStringQuiet(item, "getText");
+                if (id != null && !id.isEmpty() ? id.equals(itemId)
+                        : text != null && !text.isEmpty() && text.equals(itemText)) {
+                    double[] bounds = menuBounds(item);
+                    if (position == null || bounds == null ||
+                            Math.abs(position[0] - bounds[0]) <= 2.0 &&
+                            Math.abs(position[1] - bounds[1]) <= 2.0) {
+                        matches.add(item);
+                    }
+                }
+                if (isInstance("javafx.scene.control.Menu", item)) {
+                    collectMatchingMenuItems(item, id, text, position, matches, depth + 1);
+                }
+            }
         }
 
         private static Map<String, Object> menuSelector(Object item, Object parent) throws Exception {
@@ -1252,6 +1316,13 @@ public final class AutomationHarnessJavaFxAgent {
             if (!logicalMenu.isEmpty()) {
                 payload.put("logical_menu", logicalMenu);
                 nodeProperties.put("logical_menu", logicalMenu);
+            } else if (node.getClass().getName().startsWith("com.sun.javafx.scene.control.")
+                    && ("MENU".equals(enumName(callQuiet(node, "getAccessibleRole")))
+                    || "MENU_ITEM".equals(enumName(callQuiet(node, "getAccessibleRole"))))) {
+                // Surface failed skin promotion in the normal capture/debug
+                // payload instead of silently treating the menu as a click.
+                nodeProperties.put("logical_menu_error", "no unique logical menu object for "
+                        + node.getClass().getName());
             }
             payload.put("properties", nodeProperties);
             payload.put("layout", layoutConstraints(node));

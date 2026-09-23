@@ -125,8 +125,6 @@ automation-run
 automation-reference
 automation-author
 automation-plan
-automation-capture
-automation-repository
 automation-javafx
 ```
 
@@ -222,7 +220,6 @@ optional script-step implementations:
 version: 1
 name: Login workflow
 repository: objects.ahobjects
-runs_dir: runs
 script_steps:
   - script_steps/prepare-environment.ahstep
 ```
@@ -1130,17 +1127,16 @@ Run an individual bundle:
 automation-run run automation_harness/examples/gtk4_demo/buttons --backend gtk-demo
 ```
 
-Each example starts in a fresh process and has its own object repository. Use `automation-capture` against the upgraded target to replace its semantic AT-SPI locators; avoid geometry and ordinals unless no stable accessible identity exists.
+Each example starts in a fresh process and has its own object repository. Use `automation-author` against the upgraded target to replace its semantic AT-SPI locators; avoid geometry and ordinals unless no stable accessible identity exists.
 
 Object Capture is the mechanism for converting a live Linux desktop accessibility object into a reusable logical repository object.
 
 The capture service is available through the local authoring GUI.
 
-For focused tools, launch Object Capture or the Object Repository editor independently:
+For focused tools, launch the Object Capture or Object Repository workflow from the authoring application:
 
 ```bash
-automation-capture --repository ./objects.ahobjects
-automation-repository --repository ./objects.ahobjects
+automation-author --repository ./objects.ahobjects
 ```
 
 The repository launcher lets you inspect and edit the selected component as JSON; it validates the definition before saving it back to the supplied YAML repository.
@@ -1446,7 +1442,7 @@ It does **not** have a separate execution implementation.
 
 Use the Object Repository view to:
 
-- open an `.ahobjects` repository (legacy `.yaml`/`.yml` remains readable)
+- open an `.ahobjects` repository
 - browse captured logical IDs
 - inspect definitions
 - capture an object
@@ -1707,8 +1703,7 @@ follow-track       track.follow                       blocked  waiting=active_tr
 ```bash
 automation-run plan run ./test.ahplan \
   --backend reference \
-  --components ./objects.ahobjects \
-  --runs-dir ./runs
+  --components ./objects.ahobjects
 ```
 
 Reference GUI mode is the default.
@@ -1735,6 +1730,7 @@ automation-run plan run ./test.ahplan \
 # Evidence and run artifacts
 
 Each run receives a timestamped artifact directory under the selected `--runs-dir`.
+By default, generated artifacts are outside the source checkout: `%LOCALAPPDATA%\\Automation Harness\\runs` on Windows, `$XDG_STATE_HOME/automation-harness/runs` on Linux when set, or `~/.local/state/automation-harness/runs` otherwise. Set `AUTOMATION_HARNESS_RUNTIME_DIR` to choose a different external root. Run directories inside a Git checkout are rejected.
 
 A declarative run contains files including:
 

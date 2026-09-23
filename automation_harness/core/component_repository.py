@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import os
+import tempfile
 from typing import Any, Iterable, Mapping
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID, uuid5, NAMESPACE_URL
 
 import yaml
 
@@ -73,12 +75,23 @@ class ComponentRepository:
             except yaml.YAMLError as exc:
                 raise ComponentRepositoryError(f"invalid YAML in {path}: {exc}") from exc
             repository = cls.from_document(raw, source=str(path))
+            legacy_override = raw.get("version", 1) in {1, 2}
             for name, definition in repository.components.items():
                 existing = merged.get(name)
-                if existing is not None and existing.object_id != definition.object_id:
-                    definition = replace(definition, object_id=existing.object_id)
+                if existing is not None and existing != definition:
+                    if legacy_override:
+                        merged[name] = definition
+                        continue
+                    raise ComponentRepositoryError(
+                        f"repository object name {name!r} is defined more than once; use explicit repository scopes and overrides"
+                    )
+                for existing_name, existing_definition in merged.items():
+                    if existing_name != name and existing_definition.object_id == definition.object_id:
+                        raise ComponentRepositoryError(
+                            f"immutable object id {definition.object_id!r} is defined by both {existing_name!r} and {name!r}"
+                        )
                 merged[name] = definition
-        return cls(merged).with_inferred_ownership()
+        return cls(merged)
 
     @classmethod
     def from_document(cls, raw: Any, *, source: str = "repository") -> "ComponentRepository":
@@ -120,40 +133,36 @@ class ComponentRepository:
         return get_close_matches(component_id, self.components.keys(), n=limit, cutoff=0.45)
 
     def to_document(self) -> dict[str, Any]:
-        normalized = self.with_inferred_ownership()
         return {
             "version": 3,
             "components": {
                 name: _component_to_mapping(definition)
-                for name, definition in sorted(normalized.components.items())
+                for name, definition in sorted(self.components.items())
             },
         }
 
-    def with_inferred_ownership(self) -> "ComponentRepository":
-        """Migrate legacy dotted paths only when the prefix is a real object.
-
-        Missing name segments are deliberately ignored; they are presentation
-        scopes, not objects.  The longest concrete prefix becomes the owner.
-        """
-        changed = False
-        components = dict(self.components)
-        for name, definition in self.components.items():
-            if definition.owner_object_id is not None:
-                continue
-            parts = name.split(".")
-            owner = None
-            for depth in range(len(parts) - 1, 0, -1):
-                owner = self.components.get(".".join(parts[:depth]))
-                if owner is not None:
-                    break
-            if owner is not None:
-                components[name] = replace(definition, owner_object_id=owner.object_id)
-                changed = True
-        return ComponentRepository(components) if changed else self
-
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(self.to_document(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+        # A repository is the source of UUID references held by plans.  Never
+        # expose a partially-written YAML document to another open authoring
+        # window: write beside the destination, fsync it, then atomically
+        # replace the old version.
+        document = yaml.safe_dump(self.to_document(), sort_keys=False, allow_unicode=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".%s." % path.name, suffix=".tmp", dir=str(path.parent), text=True,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(document)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, str(path))
+        except Exception:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
 
     def with_component(self, definition: ComponentDefinition) -> "ComponentRepository":
         merged = dict(self.components)
@@ -174,6 +183,26 @@ class ComponentRepository:
                     break
         return ComponentRepository(merged)
 
+    def delete_subtree(self, component_id: str) -> tuple["ComponentRepository", tuple[str, ...]]:
+        """Delete an object and every object whose ownership depends on it."""
+        root = self.get(component_id)
+        removed_ids = {root.object_id}
+        changed = True
+        while changed:
+            changed = False
+            for definition in self.components.values():
+                if definition.owner_object_id in removed_ids and definition.object_id not in removed_ids:
+                    removed_ids.add(definition.object_id)
+                    changed = True
+        removed_names = tuple(
+            name for name, definition in self.components.items()
+            if definition.object_id in removed_ids
+        )
+        return ComponentRepository({
+            name: definition for name, definition in self.components.items()
+            if definition.object_id not in removed_ids
+        }), removed_names
+
     def rename(self, component_id: str, new_component_id: str) -> "ComponentRepository":
         if not isinstance(new_component_id, str) or not new_component_id.strip():
             raise ComponentRepositoryError("new component name must be a non-empty string")
@@ -190,8 +219,15 @@ class ComponentRepository:
         merged = dict(self.components)
         for name, definition in other.components.items():
             existing = merged.get(name)
-            if existing is not None and existing.object_id != definition.object_id:
-                definition = replace(definition, object_id=existing.object_id)
+            if existing is not None and existing != definition:
+                raise ComponentRepositoryError(
+                    f"repository object name {name!r} conflicts across composed repositories"
+                )
+            for existing_name, existing_definition in merged.items():
+                if existing_name != name and existing_definition.object_id == definition.object_id:
+                    raise ComponentRepositoryError(
+                        f"immutable object id {definition.object_id!r} conflicts across composed repositories"
+                    )
             merged[name] = definition
         return ComponentRepository(merged)
 
@@ -201,11 +237,10 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
         raise ComponentRepositoryError(f"{path}: component {component_id!r} must be a mapping")
     raw_object_id = value.get("object_id")
     if raw_object_id is None:
-        if version >= 3:
+        if version == 3:
             raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_id is required by schema v3")
-        object_id = _legacy_object_id(component_id)
-    else:
-        object_id = _normalize_object_id(raw_object_id, prefix=f"{path}: component {component_id!r}.object_id")
+        raw_object_id = str(uuid5(NAMESPACE_URL, f"automation-harness:{component_id}"))
+    object_id = _normalize_object_id(raw_object_id, prefix=f"{path}: component {component_id!r}.object_id")
 
     description = value.get("description", "")
     if not isinstance(description, str):
@@ -236,12 +271,12 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
             raise ComponentRepositoryError(f"{path}: component {component_id!r}.object_type is not a known semantic type") from exc
     raw_actions = value.get("actions")
     if raw_actions is None:
-        raw_actions = [item.value for item in default_actions(object_type)] if version >= 2 else ["resolve", "activate"]
+        raw_actions = [item.value for item in default_actions(object_type)]
+        if not raw_actions and version in {1, 2}:
+            raw_actions = ["resolve"]
     if not isinstance(raw_actions, list) or not raw_actions or not all(isinstance(item, str) and item for item in raw_actions):
         raise ComponentRepositoryError(f"{path}: component {component_id!r}.actions must be a non-empty list of strings")
     actions = frozenset(raw_actions)
-    if version == 1 and "resolve" not in actions:
-        raise ComponentRepositoryError(f"{path}: component {component_id!r} must support the resolve action")
 
     raw_strategies = value.get("strategies", [])
     if not isinstance(raw_strategies, list) or not raw_strategies:
@@ -267,6 +302,10 @@ def _parse_component(path: Path, component_id: str, value: Any, *, version: int 
             )
         options = {k: v for k, v in raw.items() if k != "type"}
         if strategy_type in {"atspi", "java_accessibility"}:
+            if "identification" not in options:
+                options = {"identification": {"mandatory": {
+                    key: value for key, value in options.items() if key in _ATSPI_SIMPLE_KEYS
+                }}}
             options = _normalize_atspi_strategy(path, component_id, index, options)
         elif strategy_type == "anchored_visual":
             options = _normalize_anchored_visual_strategy(path, component_id, index, options)
@@ -321,8 +360,10 @@ def _mapping_of_mappings(path: Path, component_id: str, value: Any, field_name: 
 
 def _normalize_atspi_strategy(path: Path, component_id: str, index: int, options: Mapping[str, Any]) -> dict[str, Any]:
     prefix = f"{path}: component {component_id!r}.strategies[{index}]"
-    raw_identity = options["identification"] if "identification" in options else {"mandatory": dict(options)}
-    if "identification" in options and len(options) != 1:
+    if "identification" not in options:
+        raise ComponentRepositoryError(f"{prefix}.identification is required")
+    raw_identity = options["identification"]
+    if len(options) != 1:
         extra = sorted(set(options) - {"identification"})
         raise ComponentRepositoryError(f"{prefix}: nested AT-SPI identification cannot be mixed with flat properties: {', '.join(extra)}")
     if not isinstance(raw_identity, Mapping):
@@ -336,10 +377,6 @@ def _normalize_atspi_strategy(path: Path, component_id: str, index: int, options
         raise ComponentRepositoryError(f"{prefix}.identification.assistive must be a mapping")
     _validate_locator_conditions(prefix + ".identification.mandatory", mandatory)
     _validate_locator_conditions(prefix + ".identification.assistive", assistive)
-    if isinstance(ordinal, Mapping):
-        if set(ordinal) != {"index"}:
-            raise ComponentRepositoryError(f"{prefix}.identification.ordinal mapping must contain only 'index'")
-        ordinal = ordinal.get("index")
     if ordinal is not None and (not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0):
         raise ComponentRepositoryError(f"{prefix}.identification.ordinal must be a non-negative integer")
     identity: dict[str, Any] = {"mandatory": dict(mandatory)}
@@ -420,8 +457,6 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
     return payload
 
 
-def _legacy_object_id(component_id: str) -> str:
-    return str(uuid5(NAMESPACE_URL, "automation-harness:component:" + component_id))
 
 
 def _normalize_object_id(value: Any, *, prefix: str) -> str:
