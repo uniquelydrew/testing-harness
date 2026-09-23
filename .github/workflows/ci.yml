@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python 3.6 tests
+    runs-on: ubuntu-22.04
+    container:
+      image: python:3.6-buster
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure archived Debian Buster repositories
+        run: |
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian buster main' \
+            'deb http://archive.debian.org/debian-security buster/updates main' \
+            > /etc/apt/sources.list
+          printf 'Acquire::Check-Valid-Until "false";\n' \
+            > /etc/apt/apt.conf.d/99archive
+      - name: Install Linux desktop build dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            gcc \
+            gir1.2-gtk-3.0 \
+            libcairo2-dev \
+            libgirepository1.0-dev \
+            pkg-config
+      - name: Run Python test suite
+        run: bash scripts/ci/unit.sh
+
+  java8-agent:
+    name: Swing/JOGL agent (Java 8 bytecode)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+      - name: Build Java 8 agent
+        run: bash java-agent/build.sh
+      - name: Upload Java 8 agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: swing-jogl-agent
+          path: java-agent/build/automation-harness-agent.jar
+          if-no-files-found: error
+
+  javafx-agent:
+    name: JavaFX agent
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build JavaFX agent
+        run: bash javafx_agent/build.sh
+      - name: Upload JavaFX agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: javafx-agent
+          path: javafx_agent/build/automation-harness-javafx-agent.jar
+          if-no-files-found: error

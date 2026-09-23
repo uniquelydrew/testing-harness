@@ -1,0 +1,41 @@
+name: RHEL Desktop Integration
+
+# This suite requires a registered interactive RHEL 8 desktop runner. Keep it
+# manual so ordinary pull requests do not remain queued when that runner is
+# offline.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rhel-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: RHEL 8 desktop integration
+    runs-on:
+      - self-hosted
+      - linux
+      - rhel8
+      - desktop
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight
+        run: bash scripts/ci/desktop-preflight.sh
+
+      - name: Run desktop integration suite
+        run: bash scripts/ci/desktop-integration.sh
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhel-desktop-diagnostics
+          path: artifacts/desktop/
+          if-no-files-found: ignore
+          retention-days: 14

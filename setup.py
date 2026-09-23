@@ -24,7 +24,12 @@ setup(
     ],
     extras_require={
         "vision": ["Pillow==8.4.0"],
-        "test": ["pytest>=4.5,<7.0"],
+        "test": [
+            "Pillow==8.4.0",
+            "PyGObject==3.38.0; platform_system == 'Linux'",
+            "pycairo==1.20.1; platform_system == 'Linux'",
+            "pytest>=4.5,<7.0",
+        ],
     },
     entry_points={
         "console_scripts": [
