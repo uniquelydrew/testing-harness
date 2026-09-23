@@ -20,23 +20,22 @@ def load_plan(path: Path) -> TestPlan:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, Mapping):
         raise TestPlanError("test plan root must be a mapping")
-    raw = _migrate_plan_document(raw)
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip():
         raise TestPlanError("test plan requires a non-empty name")
-    version = raw.get("version", 1)
+    version = raw.get("version")
     if version != 1:
         raise TestPlanError(f"unsupported test plan version {version!r}")
-    variables = raw.get("variables", {})
+    variables = raw.get("variables")
     if not isinstance(variables, Mapping):
         raise TestPlanError("test plan variables must be a mapping")
-    objects = raw.get("objects", {})
-    step_definitions = raw.get("step_definitions", {})
+    objects = raw.get("objects")
+    step_definitions = raw.get("step_definitions")
     if not isinstance(objects, Mapping):
         raise TestPlanError("test plan objects must be a mapping")
     if not isinstance(step_definitions, Mapping):
         raise TestPlanError("test plan step_definitions must be a mapping")
-    steps_raw = raw.get("steps", [])
+    steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list):
         raise TestPlanError("test plan steps must be a list")
     steps: list[StepCall] = []
@@ -81,97 +80,6 @@ def load_plan(path: Path) -> TestPlan:
     )
 
 
-def _migrate_plan_document(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize pre-portable-plan documents without changing their meaning."""
-    version = raw.get("version", 1)
-    if isinstance(version, str) and version.strip() in {"0", "1"}:
-        version = int(version.strip())
-    if version not in (0, 1, None):
-        raise TestPlanError(f"unsupported test plan version {version!r}")
-
-    migrated = dict(raw)
-    if "name" not in migrated:
-        for alias in ("title", "plan_name", "display_name"):
-            if migrated.get(alias):
-                migrated["name"] = migrated[alias]
-                break
-    if "variables" not in migrated:
-        for alias in ("vars", "parameters"):
-            if isinstance(migrated.get(alias), Mapping):
-                migrated["variables"] = migrated[alias]
-                break
-    if "objects" not in migrated:
-        for alias in ("components", "object_repository", "objectRepository"):
-            candidate = migrated.get(alias)
-            if not isinstance(candidate, Mapping):
-                continue
-            nested = candidate.get("components")
-            migrated["objects"] = nested if isinstance(nested, Mapping) else candidate
-            break
-    if "step_definitions" not in migrated:
-        for alias in ("reusable_steps", "registry_steps", "stepDefinitions"):
-            if isinstance(migrated.get(alias), Mapping):
-                migrated["step_definitions"] = migrated[alias]
-                break
-
-    steps = migrated.get("steps")
-    if steps is None:
-        for alias in ("calls", "test_steps", "plan_steps"):
-            if isinstance(migrated.get(alias), list):
-                steps = migrated[alias]
-                break
-    migrated["steps"] = [] if steps is None else steps
-    if not isinstance(migrated["steps"], list):
-        return migrated
-
-    normalized_steps = []
-    for item in migrated["steps"]:
-        if not isinstance(item, Mapping):
-            normalized_steps.append(item)
-            continue
-        value = dict(item)
-        if "id" not in value:
-            for alias in ("node_id", "node", "key"):
-                if value.get(alias):
-                    value["id"] = value[alias]
-                    break
-        if "step" not in value:
-            for alias in ("step_id", "registered_step", "registered_step_id", "command"):
-                if value.get(alias):
-                    value["step"] = value[alias]
-                    break
-        if "inputs" not in value:
-            for alias in ("params", "parameters", "arguments"):
-                if isinstance(value.get(alias), Mapping):
-                    value["inputs"] = value[alias]
-                    break
-        if "outputs" not in value:
-            for alias in ("output_bindings", "bindings"):
-                if isinstance(value.get(alias), Mapping):
-                    value["outputs"] = value[alias]
-                    break
-        if "depends_on" not in value and isinstance(value.get("dependencies"), list):
-            value["depends_on"] = value["dependencies"]
-
-        if "step" not in value and value.get("action") is not None:
-            component_id = value.get("component_id") or value.get("object_id") or value.get("object")
-            action = value.get("action")
-            if component_id:
-                value["step"] = "gui.object.action"
-                value["inputs"] = {
-                    "component_id": component_id,
-                    "action": action if isinstance(action, Mapping) else {"type": action},
-                }
-        if "step" not in value and isinstance(value.get("inputs"), Mapping):
-            action = value["inputs"].get("action")
-            component_id = value["inputs"].get("component_id")
-            if action is not None and component_id is not None:
-                value["step"] = "gui.object.action"
-        normalized_steps.append(value)
-    migrated["steps"] = normalized_steps
-    migrated["version"] = 1
-    return migrated
-
 def save_plan(plan: TestPlan, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
@@ -180,14 +88,13 @@ def save_plan(plan: TestPlan, path: Path) -> None:
 def repository_from_plan(plan: TestPlan) -> ComponentRepository:
     """Materialize the plan's self-contained object repository.
 
-    Embedded plans remain schema-v2 compatible so legacy objects without
-    immutable IDs receive deterministic identities during materialization.
+    Embedded plans use the current repository schema and require immutable IDs.
     """
-    return ComponentRepository.from_document({"version": 2, "components": dict(plan.objects)})
+    return ComponentRepository.from_document({"version": 3, "components": dict(plan.objects)})
 
 
 def embed_plan_repository(plan: TestPlan, repository: ComponentRepository) -> TestPlan:
-    """Snapshot objects referenced by literal name-or-ID references into a plan."""
+    """Snapshot objects referenced by immutable object IDs into a plan."""
     referenced = {
         call.inputs.get("component_id")
         for call in plan.steps

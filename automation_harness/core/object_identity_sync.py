@@ -6,12 +6,10 @@ of that same runtime control to create a duplicate repository entry.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any, Mapping
 
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
-from automation_harness.models.plan import StepCall, TestPlan
 from automation_harness.core.solipsys_identity import locators_match, strategy_parts
 
 
@@ -79,71 +77,6 @@ def rename_repository_component(
     if old_component_id == new_component_id:
         return repository
     return repository.rename(old_component_id, new_component_id)
-
-
-def rename_plan_component(plan: TestPlan, old_component_id: str, new_component_id: str) -> TestPlan:
-    """Rewrite component references while preserving immutable object identity."""
-    if old_component_id == new_component_id:
-        return plan
-
-    steps = tuple(_rename_step(step, old_component_id, new_component_id) for step in plan.steps)
-    objects = dict(plan.objects)
-    if old_component_id in objects:
-        value = objects.pop(old_component_id)
-        if new_component_id in objects and objects[new_component_id] != value:
-            raise ValueError("inline plan object %r already exists" % new_component_id)
-        objects[new_component_id] = value
-
-    step_definitions = _rewrite_component_refs(plan.step_definitions, old_component_id, new_component_id)
-    return replace(plan, steps=steps, objects=objects, step_definitions=step_definitions)
-
-
-def readable_plan_component_references(
-    plan: TestPlan,
-    repository: ComponentRepository,
-) -> TestPlan:
-    """Migrate UUID object references to their readable repository aliases.
-
-    Repository ``object_id`` values remain the durable identity used to detect
-    rename and reparent operations. Test Plans are authored artifacts, however,
-    and their component references must remain comprehensible without looking
-    up UUIDs in the repository.
-    """
-    current = plan
-    for definition in repository.components.values():
-        current = rename_plan_component(
-            current,
-            definition.object_id,
-            definition.component_id,
-        )
-    return current
-
-
-def _rename_step(step: StepCall, old: str, new: str) -> StepCall:
-    return replace(
-        step,
-        inputs=_rewrite_component_refs(step.inputs, old, new),
-        completion=_rewrite_component_refs(step.completion, old, new),
-        scope=_rewrite_component_refs(step.scope, old, new),
-    )
-
-
-def _rewrite_component_refs(value: Any, old: str, new: str, *, field: str | None = None) -> Any:
-    if isinstance(value, Mapping):
-        result = {}
-        for key, item in value.items():
-            key_text = str(key)
-            result[key] = _rewrite_component_refs(item, old, new, field=key_text)
-        return result
-    if isinstance(value, tuple):
-        return tuple(_rewrite_component_refs(item, old, new, field=field) for item in value)
-    if isinstance(value, list):
-        return [_rewrite_component_refs(item, old, new, field=field) for item in value]
-    if isinstance(value, str) and value == old and field in {
-        "component_id", "component", "object", "object_name", "owner_component_id",
-    }:
-        return new
-    return value
 
 
 def _strategy_identity(options: Mapping[str, Any] | None) -> dict[str, Any]:

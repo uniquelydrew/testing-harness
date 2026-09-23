@@ -15,7 +15,8 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
-from automation_harness.core.repository_hierarchy import concrete_parent_ids, repository_migration_report
+from automation_harness.core.repository_hierarchy import concrete_parent_ids
+from automation_harness.authoring.repository_events import publish as publish_repository_change
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy
 
 
@@ -31,7 +32,6 @@ class _RepositoryWorkbenchHost:
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
         self.repository = ComponentRepository.load((self.path,))
-        self.migration_report = repository_migration_report(self.repository)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
         self.window.set_decorated(False)
@@ -115,7 +115,6 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
 
     def _load_context_async(self):
         try:
-            self._repository_host.migration_report = repository_migration_report(self._repository_host.repository)
             context, definitions = _repository_context(self._repository_host.repository)
             self._definition_by_key = definitions
         except Exception as exc:
@@ -137,18 +136,12 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             if selected is not None and selected.is_semantic:
                 self.selected_key = selected.key
                 self._render_properties(selected)
-        report = self._repository_host.migration_report
-        detail = ""
-        if report.synthetic_lineage_segments_ignored or report.visual_objects_needing_recapture:
-            detail = " — %d legacy scope segment(s) ignored; %d visual object(s) need recapture" % (
-                report.synthetic_lineage_segments_ignored,
-                len(report.visual_objects_needing_recapture),
-            )
-        self._set_status("Repository scope loaded — %d object(s) prechecked%s" % (len(self._definition_by_key), detail))
+        self._set_status("Repository scope loaded — %d object(s) prechecked" % len(self._definition_by_key))
         return result
 
     def _configure_repository_toolbar(self):
         self._button(self.toolbar, "Recapture Selected", self.recapture_selected)
+        self._button(self.toolbar, "Delete Selected", self.delete_selected)
         hide = {
             "Check Siblings", "Check Branch", "Clear Checks",
             "Save Selected", "Save Checked",
@@ -158,8 +151,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 widget.set_text("Repository Scope")
             if isinstance(widget, Gtk.Button) and widget.get_label() in hide:
                 widget.hide()
-        # Repository membership is fixed while editing. Checked rows communicate
-        # that every persisted object participates, but are not user toggles.
+        # Repository membership is changed only by the explicit Delete action.
         columns = self.tree.get_columns()
         if columns:
             cells = columns[0].get_cells()
@@ -169,6 +161,42 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         for widget in _walk_widgets(self.window):
             if isinstance(widget, Gtk.Button) and widget.get_label() in hide:
                 widget.hide()
+
+    def delete_selected(self):
+        node = self._selected_node()
+        definition = self._definition_by_key.get(node.key) if node is not None else None
+        if definition is None:
+            return self.app._info("Delete object", "Select a repository object first.")
+        repository, removed = self._repository_host.repository.delete_subtree(definition.object_id)
+        detail = "Delete %s?" % definition.component_id
+        if len(removed) > 1:
+            detail += "\n\nThis also deletes %d owned descendant(s):\n%s" % (
+                len(removed) - 1, "\n".join(removed[1:]),
+            )
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window, modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO, text="Delete repository object",
+        )
+        dialog.format_secondary_text(detail)
+        response = dialog.run(); dialog.destroy()
+        if response != Gtk.ResponseType.YES:
+            return
+        removed_object_ids = tuple(
+            self._repository_host.repository.get(component_id).object_id
+            for component_id in removed
+        )
+        self._repository_host.repository = repository
+        self.app.repository = repository
+        self._repository_host.repository.save(self._repository_host.path)
+        publish_repository_change(
+            self._repository_host.path,
+            deleted_object_ids=removed_object_ids,
+        )
+        self._definition_by_key = {}
+        self.selected_key = None
+        self._set_status("Deleted %d object(s)" % len(removed))
+        self._load_context_async()
 
     def recapture_selected(self):
         node = self._selected_node()
@@ -413,6 +441,10 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
         self._repository_host.repository.save(self._repository_host.path)
+        publish_repository_change(
+            self._repository_host.path,
+            changed_object_ids=tuple(item.object_id for item in self._repository_host.repository.components.values()),
+        )
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))

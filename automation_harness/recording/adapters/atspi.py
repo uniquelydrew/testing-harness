@@ -92,8 +92,8 @@ class _PointerRecordingWorker:
     def accept_action(self, property_name, selected, event_type, timestamp):
         return self._accept(("action", property_name, selected, event_type, timestamp))
 
-    def accept_text(self, after, event_type, timestamp):
-        return self._accept(("text", after, event_type, timestamp))
+    def accept_text(self, after, event_type, timestamp, target):
+        return self._accept(("text", after, event_type, timestamp, target))
 
     def stop_and_drain(self):
         with self._lock:
@@ -148,10 +148,10 @@ class _PointerRecordingWorker:
                 ))
             return
         if kind == "text":
-            _kind, after, event_type, timestamp = item
-            if _is_editable_text_target(self._last_target) and after is not None:
+            _kind, after, event_type, timestamp, target = item
+            if _is_editable_text_target(target) and after is not None:
                 self._publish(TextChanged(
-                    timestamp, "atspi", self._last_target,
+                    timestamp, "atspi", target,
                     {"event_type": event_type}, None, str(after),
                 ))
             return
@@ -627,13 +627,13 @@ class AtspiRecordingAdapter:
         )
 
     def _text(self, event: Any) -> None:
-        # event.source is a thread-bound PyGObject proxy. Never retain or
-        # traverse it here; correlate primitive change data with the last
-        # semantic target on the worker.
+        # Resolve the thread-bound source here. Only the immutable capture
+        # crosses to the worker; a prior pointer target is never reused.
         after = getattr(event, "any_data", None)
         if after is not None:
+            target = self._target(event)
             self._pointer_worker.accept_text(
-                str(after), str(getattr(event, "type", "")), time.monotonic(),
+                str(after), str(getattr(event, "type", "")), time.monotonic(), target,
             )
 
     def _publish(self, observation: Observation) -> None:

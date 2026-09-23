@@ -10,7 +10,7 @@ from automation_harness.core.object_hierarchy import (
     condense_labels,
     hierarchy_contract,
 )
-from automation_harness.core.test_plan import load_plan
+from automation_harness.core.test_plan import TestPlanError, load_plan
 from automation_harness.models.component import (
     CapturedComponent,
     ComponentDefinition,
@@ -106,7 +106,7 @@ def test_click_count_returns_only_the_requested_click():
     assert driver.calls == 3
 
 
-def test_legacy_plan_aliases_are_migrated(tmp_path: Path):
+def test_noncanonical_plan_fields_are_rejected(tmp_path: Path):
     path = tmp_path / "old.ahplan"
     path.write_text(
         """title: Legacy desktop flow
@@ -124,12 +124,8 @@ calls:
 """,
         encoding="utf-8",
     )
-    plan = load_plan(path)
-    assert plan.name == "Legacy desktop flow"
-    assert plan.variables["username"] == "drew"
-    assert plan.steps[0].node_id == "open"
-    assert plan.steps[0].step_id == "gui.object.action"
-    assert plan.steps[0].inputs["component_id"] == "login.submit"
+    with pytest.raises(TestPlanError, match="non-empty name"):
+        load_plan(path)
 
 
 def test_recapture_preserves_object_identity_and_increments_revision():

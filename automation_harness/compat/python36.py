@@ -226,17 +226,5 @@ def run_reference():
     return _run("automation_harness.reference.app", "main")
 
 
-def run_author():
-    return _run("automation_harness.authoring.capture_runtime", "run_author")
-
-
-def run_capture():
-    return _run("automation_harness.authoring.capture_runtime", "run_capture")
-
-
-def run_repository():
-    return _run("automation_harness.authoring.app", "repository_main")
-
-
 def run_javafx():
     return _run("automation_harness.javafx_cli", "main")

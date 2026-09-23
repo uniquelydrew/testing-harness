@@ -136,12 +136,10 @@ def open_tracked(path, *, project_context=None, launching_window=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="automation-author", description="Artifact-aware Automation Harness authoring GUI")
     parser.add_argument("artifact", nargs="?", type=Path, help=".ahproject, .ahplan, .ahregistry, or .ahobjects")
-    parser.add_argument("--project", type=Path, help="legacy alias for opening a Project")
-    parser.add_argument("--repository", type=Path, help="legacy alias for opening an Object Repository")
     parser.add_argument("--smoke-test", action="store_true", help="construct the selected GUI once, then exit")
     args = parser.parse_args(argv)
 
-    selected = args.artifact or args.project or args.repository
+    selected = args.artifact
     try:
         if selected is None:
             window = StartWindow(opener=open_tracked).finish_build()

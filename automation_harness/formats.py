@@ -14,16 +14,13 @@ SCRIPT_STEP_SUFFIX = ".ahstep"
 def with_artifact_suffix(path: Path, suffix: str) -> Path:
     """Append an artifact suffix when a save target has no recognized YAML suffix.
 
-    Existing ``.yaml``/``.yml`` names remain loadable for backwards compatibility;
-    chooser-driven saves replace that generic suffix with the artifact suffix.
+    Artifact files always use their dedicated suffix.
     """
     name = path.name.casefold()
     if name.endswith(suffix.casefold()):
         return path
-    if name.endswith(".yaml"):
-        return path.with_name(path.name[:-5] + suffix)
-    if name.endswith(".yml"):
-        return path.with_name(path.name[:-4] + suffix)
+    if path.suffix.casefold() in {".yaml", ".yml"}:
+        return path.with_suffix(suffix)
     return path.with_name(path.name + suffix)
 
 

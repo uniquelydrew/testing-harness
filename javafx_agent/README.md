@@ -81,7 +81,7 @@ Click a control in MVD or Mosaic. The result should include its JavaFX class,
 Node `id` when present, accessible role/text, screen bounds, state, hierarchy,
 and candidate `javafx` strategy.
 
-`automation-capture` then uses a hybrid capture service. Capture Next Click
+`automation-author` then uses a hybrid capture service. Capture Next Click
 listens for the actual event in both AT-SPI and the JavaFX bridge, giving the
 native JavaFX result a bounded priority. Continuous recording instead uses the
 X11 topmost client PID as its routing boundary: only the bridge owned by that

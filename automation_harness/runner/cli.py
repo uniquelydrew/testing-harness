@@ -21,9 +21,14 @@ from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.runner.validator import validate_bundle
+from automation_harness.runtime_paths import runtime_path
 
 
 _BACKEND_CHOICES = ("reference", "protected", "gtk-demo", "live-desktop")
+
+
+def _default_runs_dir() -> Path:
+    return runtime_path("runs")
 
 
 def _backend(name: str, args: argparse.Namespace, backend_config: dict | None = None):
@@ -131,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_run = plan_sub.add_parser("run", help="execute a declarative TestPlan using installed registered steps only")
     plan_run.add_argument("path", type=Path)
     plan_run.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
-    plan_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    plan_run.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
     _add_reference_options(plan_run)
@@ -144,13 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
     compiled_run = compiled_sub.add_parser("run", help="execute a verified compiled artifact")
     compiled_run.add_argument("path", type=Path)
     compiled_run.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
-    compiled_run.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    compiled_run.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     compiled_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     _add_reference_options(compiled_run)
     _add_gtk_demo_options(compiled_run)
 
     selftest = sub.add_parser("selftest", help="run the built-in synthetic reference regression suites")
-    selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    selftest.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     selftest.add_argument(
         "--reference-display",
         choices=("virtual", "native", "auto"),
@@ -167,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="validate and execute a bundle")
     run.add_argument("bundle", type=Path)
     run.add_argument("--backend", choices=_BACKEND_CHOICES)
-    run.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    run.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     run.add_argument("-v", "--verbose", action="store_true")
     run.add_argument(
         "--var",
@@ -183,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     gtk_demo = sub.add_parser("gtk-demo", help="run the version-pinned GTK 4.14 Demo baseline")
     gtk_demo_sub = gtk_demo.add_subparsers(dest="gtk_demo_command", required=True)
     gtk_selftest = gtk_demo_sub.add_parser("selftest", help="run all built-in GTK Demo bundles")
-    gtk_selftest.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    gtk_selftest.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     gtk_selftest.add_argument("--gtk-demo-executable")
     gtk_selftest.add_argument("--gtk-demo-display", choices=("virtual", "native", "auto"), default="virtual")
     gtk_selftest.add_argument("-v", "--verbose", action="store_true")

@@ -207,10 +207,8 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 action = {"type": action_type}
                 for name, (entry, original) in action_parameter_fields.items():
                     action[name] = _parse_editor_value(entry.get_text(), original)
-                # Immutable identity remains in the repository; authored plans
-                # persist the readable alias.
                 component_reference = (
-                    self.repository.get(component_id).component_id
+                    self.repository.get(component_id).object_id
                     if self.repository.contains(component_id)
                     else component_id
                 )

@@ -6,14 +6,11 @@ from typing import Any
 
 
 def _regex_pattern(value: Any) -> str | None:
-    """Return an opted-in regex pattern, accepting the legacy shorthand."""
+    """Return an explicitly opted-in regex pattern."""
     if not isinstance(value, Mapping):
         return None
     if set(value) == {"match", "value"} and value.get("match") == "regex":
         pattern = value.get("value")
-        return pattern if isinstance(pattern, str) else None
-    if set(value) == {"regex"}:  # Backward compatibility for pre-mode repositories.
-        pattern = value.get("regex")
         return pattern if isinstance(pattern, str) else None
     return None
 

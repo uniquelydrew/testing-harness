@@ -1,10 +1,16 @@
-version: 1
+version: 3
 components:
   gtk_demo.entries.text:
     description: GTK 4.14 Undo and Redo editable text entry.
-    actions: [resolve]
+    actions:
+    - resolve
     strategies:
-      - type: atspi
-        identification:
-          mandatory: {name: Use Control+z or Control+Shift+z to undo or redo changes, role: text}
-          assistive: {application: gtk4-demo, window: Undo and Redo}
+    - type: atspi
+      identification:
+        mandatory:
+          name: Use Control+z or Control+Shift+z to undo or redo changes
+          role: text
+        assistive:
+          application: gtk4-demo
+          window: Undo and Redo
+    object_id: de99da1a-88bc-5675-9317-81303b05ee15

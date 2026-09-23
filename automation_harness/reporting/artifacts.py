@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from automation_harness.utils.evidence import EvidenceRecorder
+from automation_harness.runtime_paths import ensure_external_runtime_path
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class RunArtifacts:
 
     @classmethod
     def create(cls, base: Path, label: str) -> "RunArtifacts":
+        base = ensure_external_runtime_path(base)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in label).strip("-") or "run"
         root = base / f"{stamp}-{safe_label}"

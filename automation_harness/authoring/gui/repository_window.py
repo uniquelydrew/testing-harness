@@ -8,6 +8,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
+from automation_harness.authoring.repository_events import publish as publish_repository_change
 from automation_harness.authoring.plan_repository import merge_objects_or
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
@@ -230,7 +231,12 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self._highlight_windows = []
 
     def save(self):
-        self.repository.save(self.path); self.mark_dirty(False); self.set_status("Saved object repository")
+        self.repository.save(self.path)
+        publish_repository_change(
+            self.path,
+            changed_object_ids=tuple(item.object_id for item in self.repository.components.values()),
+        )
+        self.mark_dirty(False); self.set_status("Saved object repository")
 
     def reload(self):
         if self.dirty and not self.confirm("Reload", "Discard unsaved repository changes?"):

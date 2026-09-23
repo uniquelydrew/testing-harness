@@ -5,6 +5,8 @@ import time
 import pytest
 
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
+from automation_harness.core.runtime_observation import Framework
+from automation_harness.core.technology_router import TargetContext
 from automation_harness.models.component import CapturedComponent, ComponentState, ComponentStrategy
 from automation_harness.models.gui import ObjectType
 
@@ -68,6 +70,13 @@ class _AtspiSuccess:
     def capture_next_click(self, *, timeout):
         return _capture("atspi")
 
+    def capture_at_point_snapshot(self, x, y):
+        captured = _capture("atspi")
+        return CapturedComponent(**{
+            **captured.__dict__,
+            "backend_properties": {"process_id": 77},
+        })
+
 
 class _JavaFxSuccess:
     available = True
@@ -77,7 +86,18 @@ class _JavaFxSuccess:
 
     def capture_next_click(self, *, timeout):
         time.sleep(0.02)
-        return _capture("javafx")
+        captured = _capture("javafx")
+        return CapturedComponent(**{
+            **captured.__dict__,
+            "backend_properties": {
+                **dict(captured.backend_properties),
+                "bridge_pid": 12001,
+            },
+        })
+
+    def capture_at_point(self, x, y, *, process_id=None):
+        assert process_id == 12001
+        return self.capture_next_click(timeout=1.0)
 
     def assess_identification(self, identification, *, process_id=None):
         return (_Stage("mandatory", dict(identification["mandatory"]), 1),)
@@ -85,6 +105,24 @@ class _JavaFxSuccess:
 
 class _UnavailableJavaAgent:
     available = False
+
+
+class _JavaAgentSuccess:
+    available = True
+
+    def __init__(self):
+        self.calls = 0
+
+    def capture_next_click(self, *, timeout):
+        self.calls += 1
+        captured = _capture("atspi")
+        return CapturedComponent(**{
+            **captured.__dict__,
+            "framework": "swing",
+            "native_class": "javax.swing.JButton",
+            "backend_properties": {"process_id": 77},
+            "window": "Reference",
+        })
 
 
 def _solipsys_capture(*, visible_matches=1):
@@ -176,26 +214,93 @@ class _JavaFxFailure:
         time.sleep(0.05)
         raise TimeoutError("no JavaFX click")
 
+    def capture_at_point(self, x, y, *, process_id=None):
+        raise TimeoutError("no JavaFX target")
 
-def test_javafx_capture_survives_earlier_empty_atspi_frame_failure():
-    service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
+
+class _PointerMonitor:
+    def __init__(self, owner_pid):
+        self.owner_pid = owner_pid
+
+    def start(self, callback):
+        callback("mouse:button:1p", (25, 35), time.monotonic(), self.owner_pid)
+
+    def stop(self):
+        pass
+
+
+def _monitor(owner_pid):
+    return lambda: _PointerMonitor(owner_pid)
+
+
+def test_javafx_capture_is_selected_by_topmost_process():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+        java_agent_driver=_UnavailableJavaAgent(), pointer_monitor_factory=_monitor(12001),
+    )
     captured = service.capture_next_click(timeout=1.0)
     assert captured.framework == "javafx"
     assert captured.accessible_id == "cameraSelectorButton"
 
 
-def test_native_atspi_capture_can_win_hybrid_race():
-    service = HybridObjectCaptureService(driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure())
+def test_native_atspi_capture_requires_matching_topmost_process():
+    service = HybridObjectCaptureService(
+        driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(), pointer_monitor_factory=_monitor(77),
+    )
     captured = service.capture_next_click(timeout=1.0)
     assert captured.framework is None
     assert captured.accessible_id == "follow"
 
 
-def test_instrumented_javafx_wins_bounded_arbitration_after_atspi_success():
-    service = HybridObjectCaptureService(driver=_AtspiSuccess(), javafx_driver=_JavaFxSuccess())
-    captured = service.capture_next_click(timeout=1.0)
-    assert captured.framework == "javafx"
-    assert captured.accessible_id == "cameraSelectorButton"
+def test_javafx_failure_does_not_fall_back_to_atspi_or_awt_canvas():
+    service = HybridObjectCaptureService(
+        driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_JavaAgentSuccess(), pointer_monitor_factory=_monitor(12001),
+    )
+    with pytest.raises(TimeoutError, match="no JavaFX target"):
+        service.capture_next_click(timeout=1.0)
+
+
+def test_targeted_capture_calls_only_the_authoritative_adapter():
+    java = _JavaAgentSuccess()
+    atspi = _AtspiSuccess()
+    javafx = _JavaFxSuccess()
+    service = HybridObjectCaptureService(
+        driver=atspi, javafx_driver=javafx, java_agent_driver=java,
+    )
+
+    result = service.observe_next_click(TargetContext(
+        process_id=12001,
+        window_id="ERSA Main Video Display",
+        framework_hint=Framework.JAVAFX,
+        java_agent_pids=frozenset({77}),
+        javafx_pids=frozenset({12001}),
+    ), timeout=1.0)
+
+    assert result.observation.framework is Framework.JAVAFX
+    assert java.calls == 0
+
+
+def test_routed_observation_materializes_through_canonical_factory():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    routed = service.observe_next_click(TargetContext(
+        process_id=12001,
+        window_id="ERSA Main Video Display",
+        framework_hint=Framework.JAVAFX,
+        javafx_pids=frozenset({12001}),
+    ), timeout=1.0)
+
+    proposal = service.definition_from_observation(
+        routed.observation, display_name="Camera Selector",
+    )
+
+    assert proposal.definition.object_type is ObjectType.BUTTON
+    assert proposal.definition.framework == "javafx"
+    assert proposal.definition.scope["process_id"] == 12001
 
 
 def test_javafx_definition_preserves_native_identity_and_framework():

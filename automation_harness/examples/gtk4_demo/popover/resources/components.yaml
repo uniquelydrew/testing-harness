@@ -1,10 +1,17 @@
-version: 1
+version: 3
 components:
   gtk_demo.popover.menu:
     description: GTK 4.14 modal-trigger baseline for transient-window handling.
-    actions: [resolve, activate]
+    actions:
+    - resolve
+    - activate
     strategies:
-      - type: atspi
-        identification:
-          mandatory: {name: Message Dialog, role: push button}
-          assistive: {application: gtk4-demo, window: Dialogs}
+    - type: atspi
+      identification:
+        mandatory:
+          name: Message Dialog
+          role: push button
+        assistive:
+          application: gtk4-demo
+          window: Dialogs
+    object_id: 6cc57df4-c850-5beb-bdbd-183c4c5f8d90

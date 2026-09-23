@@ -14,9 +14,12 @@ from automation_harness.authoring.preferences_runtime import AuthoringPreference
 from automation_harness.authoring.plan_repository import (
     assigned_repository_path,
     ensure_default_repository,
+    load_repository_set,
     materialize_captured_target,
+    persist_recorded_menu_owner,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
+from automation_harness.authoring.repository_events import publish as publish_repository_change
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.test_plan import repository_from_plan
 from automation_harness.drivers.java_agent import configured_java_recording_transports
@@ -163,16 +166,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             debug_log = RecordingDebugLog(
                 preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
             )
-        recording_repository = self.repository
-        existing_path = assigned_repository_path(self.plan, self.path)
-        if existing_path is not None and existing_path.exists():
-            recording_repository = recording_repository.overlay(
-                ComponentRepository.load((existing_path,))
-            )
-        if self.registry_resources:
-            recording_repository = recording_repository.overlay(self.registry_resources.repository)
         session = RecordingSession(
-            adapters, repository=recording_repository,
+            adapters, repository=self.repository,
             diagnostics=bool(debug_log), debug_log=debug_log,
         )
         try:
@@ -273,6 +268,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         resolved = []; unresolved = []; captured_count = 0
         assigned_path = assigned_repository_path(self.plan, self.path)
         assigned_repository = ComponentRepository.load((assigned_path,)) if assigned_path and assigned_path.exists() else None
+        effective_recording_repository = getattr(diagnostic_session, "repository", self.repository)
 
         for interaction in interactions or ():
             if diagnostic_session is not None:
@@ -309,20 +305,24 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     )
                 unresolved.append(interaction); continue
 
-            if reviewed.repository_match.component_id is not None and assigned_repository is not None:
+            if reviewed.repository_match.status == "known_subobject":
                 try:
-                    readable_reference = assigned_repository.get(
-                        reviewed.repository_match.component_id
-                    ).component_id
-                    reviewed = replace(
-                        reviewed,
-                        repository_match=RepositoryMatch("known_unique", (readable_reference,)),
+                    if assigned_repository is None:
+                        self.plan, assigned_path = ensure_default_repository(self.plan, self.path)
+                        assigned_repository = ComponentRepository.load((assigned_path,))
+                        self.assigned_repository_path = assigned_path
+                    assigned_repository = persist_recorded_menu_owner(
+                        assigned_repository,
+                        effective_recording_repository,
+                        reviewed.repository_match.component_id,
                     )
                 except Exception as exc:
                     if diagnostic_session is not None:
                         diagnostic_session.diagnostic_exception(
-                            "review_object_id_conversion_failed", exc, interaction=reviewed,
+                            "menu_route_persistence_failed", exc, interaction=reviewed,
                         )
+                    unresolved.append(interaction)
+                    continue
 
             try:
                 call = interactions_to_steps((reviewed,), start_index=len(self.plan.steps) + len(resolved) + 1)[0]
@@ -338,7 +338,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
 
         if assigned_repository is not None and assigned_path is not None:
             assigned_repository.save(assigned_path)
-            self.repository = repository_from_plan(self.plan).overlay(assigned_repository)
+            publish_repository_change(
+                assigned_path,
+                changed_object_ids=tuple(item.object_id for item in assigned_repository.components.values()),
+            )
+            self.repository = repository_from_plan(self.plan).overlay(
+                load_repository_set(self.plan, self.path).compose()
+            )
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
 

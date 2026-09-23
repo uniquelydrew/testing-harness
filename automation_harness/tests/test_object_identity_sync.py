@@ -1,8 +1,6 @@
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.object_identity_sync import (
     find_existing_component_ids,
-    readable_plan_component_references,
-    rename_plan_component,
     rename_repository_component,
 )
 from automation_harness.models.component import (
@@ -12,7 +10,6 @@ from automation_harness.models.component import (
     ComponentStrategy,
 )
 from automation_harness.models.gui import ObjectType
-from automation_harness.models.plan import StepCall, TestPlan
 
 
 def _javafx_capture(component_id="cameraSelectorMenuItem"):
@@ -131,62 +128,6 @@ def test_repository_rename_preserves_immutable_object_id_and_removes_old_name():
     assert "Generated.Name" not in renamed.components
     assert renamed.get("Save").object_id == definition.object_id
     assert renamed.get(definition.object_id).component_id == "Save"
-
-
-def test_plan_component_rename_updates_steps_inline_objects_and_definitions():
-    plan = TestPlan(
-        name="rename",
-        steps=(StepCall(
-            node_id="step-1",
-            step_id="gui.object.action",
-            inputs={"component_id": "Generated.Name", "action": {"type": "click"}},
-            scope={"owner_component_id": "Generated.Name"},
-        ),),
-        objects={"Generated.Name": {"object_id": "object-1"}},
-        step_definitions={
-            "custom.step": {
-                "inputs": {"component_id": "Generated.Name"},
-                "description": "Generated.Name is text here and should not be rewritten",
-            }
-        },
-    )
-
-    renamed = rename_plan_component(plan, "Generated.Name", "Save")
-
-    assert renamed.steps[0].inputs["component_id"] == "Save"
-    assert renamed.steps[0].scope["owner_component_id"] == "Save"
-    assert "Generated.Name" not in renamed.objects
-    assert renamed.objects["Save"]["object_id"] == "object-1"
-    assert renamed.step_definitions["custom.step"]["inputs"]["component_id"] == "Save"
-    assert renamed.step_definitions["custom.step"]["description"] == (
-        "Generated.Name is text here and should not be rewritten"
-    )
-
-
-def test_plan_uuid_references_are_migrated_to_readable_component_names():
-    definition = ComponentDefinition(
-        component_id="File Menu",
-        object_id="33333333-3333-3333-3333-333333333333",
-        strategies=(ComponentStrategy("javafx", {
-            "identification": {"mandatory": {"id": "fileMenu"}}
-        }),),
-    )
-    repository = ComponentRepository({definition.component_id: definition})
-    plan = TestPlan(
-        name="readable",
-        steps=(StepCall(
-            node_id="step-1",
-            step_id="gui.object.action",
-            inputs={"component_id": definition.object_id, "action": {"type": "click"}},
-            completion={"object": definition.object_id, "state": "visible", "equals": True},
-        ),),
-    )
-
-    migrated = readable_plan_component_references(plan, repository)
-
-    assert migrated.steps[0].inputs["component_id"] == "File Menu"
-    assert migrated.steps[0].completion["object"] == "File Menu"
-    assert repository.get("File Menu").object_id == definition.object_id
 
 
 def test_solipsys_track_identity_matches_across_runtime_ref_and_position_changes():

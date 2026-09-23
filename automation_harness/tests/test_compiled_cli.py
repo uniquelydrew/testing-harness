@@ -8,7 +8,7 @@ from automation_harness.runner.cli import main
 def test_cli_compiles_inspects_and_runs_embedded_artifact(tmp_path, capsys):
     plan = tmp_path / "plan.yaml"
     plan.write_text(
-        """name: cli-compiled\nsteps:\n  - id: check\n    step: validation.equal\n    inputs: {name: cli, actual: 1, expected: 1}\n""",
+        """version: 1\nname: cli-compiled\nvariables: {}\nobjects: {}\nstep_definitions: {}\nsteps:\n  - id: check\n    step: validation.equal\n    inputs: {name: cli, actual: 1, expected: 1}\n""",
         encoding="utf-8",
     )
     artifact = tmp_path / "compiled.json"

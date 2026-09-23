@@ -32,13 +32,11 @@ class AuthoringProject:
         if not isinstance(raw, Mapping):
             raise ProjectError("project root must be a mapping")
         root = path.parent
-        version = raw.get("version", 1)
+        version = raw.get("version")
         name = raw.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ProjectError("project requires a non-empty name")
 
-        if version == 1:
-            return cls._load_v1(root, name.strip(), raw)
         if version != 2:
             raise ProjectError("unsupported project version %r" % version)
 
@@ -51,23 +49,6 @@ class AuthoringProject:
         )
         project.validate_members()
         return project
-
-    @classmethod
-    def _load_v1(cls, root: Path, name: str, raw: Mapping[str, Any]) -> "AuthoringProject":
-        obsolete = [key for key in ("target", "environment_script") if key in raw]
-        if obsolete:
-            raise ProjectError(
-                "obsolete project field(s): %s; application/environment setup belongs in plan steps"
-                % ", ".join(obsolete)
-            )
-        repositories: tuple[Path, ...] = ()
-        repository_value = raw.get("repository")
-        if repository_value is not None:
-            repository = (root / str(repository_value)).resolve()
-            repositories = (repository,)
-        # v1 runs_dir and script_steps were authoring/runtime configuration, not
-        # artifact membership. They are intentionally not persisted in v2.
-        return cls(name=name, root=root, object_repositories=repositories)
 
     def validate_members(self) -> None:
         groups = (
@@ -113,27 +94,6 @@ class AuthoringProject:
 
     def without_object_repository(self, path: Path) -> "AuthoringProject":
         return replace(self, object_repositories=_remove_member(self.object_repositories, path))
-
-    # Transitional compatibility for the existing authoring window. These
-    # accessors are intentionally absent from serialization and should disappear
-    # once AuthoringApp consumes explicit active artifact state.
-    @property
-    def repository(self) -> Path:
-        if self.object_repositories:
-            return self.object_repositories[0]
-        return self.root / ("objects" + REPOSITORY_SUFFIX)
-
-    @property
-    def runs_dir(self) -> Path:
-        return self.root / "runs"
-
-    @property
-    def script_steps(self) -> tuple[Path, ...]:
-        return ()
-
-    def load_step_implementations(self) -> None:
-        return None
-
 
 def create_authoring_project(path: Path, name: str) -> AuthoringProject:
     path = with_artifact_suffix(path.resolve(), PROJECT_SUFFIX)
