@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "types": {
+    "window": {"display_name": "Window", "container": true, "actions": ["focus", "activate"], "allowed_children": ["*"]},
+    "dialog": {"display_name": "Dialog", "container": true, "actions": ["focus", "activate"], "allowed_children": ["*"]},
+    "panel": {"display_name": "Panel", "container": true, "fallback": true, "actions": ["click", "focus"]},
+    "tab_container": {"display_name": "Tabs", "container": true, "actions": ["focus", "select_item"], "allowed_children": ["tab"]},
+    "tab": {"display_name": "Tab", "container": true, "actions": ["click", "activate", "focus"]},
+    "split_container": {"display_name": "Split Container", "container": true, "actions": ["focus"]},
+    "scroll_container": {"display_name": "Scroll Container", "container": true, "actions": ["focus"]},
+    "toolbar": {"display_name": "Toolbar", "container": true, "actions": ["focus"]},
+
+    "label": {"display_name": "Label", "container": false, "passive": true, "actions": []},
+    "button": {"display_name": "Button", "container": false, "actions": ["click", "activate", "focus"]},
+    "toggle_button": {"display_name": "Toggle Button", "container": false, "actions": ["click", "focus"]},
+    "check_box": {"display_name": "Check Box", "container": false, "actions": ["click", "focus"]},
+    "radio_button": {"display_name": "Radio Button", "container": false, "actions": ["click", "focus"]},
+    "hyperlink": {"display_name": "Hyperlink", "container": false, "actions": ["click", "activate", "focus"]},
+
+    "text_field": {"display_name": "Text Field", "container": false, "actions": ["click", "focus", "set_text", "clear_text", "append_text"]},
+    "password_field": {"display_name": "Password Field", "container": false, "actions": ["click", "focus", "set_text", "clear_text", "append_text"]},
+    "text_area": {"display_name": "Text Area", "container": false, "actions": ["click", "focus", "set_text", "clear_text", "append_text"]},
+    "combo_box": {"display_name": "Combo Box", "container": false, "actions": ["click", "focus", "select_item"]},
+    "list": {"display_name": "List", "container": true, "actions": ["click", "focus", "select_item"]},
+    "tree": {"display_name": "Tree", "container": true, "actions": ["click", "focus", "select_item"]},
+    "table": {"display_name": "Table", "container": true, "actions": ["click", "focus", "select_row", "select_cell"]},
+    "tree_table": {"display_name": "Tree Table", "container": true, "actions": ["click", "focus", "select_row", "select_cell"]},
+
+    "menu_bar": {"display_name": "Menu Bar", "container": true, "actions": ["select_menu_item"], "metadata": ["menu_inventory"]},
+    "menu": {"display_name": "Menu", "container": true, "actions": ["click", "select_menu_item"], "metadata": ["menu_inventory"]},
+    "menu_item": {"display_name": "Menu Item", "container": false, "actions": ["click", "activate"]},
+    "check_menu_item": {"display_name": "Check Menu Item", "container": false, "actions": ["click", "activate"]},
+    "radio_menu_item": {"display_name": "Radio Menu Item", "container": false, "actions": ["click", "activate"]},
+    "context_menu": {"display_name": "Context Menu", "container": true, "actions": ["select_menu_item"], "metadata": ["menu_inventory", "invoking_object"]},
+
+    "slider": {"display_name": "Slider", "container": false, "actions": ["focus", "set_value"]},
+    "spinner": {"display_name": "Spinner", "container": false, "actions": ["focus", "set_value"]},
+    "progress_indicator": {"display_name": "Progress Indicator", "container": false, "passive": true, "actions": []},
+    "date_picker": {"display_name": "Date Picker", "container": false, "actions": ["click", "focus", "select_item"]},
+    "color_picker": {"display_name": "Color Picker", "container": false, "actions": ["click", "focus", "select_item"]},
+    "image": {"display_name": "Image", "container": false, "passive": true, "actions": []},
+    "graphic": {"display_name": "Graphic", "container": false, "passive": true, "actions": []},
+    "canvas": {"display_name": "Canvas", "container": false, "actions": ["click", "focus"]},
+    "custom": {"display_name": "Object", "container": false, "fallback": true, "actions": ["click", "focus"]}
+  }
+}

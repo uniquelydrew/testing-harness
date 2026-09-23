@@ -9,21 +9,23 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
+from automation_harness.authoring.gui.action_widgets import (
+    create_action_input_widget,
+    interaction_actions,
+    read_action_input,
+)
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
 from automation_harness.authoring.plan_repository import (
-    assign_repositories,
+    assign_repository,
     assigned_repository_path,
-    load_repository_set,
+    load_authoring_repository,
     merge_repository_or,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.logical_menu import resolve_authored_menu_route
-from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
 from automation_harness.formats import REPOSITORY_SUFFIX
-from automation_harness.authoring.repository_events import subscribe, unsubscribe
 
 
 class TestPlanAuthoringWindow(TestPlanWindow):
@@ -31,40 +33,17 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._repository_subscription = subscribe(self._repository_changed)
-        self.window.connect("destroy", lambda *_args: unsubscribe(self._repository_subscription))
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
         if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
-            assigned = load_repository_set(self.plan, self.path).compose()
+            assigned, _path = load_authoring_repository(self.plan, self.path)
             self.repository = repository_from_plan(self.plan).overlay(assigned)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
 
-    def _repository_changed(self, event):
-        path = event.path
-        assigned = assigned_repository_path(self.plan, self.path)
-        if assigned is None or assigned.resolve() != path:
-            return
-        try:
-            composed = load_repository_set(self.plan, self.path).compose()
-            self.repository = repository_from_plan(self.plan).overlay(composed)
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
-            self.refresh_all()
-            dangling = _deleted_object_references(self.plan, event.deleted_object_ids)
-            if dangling:
-                self.set_status(
-                    "Object Repository refreshed; %d plan call(s) reference deleted object UUID(s)"
-                    % len(dangling)
-                )
-            else:
-                self.set_status("Object Repository refreshed: %s" % path.name)
-        except Exception as exc:
-            self.error("Refresh Object Repository", "%s: %s" % (type(exc).__name__, exc))
-
     def show_objects_menu(self):
+        self.refresh_objects()
         menu = Gtk.Menu()
 
         def add_item(label, callback, sensitive=True):
@@ -94,10 +73,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             if not selected.is_file():
                 raise ValueError("object repository does not exist")
             assigned = ComponentRepository.load((selected,))
-            self.plan = assign_repositories(self.plan, self.path, (
-                RepositoryAssociation(selected, RepositoryScope.LOCAL),
-            ))
+            self.plan = assign_repository(self.plan, self.path, selected)
             self.assigned_repository_path = selected
+            self._assigned_repository_token = None
             self.repository = repository_from_plan(self.plan).overlay(assigned)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -151,10 +129,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             # Assignment happens only after a successful merge/save. From this
             # point onward recording's assigned_repository_path lookup resolves
             # to the central file, making it the destination for new captures.
-            self.plan = assign_repositories(self.plan, self.path, (
-                RepositoryAssociation(selected, RepositoryScope.LOCAL),
-            ))
+            self.plan = assign_repository(self.plan, self.path, selected)
             self.assigned_repository_path = selected
+            self._assigned_repository_token = None
             self.repository = repository_from_plan(self.plan).overlay(central)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -200,6 +177,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.set_status("Saved portable test plan")
 
     def add_object_action(self, component_id=None, action_id=None):
+        self.refresh_objects()
         if not self.repository.components:
             return self.info(
                 "Object Action",
@@ -228,7 +206,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             component_id = object_combo.get_active_id()
             if not component_id:
                 return
-            definitions = actions_for(self.repository.get(component_id))
+            definitions = interaction_actions(self.repository.get(component_id))
             for definition in definitions:
                 action_combo.append(definition.action_id, "%s — %s" % (definition.name, definition.category))
             if definitions:
@@ -245,16 +223,17 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             action_id = action_combo.get_active_id()
             if not component_id or not action_id:
                 return
-            definition = next(item for item in actions_for(self.repository.get(component_id)) if item.action_id == action_id)
+            component = self.repository.get(component_id)
+            definition = next(
+                item for item in interaction_actions(component)
+                if item.action_id == action_id
+            )
             for item in definition.inputs:
                 row = Gtk.Box(spacing=6)
                 label = Gtk.Label(label=item.name + (" *" if item.required else ""))
                 label.set_size_request(170, -1)
                 label.set_xalign(0)
-                entry = Gtk.Entry()
-                entry.set_placeholder_text(item.description or item.value_type)
-                if item.default is not None:
-                    entry.set_text(json.dumps(item.default, default=str))
+                entry = create_action_input_widget(item, component)
                 row.pack_start(label, False, False, 0)
                 row.pack_start(entry, True, True, 0)
                 inputs_box.pack_start(row, False, False, 0)
@@ -284,29 +263,19 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         action_id = action_combo.get_active_id()
         group = group_entry.get_text().strip() or "Step"
         try:
-            definition = next(item for item in actions_for(self.repository.get(component_id)) if item.action_id == action_id)
+            definition = next(
+                item for item in interaction_actions(self.repository.get(component_id))
+                if item.action_id == action_id
+            )
             values = {}
             for name, (item, entry) in input_entries.items():
-                raw = entry.get_text().strip()
-                if not raw:
+                present, value = read_action_input(item, entry)
+                if not present:
                     if item.required:
                         raise ValueError("missing required input %s" % name)
-                    if item.default is not None:
-                        values[name] = item.default
                     continue
-                try:
-                    values[name] = json.loads(raw)
-                except ValueError:
-                    values[name] = raw
-            object_definition = self.repository.get(component_id)
-            if definition.action_id == "select_menu_item":
-                values["path"] = list(resolve_authored_menu_route(object_definition, values.get("path", "")))
-            call = replace(
-                definition.to_step_call(
-                    _next_node_id(self.plan.steps), object_definition.object_id, values,
-                ),
-                group=group,
-            )
+                values[name] = value
+            call = replace(definition.to_step_call(_next_node_id(self.plan.steps), component_id, values), group=group)
             self.plan = replace(self.plan, steps=(*self.plan.steps, call))
         except Exception as exc:
             dialog.destroy()
@@ -315,14 +284,3 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.mark_dirty()
         self.refresh_all()
         self.set_status("Added %s on %s" % (definition.name, component_id))
-
-
-def _deleted_object_references(plan, deleted_object_ids):
-    """Return plan nodes that still point at a deleted repository UUID."""
-    deleted = set(deleted_object_ids)
-    if not deleted:
-        return ()
-    return tuple(
-        call.node_id for call in plan.steps
-        if dict(call.inputs).get("component_id") in deleted
-    )

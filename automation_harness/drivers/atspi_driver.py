@@ -14,6 +14,7 @@ from automation_harness.models.component import (
     ComponentState,
     ResolvedComponent,
 )
+from automation_harness.models.gui import ObjectType, classify_accessibility
 
 
 class AtspiUnavailable(RuntimeError):
@@ -925,6 +926,7 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
     process_id = _process_id(node, attributes)
     if process_id is not None:
         attributes["process_id"] = process_id
+    attributes["semantic_ancestors"] = _semantic_ancestor_descriptors(node)
     bounds = _bounds(node, pyatspi)
     actions = _actions(node)
     hierarchy = _hierarchy(node)
@@ -952,6 +954,55 @@ def _capture_accessible(node: Any, pyatspi: Any) -> CapturedComponent:
         native_class=attributes.get("class") or attributes.get("class-name"),
         logical_subobjects=logical_subobjects,
     )
+
+
+def _semantic_ancestor_descriptors(node: Any) -> list[dict[str, Any]]:
+    ancestry = []
+    current = _parent(node)
+    for _depth in range(64):
+        if current is None:
+            break
+        ancestry.append(current)
+        current = _parent(current)
+    ancestry.reverse()
+
+    result = []
+    for ancestor in ancestry:
+        role = _role_name(ancestor)
+        attributes = _attributes(ancestor)
+        native_class = attributes.get("class") or attributes.get("class-name")
+        object_type = classify_accessibility(role, native_class)
+        name = getattr(ancestor, "name", None)
+        accessible_id = _accessible_id(ancestor, attributes=attributes)
+        if object_type not in {
+            ObjectType.WINDOW,
+            ObjectType.DIALOG,
+            ObjectType.TAB_CONTAINER,
+            ObjectType.TAB,
+            ObjectType.TOOLBAR,
+            ObjectType.MENU_BAR,
+            ObjectType.MENU,
+            ObjectType.CONTEXT_MENU,
+            ObjectType.PANEL,
+        }:
+            continue
+        if object_type == ObjectType.PANEL and not (accessible_id or name):
+            continue
+        descriptor = {
+            "framework": "atspi",
+            "object_type": object_type.value,
+            "role": role,
+            "name": str(name) if name not in (None, "") else None,
+            "accessible_id": accessible_id,
+            "native_class": native_class,
+            "application": _application_name(ancestor),
+            "window": _window_name(ancestor),
+        }
+        result.append({
+            key: value for key, value in descriptor.items()
+            if value not in (None, "")
+        })
+    return result
 
 
 def _process_id(node: Any, attributes: Mapping[str, Any] | None = None) -> int | None:
@@ -1010,7 +1061,13 @@ def _menu_subobjects(node: Any) -> dict[str, dict[str, Any]]:
             criteria["accessible_id"] = accessible_id
         elif name:
             criteria["name"] = str(name)
-        selector: dict[str, Any] = {"kind": normalized.replace(" ", "_"), "criteria": criteria, "ordinal": index - 1}
+        selector: dict[str, Any] = {
+            "kind": normalized.replace(" ", "_"),
+            "display_name": str(name or accessible_id or normalized).strip().replace("_", " ").title(),
+            "criteria": criteria,
+            "ordinal": index - 1,
+            "selectable": normalized != "separator",
+        }
         children = _menu_subobjects(child)
         if children:
             selector["subobjects"] = children

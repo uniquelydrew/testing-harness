@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.core.object_hierarchy import hierarchy_contract
+from automation_harness.core.menu_inventory import with_inventory_metadata
 from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts, visible_identity_status
 from automation_harness.core.capture_boundaries import annotate_capture_boundary, classify_capture_boundary
 from automation_harness.core.routed_capture import RoutedCaptureResult, RoutedCaptureService
@@ -190,6 +191,12 @@ class HybridObjectCaptureService(ObjectCaptureService):
         validate_live: bool = True,
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
+        native_class = str(captured.native_class or "").casefold()
+        if "menubuttonskin" in native_class or "menuitemcontainer" in native_class:
+            raise ValueError(
+                "JavaFX menu skin captures are transient; capture the logical "
+                "MenuButton/Menu owner instead"
+            )
         if authored.type not in {"javafx", "java_agent"}:
             return super().definition_from_capture(
                 component_id,
@@ -220,15 +227,50 @@ class HybridObjectCaptureService(ObjectCaptureService):
                         "%s rendered objects match" % matches
                     )
             actions = {"resolve"}
-            if {str(value).casefold() for value in captured.actions} & {"click", "press", "activate"}:
+            action_names = {str(value).casefold() for value in captured.actions}
+            if action_names & {"click", "press", "activate"}:
                 actions.add("activate")
+            if "focus" in action_names:
+                actions.add("focus")
+            if "set_text" in action_names:
+                actions.update({"set_text", "clear_text", "append_text"})
+            for action_name in (
+                "select_item",
+                "select_row",
+                "select_cell",
+                "set_value",
+            ):
+                if action_name in action_names:
+                    actions.add(action_name)
+            if (
+                "select_menu_item" in action_names
+                or (
+                    captured.semantic_type() in {
+                        ObjectType.MENU_BAR,
+                        ObjectType.MENU,
+                        ObjectType.CONTEXT_MENU,
+                    }
+                )
+            ):
+                actions.add(ActionType.SELECT_MENU_ITEM.value)
             return ComponentDefinition(
                 component_id=component_id,
                 description=description or captured.description or captured.name or "Captured native Java object",
                 strategies=(ComponentStrategy("java_agent", {"identification": dict(raw_identity)}),),
                 actions=frozenset(actions), revision=revision,
-                object_type=captured.semantic_type(), properties=dict(captured.backend_properties),
+                object_type=captured.semantic_type(),
+                properties=with_inventory_metadata(
+                    captured.backend_properties,
+                    captured.semantic_type(),
+                    captured.logical_subobjects,
+                    complete=True,
+                    source="native_java_model",
+                ),
                 framework=captured.framework, native_class=captured.native_class,
+                subobjects={
+                    str(key): dict(value)
+                    for key, value in captured.logical_subobjects.items()
+                },
                 scope=hierarchy_contract(captured),
             )
         if criteria is not None and identification is not None:
@@ -267,7 +309,7 @@ class HybridObjectCaptureService(ObjectCaptureService):
             actions.add("activate")
         if "set_text" in action_names:
             actions.update({"set_text", "clear_text", "append_text"})
-        if captured.logical_subobjects and captured.semantic_type() in {
+        if captured.semantic_type() in {
             ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
         }:
             actions.add(ActionType.SELECT_MENU_ITEM.value)
@@ -285,7 +327,13 @@ class HybridObjectCaptureService(ObjectCaptureService):
             expected_states=expected,
             revision=revision,
             object_type=captured.semantic_type(),
-            properties=dict(captured.backend_properties),
+            properties=with_inventory_metadata(
+                captured.backend_properties,
+                captured.semantic_type(),
+                captured.logical_subobjects,
+                complete=True,
+                source="javafx_model",
+            ),
             framework="javafx",
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,

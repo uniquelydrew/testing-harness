@@ -94,6 +94,75 @@ class ComponentRepository:
         return cls(merged)
 
     @classmethod
+    def load_recoverable(
+        cls, paths: Iterable[Path],
+    ) -> tuple["ComponentRepository", tuple[tuple[str, str], ...]]:
+        """Load valid entries while reporting entries that block recovery.
+
+        This is intentionally separate from :meth:`load`: normal execution
+        remains strict, while the Workbench can still open a repository whose
+        previous capture wrote one malformed object and offer an explicit,
+        recoverable repair action.
+        """
+        merged: dict[str, ComponentDefinition] = {}
+        issues: list[tuple[str, str]] = []
+        for path in paths:
+            path = Path(path)
+            if not path.is_file():
+                continue
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError as exc:
+                raise ComponentRepositoryError(f"invalid YAML in {path}: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise ComponentRepositoryError(f"{path}: root must be a mapping")
+            version = raw.get("version", 1)
+            entries = raw.get("components", {})
+            if version not in {1, 2, 3} or not isinstance(entries, dict):
+                raise ComponentRepositoryError(
+                    f"{path}: repository schema cannot be recovered"
+                )
+            for name, value in entries.items():
+                name = str(name)
+                try:
+                    parsed = cls.from_document(
+                        {"version": version, "components": {name: value}},
+                        source=str(path),
+                    )
+                    definition = parsed.get(name)
+                except Exception as exc:
+                    issues.append((name, str(exc)))
+                    continue
+                existing = merged.get(name)
+                if existing is not None and existing.object_id != definition.object_id:
+                    definition = replace(definition, object_id=existing.object_id)
+                merged[name] = definition
+
+        # Per-entry parsing cannot see cross-entry ownership failures. Remove
+        # only the smallest set of entries needed to construct a valid
+        # repository and report each one for the explicit repair action.
+        while True:
+            try:
+                return cls(merged).with_inferred_ownership(), tuple(issues)
+            except ComponentRepositoryError as exc:
+                removable = None
+                for name in tuple(merged):
+                    candidate = dict(merged)
+                    candidate.pop(name)
+                    try:
+                        cls(candidate).with_inferred_ownership()
+                    except ComponentRepositoryError:
+                        continue
+                    removable = name
+                    break
+                if removable is None:
+                    raise ComponentRepositoryError(
+                        "repository recovery could not isolate invalid entries: %s" % exc
+                    ) from exc
+                merged.pop(removable)
+                issues.append((removable, str(exc)))
+
+    @classmethod
     def from_document(cls, raw: Any, *, source: str = "repository") -> "ComponentRepository":
         if not isinstance(raw, dict):
             raise ComponentRepositoryError(f"{source}: root must be a mapping")
@@ -164,6 +233,12 @@ class ComponentRepository:
                 pass
             raise
 
+    def validate_persistence(self) -> "ComponentRepository":
+        """Validate the repository through its serialized schema boundary."""
+        return ComponentRepository.from_document(
+            self.to_document(), source="repository persistence validation",
+        )
+
     def with_component(self, definition: ComponentDefinition) -> "ComponentRepository":
         merged = dict(self.components)
         existing = merged.get(definition.component_id)
@@ -172,15 +247,32 @@ class ComponentRepository:
         merged[definition.component_id] = definition
         return ComponentRepository(merged)
 
-    def without_component(self, component_id: str) -> "ComponentRepository":
+    def without_component(
+        self,
+        component_id: str,
+        *,
+        reparent_children: bool = False,
+    ) -> "ComponentRepository":
+        """Remove an object without leaving dangling immutable ownership."""
         merged = dict(self.components)
-        if component_id in merged:
-            merged.pop(component_id, None)
-        else:
-            for name, definition in tuple(merged.items()):
-                if definition.object_id == component_id:
-                    merged.pop(name, None)
-                    break
+        try:
+            target = self.get(component_id)
+        except ComponentRepositoryError:
+            return self
+        children = [
+            definition for definition in merged.values()
+            if definition.owner_object_id == target.object_id
+        ]
+        if children and not reparent_children:
+            raise ComponentRepositoryError(
+                "cannot delete %r while %d child object(s) still reference it; "
+                "use reparent_children=True" % (target.component_id, len(children))
+            )
+        merged.pop(target.component_id, None)
+        for child in children:
+            merged[child.component_id] = replace(
+                child, owner_object_id=target.owner_object_id,
+            )
         return ComponentRepository(merged)
 
     def delete_subtree(self, component_id: str) -> tuple["ComponentRepository", tuple[str, ...]]:

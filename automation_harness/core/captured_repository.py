@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from automation_harness.core.capture_boundaries import classify_capture_boundary, surface_relative_visual_capture
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.semantic_hierarchy import materialize_semantic_ancestors
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ObjectType
 
@@ -30,7 +31,20 @@ def materialize_capture(
     )
     visual = next((item for item in definition.strategies if item.type == "anchored_visual"), None)
     if visual is None:
-        return repository.with_component(definition), definition, ()
+        repository, semantic_owner_id, created_ancestors = materialize_semantic_ancestors(
+            repository, captured,
+        )
+        if (
+            semantic_owner_id is not None
+            and definition.owner_object_id is None
+            and definition.object_type not in {ObjectType.WINDOW, ObjectType.DIALOG}
+        ):
+            definition = replace(definition, owner_object_id=semantic_owner_id)
+        return (
+            repository.with_component(definition),
+            definition,
+            created_ancestors,
+        )
 
     anchor = visual.options.get("anchor_identification")
     matches = [

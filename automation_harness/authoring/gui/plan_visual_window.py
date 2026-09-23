@@ -1,7 +1,6 @@
 """Test Plan workflow additions for visual matching and unobstructed execution."""
 from __future__ import annotations
 
-import json
 import threading
 from dataclasses import replace
 
@@ -27,6 +26,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
     """Recording-capable Test Plan editor with explicit repository visual assertions."""
 
     def add_object_action(self, component_id=None, action_id=None):
+        self.refresh_objects()
         if not self.repository.components:
             return self.info("Object Action", "No objects are available. Open or capture objects in an Object Repository first.")
         dialog = Gtk.Dialog(title="Add Object Action", transient_for=self.window, modal=True)
@@ -118,8 +118,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
             action = next(item for item in actions_for(definition) if item.action_id == action_id)
             for item in action.inputs:
                 row = Gtk.Box(spacing=6); label = Gtk.Label(label=item.name + (" *" if item.required else "")); label.set_size_request(170, -1); label.set_xalign(0)
-                entry = Gtk.Entry(); entry.set_placeholder_text(item.description or item.value_type)
-                if item.default is not None: entry.set_text(json.dumps(item.default, default=str))
+                entry = create_action_input_widget(item, definition)
                 row.pack_start(label, False, False, 0); row.pack_start(entry, True, True, 0); inputs_box.pack_start(row, False, False, 0); input_entries[item.name] = (item, entry)
             inputs_box.show_all()
 
@@ -153,15 +152,13 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                 definition = next(item for item in actions_for(self.repository.get(component_id)) if item.action_id == action_id)
                 values = {}
                 for name, (item, entry) in input_entries.items():
-                    raw = entry.get_text().strip()
-                    if not raw:
+                    present, value = read_action_input(item, entry)
+                    if not present:
                         if item.required: raise ValueError("missing required input %s" % name)
                         if item.default is not None: values[name] = item.default
                         continue
-                    try: values[name] = json.loads(raw)
-                    except ValueError: values[name] = raw
-                object_id = self.repository.get(component_id).object_id
-                call = replace(definition.to_step_call(_next_node_id(self.plan.steps), object_id, values), group=group)
+                    values[name] = value
+                call = replace(definition.to_step_call(_next_node_id(self.plan.steps), component_id, values), group=group)
             self.plan = replace(self.plan, steps=(*self.plan.steps, call))
         except Exception as exc:
             dialog.destroy(); return self.error("Object Action", "%s: %s" % (type(exc).__name__, exc))

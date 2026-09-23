@@ -72,6 +72,16 @@ class ComponentDefinition:
             and self.object_type not in PASSIVE_POINTER_TYPES
         ):
             values.add(ActionType.CLICK)
+        # Older repositories may contain a correctly classified JavaFX menu
+        # owner whose persisted capability list predates logical menu actions.
+        # Keep the semantic contract authoritative so those objects expose the
+        # route-based menu authoring control after reload/refresh as well.
+        if self.object_type in {
+            ObjectType.MENU_BAR,
+            ObjectType.MENU,
+            ObjectType.CONTEXT_MENU,
+        }:
+            values.add(ActionType.SELECT_MENU_ITEM)
         return frozenset(values) or default_actions(self.object_type)
 
     def supports(self, action: ActionType) -> bool:
@@ -188,6 +198,10 @@ class CapturedComponent:
     logical_subobjects: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def semantic_type(self) -> ObjectType:
+        native = str(self.native_class or "").casefold()
+        simple_native = native.rsplit(".", 1)[-1]
+        if simple_native in {"menubutton", "splitmenubutton", "menubarbutton"}:
+            return ObjectType.MENU
         return self.object_type or classify_accessibility(self.role, self.native_class)
 
     def candidate_identification(self) -> AtspiIdentification:

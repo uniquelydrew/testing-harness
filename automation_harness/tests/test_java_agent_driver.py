@@ -136,3 +136,129 @@ def test_java_agent_forwards_solipsys_rendered_identity(monkeypatch):
         "track_identity_key": "getTrackId",
         "track_identity_value": "T-1234",
     })]
+
+
+def test_java_agent_select_menu_path_sends_stable_segment_identity(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _Transport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+
+    result = driver.select_menu_path(
+        [
+            {"kind": "menu", "criteria": {"id": "fileMenu", "text": "File"}, "ordinal": 0},
+            {"kind": "menu_item", "criteria": {"text": "Export"}, "ordinal": 3},
+        ],
+        identification={
+            "mandatory": {"accessible_id": "mainMenu"},
+            "assistive": {"window": "MSCT"},
+        },
+    )
+
+    assert result["action"] == "select_menu_item"
+    operation, payload = transport.calls[0]
+    assert operation == "select_menu_path"
+    assert payload == {
+        "accessible_id": "mainMenu",
+        "window": "MSCT",
+        "menu_count": 2,
+        "menu_0_id": "fileMenu",
+        "menu_0_text": "File",
+        "menu_0_ordinal": 0,
+        "menu_1_text": "Export",
+        "menu_1_ordinal": 3,
+    }
+
+
+def test_java_agent_exposes_distinct_focus_and_window_operations(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _Transport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+    identity = {"mandatory": {"accessible_id": "display"}}
+
+    driver.focus(identification=identity)
+    driver.activate_window(identification=identity)
+
+    assert [call[0] for call in transport.calls] == ["focus", "activate_window"]
+
+
+
+class _ValueTransport(_Transport):
+    def request(self, operation, payload):
+        self.calls.append((operation, payload))
+        if operation == "get_text":
+            return {"text": "alpha\nbeta"}
+        if operation == "get_value":
+            return {"value": 42}
+        return {
+            "semantic_node": {
+                "framework": "swing",
+                "class": "javax.swing.JTextField",
+                "native_class": "javax.swing.JTextField",
+                "name": "Username",
+                "accessible_id": "username",
+                "window": "MSCT",
+                "role": "text field",
+                "bounds": [10, 20, 200, 24],
+                "properties": {},
+            }
+        }
+
+
+def test_java_agent_text_operations_use_native_protocol(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _ValueTransport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+    identity = {"mandatory": {"accessible_id": "username"}}
+
+    assert driver.get_text(identification=identity) == "alpha\nbeta"
+    result = driver.set_text("first\nsecond", identification=identity)
+
+    assert result["action"] == "set_text"
+    assert transport.calls == [
+        ("get_text", {"accessible_id": "username"}),
+        ("set_text", {
+            "accessible_id": "username",
+            "value": "first\nsecond",
+        }),
+    ]
+
+
+def test_java_agent_indexed_selection_uses_native_protocol(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _ValueTransport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+
+    result = driver.select_child(
+        3,
+        identification={"mandatory": {"accessible_id": "cameraCombo"}},
+    )
+
+    assert result["selected_index"] == 3
+    assert transport.calls == [
+        ("select_child", {
+            "accessible_id": "cameraCombo",
+            "index": 3,
+        })
+    ]
+
+
+def test_java_agent_numeric_value_operations_use_native_protocol(monkeypatch):
+    monkeypatch.delenv("AUTOMATION_HARNESS_JAVA_AGENT_URL", raising=False)
+    driver = JavaAgentDriver()
+    transport = _ValueTransport(pid=5104)
+    driver.refresh_transports = lambda: (transport,)
+    identity = {"mandatory": {"accessible_id": "zoom"}}
+
+    assert driver.get_value(identification=identity) == 42.0
+    result = driver.set_value(17.5, identification=identity)
+
+    assert result["action"] == "set_value"
+    assert result["value"] == 17.5
+    assert transport.calls == [
+        ("get_value", {"accessible_id": "zoom"}),
+        ("set_value", {"accessible_id": "zoom", "value": 17.5}),
+    ]

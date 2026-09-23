@@ -122,6 +122,132 @@ class JavaAgentDriver:
         )
         return {"action": "activate", "component": captured.to_dict()}
 
+    def focus(self, *, identification=None, **_kwargs):
+        captured = self._first(
+            "focus", _identity_payload(identification),
+            transports=self.refresh_transports(),
+        )
+        return {"action": "focus", "component": captured.to_dict(), "focused": captured.state.focused}
+
+    def activate_window(self, *, identification=None, **_kwargs):
+        captured = self._first(
+            "activate_window", _identity_payload(identification),
+            transports=self.refresh_transports(),
+        )
+        return {"operation": "activate_window", "component": captured.to_dict()}
+
+    def get_text(self, *, identification=None, **_kwargs):
+        response = self._request_first(
+            "get_text", _identity_payload(identification),
+        )
+        value = response.get("text")
+        if not isinstance(value, str):
+            raise ValueError("Java agent text response is not a string")
+        return value
+
+    def set_text(self, value, *, identification=None, **_kwargs):
+        if not isinstance(value, str):
+            raise ValueError("Java agent set_text requires a string")
+        payload = _identity_payload(identification)
+        payload["value"] = value
+        captured = self._first("set_text", payload, transports=self.refresh_transports())
+        return {"action": "set_text", "component": captured.to_dict(), "value": value}
+
+    def select_child(self, index, *, identification=None, **_kwargs):
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise ValueError("Java agent select_child requires a non-negative integer")
+        payload = _identity_payload(identification)
+        payload["index"] = index
+        captured = self._first(
+            "select_child", payload, transports=self.refresh_transports(),
+        )
+        return {
+            "action": "select_child",
+            "component": captured.to_dict(),
+            "selected_index": index,
+        }
+
+    def get_value(self, *, identification=None, **_kwargs):
+        response = self._request_first(
+            "get_value", _identity_payload(identification),
+        )
+        value = response.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError("Java agent value response is not numeric")
+        return float(value)
+
+    def set_value(self, value, *, identification=None, **_kwargs):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError("Java agent set_value requires a number")
+        payload = _identity_payload(identification)
+        payload["value"] = float(value)
+        captured = self._first(
+            "set_value", payload, transports=self.refresh_transports(),
+        )
+        return {
+            "action": "set_value",
+            "component": captured.to_dict(),
+            "value": float(value),
+        }
+
+    def select_menu_path(self, selectors, *, identification=None, **_kwargs):
+        if not isinstance(selectors, (list, tuple)) or not selectors:
+            raise ValueError("Java agent menu path must not be empty")
+        payload = _identity_payload(identification)
+        payload["menu_count"] = len(selectors)
+        for index, selector in enumerate(selectors):
+            if not isinstance(selector, Mapping):
+                raise ValueError("Java agent menu selector must be a mapping")
+            criteria = selector.get("criteria", {})
+            if not isinstance(criteria, Mapping):
+                raise ValueError("Java agent menu selector criteria must be a mapping")
+            native_id = criteria.get("id", criteria.get("accessible_id"))
+            text = criteria.get("text", criteria.get("name"))
+            if native_id not in (None, ""):
+                payload["menu_%d_id" % index] = str(native_id)
+            if text not in (None, ""):
+                payload["menu_%d_text" % index] = str(text)
+            ordinal = selector.get("ordinal")
+            if isinstance(ordinal, int) and not isinstance(ordinal, bool):
+                payload["menu_%d_ordinal" % index] = ordinal
+
+        errors = []
+        for transport in self.refresh_transports():
+            try:
+                response = transport.request("select_menu_path", payload)
+                node = response.get("semantic_node", response.get("node"))
+                if not isinstance(node, Mapping):
+                    raise ValueError("Java agent menu response contains no semantic node")
+                captured = _captured_recording_node(node)
+                return {
+                    "action": "select_menu_item",
+                    "component": captured.to_dict(),
+                    "path": [dict(item) for item in selectors],
+                }
+            except Exception as exc:
+                errors.append("%s: %s" % (type(exc).__name__, exc))
+        raise JavaAgentUnavailable(
+            "all configured Java agents failed menu selection: " + "; ".join(errors)
+        )
+
+    def _request_first(self, operation: str, payload: Mapping[str, Any]):
+        transports = self.refresh_transports()
+        if not transports:
+            raise JavaAgentUnavailable("no configured Automation Harness Java agent endpoint")
+        errors = []
+        for transport in transports:
+            try:
+                response = transport.request(operation, dict(payload))
+                if not isinstance(response, Mapping):
+                    raise ValueError("Java agent response is not a mapping")
+                return response
+            except Exception as exc:
+                errors.append("%s: %s" % (type(exc).__name__, exc))
+        raise JavaAgentUnavailable(
+            "all configured Java agents failed %s: %s"
+            % (operation, "; ".join(errors))
+        )
+
     def _first(self, operation: str, payload: Mapping[str, Any], *, transports=None) -> CapturedComponent:
         transports = self.refresh_transports() if transports is None else tuple(transports)
         if not transports:

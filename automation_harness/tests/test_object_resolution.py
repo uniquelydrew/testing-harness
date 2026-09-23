@@ -50,6 +50,12 @@ def test_visual_resolution_rejects_locator_marked_for_recapture():
         resolve_repository_object(_CaptureService(), repository, visual)
 
 
+def test_resolution_rejects_provisional_locator_before_driver_dispatch():
+    repository, visual = _repository(status="provisional")
+    with pytest.raises(ObjectResolutionError, match="provisional"):
+        resolve_repository_object(_CaptureService(), repository, visual)
+
+
 def test_runtime_playback_resolves_visual_from_owner_identity(monkeypatch):
     repository, visual = _repository()
 

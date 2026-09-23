@@ -470,12 +470,35 @@ public final class AutomationHarnessJavaFxAgent {
                 Object best = null;
                 Object bestWindow = null;
                 double bestArea = Double.POSITIVE_INFINITY;
-                for (Object window : windows()) {
+                int bestWindowPriority = Integer.MIN_VALUE;
+                int bestWindowIndex = Integer.MIN_VALUE;
+                List<Object> liveWindows = windows();
+                for (int windowIndex = 0; windowIndex < liveWindows.size(); windowIndex++) {
+                    Object window = liveWindows.get(windowIndex);
+                    if (!boolCall(window, "isShowing", true)) {
+                        continue;
+                    }
+
+                    // PopupControl/ContextMenu windows are separate JavaFX
+                    // PopupWindow instances layered above their owning Stage.
+                    // A global "smallest node wins" policy can therefore see
+                    // through a menu and select a smaller node in the Stage
+                    // underneath it. Resolve the top transient window first,
+                    // then use node area only within that window.
+                    int windowPriority = isInstance("javafx.stage.PopupWindow", window) ? 2
+                            : (boolCall(window, "isFocused", false) ? 1 : 0);
+                    if (windowPriority < bestWindowPriority
+                            || (windowPriority == bestWindowPriority && windowIndex < bestWindowIndex)) {
+                        continue;
+                    }
+
                     Object scene = call(window, "getScene");
                     Object root = scene == null ? null : call(scene, "getRoot");
                     if (root == null) {
                         continue;
                     }
+                    Object windowBest = null;
+                    double windowBestArea = Double.POSITIVE_INFINITY;
                     for (Object node : flatten(root)) {
                         if (!boolCall(node, "isVisible", true)) {
                             continue;
@@ -485,11 +508,19 @@ public final class AutomationHarnessJavaFxAgent {
                             continue;
                         }
                         double area = bounds[2] * bounds[3];
-                        if (area <= bestArea) {
-                            best = node;
-                            bestWindow = window;
-                            bestArea = area;
+                        if (area <= windowBestArea) {
+                            windowBest = node;
+                            windowBestArea = area;
                         }
+                    }
+                    if (windowBest != null
+                            && (windowPriority > bestWindowPriority
+                            || (windowPriority == bestWindowPriority && windowIndex >= bestWindowIndex))) {
+                        best = windowBest;
+                        bestWindow = window;
+                        bestArea = windowBestArea;
+                        bestWindowPriority = windowPriority;
+                        bestWindowIndex = windowIndex;
                     }
                 }
                 if (best == null) {
@@ -1580,6 +1611,14 @@ public final class AutomationHarnessJavaFxAgent {
             Object current = node;
             Object fallback = node;
             for (int depth = 0; current != null && depth < 64; depth++) {
+                // MenuBarButton and ContextMenuContent.MenuItemContainer are
+                // disposable skins. Promote them before applying the normal
+                // interaction-boundary rules so capture and recording return
+                // the backing Menu/MenuItem and its logical inventory.
+                Object logicalMenu = logicalMenuObject(current);
+                if (logicalMenu != null) {
+                    return logicalMenu;
+                }
                 if (isInteractionBoundary(current)) {
                     return current;
                 }
@@ -1757,6 +1796,18 @@ public final class AutomationHarnessJavaFxAgent {
             for (Method method : type.getMethods()) {
                 if (method.getName().equals(name)) {
                     return method;
+                }
+            }
+            for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+                for (Method method : current.getDeclaredMethods()) {
+                    if (method.getName().equals(name)) {
+                        try {
+                            method.setAccessible(true);
+                        } catch (RuntimeException ignored) {
+                            return null;
+                        }
+                        return method;
+                    }
                 }
             }
             return null;

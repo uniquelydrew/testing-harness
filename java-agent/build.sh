@@ -13,8 +13,22 @@ mkdir -p "$CLASSES"
 # bytecode so the same JAR can be loaded by Java 8 and newer target JVMs.
 # com.sun.net.httpserver is part of JDK 8; it does not require the Java 9+
 # module-system --add-modules option.
+if javac --help 2>&1 | grep -q -- '--release'; then
+    JAVAC_LEVEL=(--release 8)
+else
+    JAVAC_VERSION="$(javac -version 2>&1 || true)"
+    [[ "$JAVAC_VERSION" == "javac 1.8"* ]] || {
+        echo "Java 8 agent requires JDK 8 javac or a newer javac with --release support; found: $JAVAC_VERSION" >&2
+        exit 1
+    }
+    JAVAC_LEVEL=(-source 8 -target 8)
+fi
+
+# On JDK 9+ --release 8 constrains both bytecode and the linked Java API
+# surface. Using only -source/-target with a newer JDK can accidentally compile
+# calls to APIs that do not exist in the MSCT Java 8 runtime.
 find "$SOURCE" -name '*.java' -print0 |
-    xargs -0 javac -source 8 -target 8 -d "$CLASSES"
+    xargs -0 javac "${JAVAC_LEVEL[@]}" -d "$CLASSES"
 
 # Fail the build if the compiler silently emits anything newer than Java 8
 # class-file version 52. This catches accidental target-level regressions.

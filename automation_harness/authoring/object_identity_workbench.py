@@ -612,11 +612,11 @@ class ObjectIdentityWorkbench:
         return self.nodes.get(self.selected_key)
 
     def _default_component_id(self, node):
-        base = suggested_name(node.payload)
+        base = default_payload_name(node.payload)
         parent = self.context.parent_of(node.key) if self.context else None
         if parent is not None:
             peers = self.context.selected_group(node.key)
-            duplicates = [peer for peer in peers if suggested_name(peer.payload) == base]
+            duplicates = [peer for peer in peers if default_payload_name(peer.payload) == base]
             if len(duplicates) > 1:
                 layout = node.payload.get("layout")
                 if isinstance(layout, Mapping) and ("grid_row" in layout or "grid_column" in layout):

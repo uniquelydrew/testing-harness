@@ -9,6 +9,11 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
+from automation_harness.authoring.gui.action_widgets import (
+    create_action_input_widget,
+    interaction_actions,
+    read_action_input,
+)
 from automation_harness.authoring.gui.plan_launch_window import LaunchRestoringTestPlanWindow
 from automation_harness.models.plan import PlanVariableRef
 
@@ -107,6 +112,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         self.detail.get_buffer().set_text("\n".join(lines))
 
     def edit_selected_call(self):
+        self.refresh_objects()
         node_ids = self._selected_flow_node_ids()
         if not node_ids:
             return
@@ -133,34 +139,89 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         row = _entry_row(grid, row, "Group", group_entry)
 
         input_fields = {}
-        action_type_entry = None
-        action_parameter_fields = {}
+        action_combo = None
+        action_input_fields = {}
         component_entry = None
 
         if call.step_id == "gui.object.action":
-            component_entry = Gtk.ComboBoxText.new_with_entry()
+            component_entry = Gtk.ComboBoxText()
             known = sorted(self.repository.components)
             current_component = str(call.inputs.get("component_id", ""))
             if current_component and self.repository.contains(current_component):
                 current_component = self.repository.get(current_component).component_id
             for component_id in known:
-                component_entry.append_text(component_id)
-            component_entry.get_child().set_text(current_component)
+                component_entry.append(component_id, component_id)
+            if current_component and current_component not in known:
+                component_entry.append(current_component, current_component)
+            component_entry.set_active_id(current_component if current_component else (known[0] if known else None))
             row = _entry_row(grid, row, "Object", component_entry)
 
             action = call.inputs.get("action", {})
             if not isinstance(action, dict):
                 action = {"type": str(action)}
-            action_type_entry = Gtk.Entry()
-            action_type_entry.set_text(str(action.get("type", "")))
-            row = _entry_row(grid, row, "Action", action_type_entry)
-            for name, value in action.items():
-                if name == "type":
-                    continue
-                entry = Gtk.Entry()
-                entry.set_text(_editable(value))
-                row = _entry_row(grid, row, _humanize(name), entry)
-                action_parameter_fields[name] = (entry, value)
+            current_action_type = str(action.get("type", ""))
+            action_combo = Gtk.ComboBoxText()
+            row = _entry_row(grid, row, "Action", action_combo)
+            action_inputs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            row = _entry_row(grid, row, "Action Inputs", action_inputs_box)
+
+            def rebuild_action_inputs(*_args):
+                for child in action_inputs_box.get_children():
+                    child.destroy()
+                action_input_fields.clear()
+                component_id = component_entry.get_active_id()
+                action_id = action_combo.get_active_id()
+                if not component_id or not action_id or not self.repository.contains(component_id):
+                    action_inputs_box.show_all()
+                    return
+                component = self.repository.get(component_id)
+                definition = next(
+                    (
+                        item for item in interaction_actions(component)
+                        if item.action_id == action_id
+                    ),
+                    None,
+                )
+                if definition is None:
+                    action_inputs_box.show_all()
+                    return
+                preserve = action if action_id == current_action_type else {}
+                for item in definition.inputs:
+                    current = preserve.get(item.name) if isinstance(preserve, dict) else None
+                    widget = create_action_input_widget(item, component, current=current)
+                    line = Gtk.Box(spacing=6)
+                    label = Gtk.Label(label=item.name + (" *" if item.required else ""))
+                    label.set_size_request(160, -1); label.set_xalign(0)
+                    line.pack_start(label, False, False, 0)
+                    line.pack_start(widget, True, True, 0)
+                    action_inputs_box.pack_start(line, False, False, 0)
+                    action_input_fields[item.name] = (item, widget)
+                action_inputs_box.show_all()
+
+            def rebuild_action_choices(*_args):
+                action_combo.remove_all()
+                component_id = component_entry.get_active_id()
+                if not component_id or not self.repository.contains(component_id):
+                    rebuild_action_inputs()
+                    return
+                definitions = interaction_actions(self.repository.get(component_id))
+                for definition in definitions:
+                    action_combo.append(
+                        definition.action_id,
+                        "%s — %s" % (definition.name, definition.category),
+                    )
+                if current_action_type and any(
+                    item.action_id == current_action_type for item in definitions
+                ):
+                    action_combo.set_active_id(current_action_type)
+                elif definitions:
+                    action_combo.set_active(0)
+                else:
+                    rebuild_action_inputs()
+
+            component_entry.connect("changed", rebuild_action_choices)
+            action_combo.connect("changed", rebuild_action_inputs)
+            rebuild_action_choices()
         else:
             for name, value in call.inputs.items():
                 entry = Gtk.Entry()
@@ -198,20 +259,21 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
 
         try:
             if call.step_id == "gui.object.action":
-                component_id = component_entry.get_child().get_text().strip()
-                action_type = action_type_entry.get_text().strip()
-                if not component_id:
-                    raise ValueError("Object is required.")
+                component_id = component_entry.get_active_id()
+                action_type = action_combo.get_active_id()
+                if not component_id or not self.repository.contains(component_id):
+                    raise ValueError("A repository Object is required.")
                 if not action_type:
-                    raise ValueError("Action is required.")
+                    raise ValueError("A supported Action is required.")
                 action = {"type": action_type}
-                for name, (entry, original) in action_parameter_fields.items():
-                    action[name] = _parse_editor_value(entry.get_text(), original)
-                component_reference = (
-                    self.repository.get(component_id).object_id
-                    if self.repository.contains(component_id)
-                    else component_id
-                )
+                for name, (item, widget) in action_input_fields.items():
+                    present, value = read_action_input(item, widget)
+                    if not present:
+                        if item.required:
+                            raise ValueError("missing required input %s" % name)
+                        continue
+                    action[name] = value
+                component_reference = self.repository.get(component_id).component_id
                 inputs = {"component_id": component_reference, "action": action}
             else:
                 inputs = {

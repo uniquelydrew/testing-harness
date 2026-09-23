@@ -11,19 +11,23 @@ from gi.repository import Gdk, GLib, Gtk
 from automation_harness.authoring.gui.plan_authoring_window import TestPlanAuthoringWindow
 from automation_harness.authoring.gui.preferences import recording_highlights_enabled
 from automation_harness.authoring.preferences_runtime import AuthoringPreferences
+from automation_harness.authoring.recording_review import (
+    materialize_recorded_interaction,
+)
 from automation_harness.authoring.plan_repository import (
     assigned_repository_path,
     ensure_default_repository,
-    load_repository_set,
-    materialize_captured_target,
-    persist_recorded_menu_owner,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
-from automation_harness.authoring.repository_events import publish as publish_repository_change
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.logical_menu import (
+    LogicalMenuTarget,
+    logical_menu_metadata,
+    logical_menu_target_is_persisted,
+)
 from automation_harness.core.test_plan import repository_from_plan
 from automation_harness.drivers.java_agent import configured_java_recording_transports
-from automation_harness.recording import RecordedInteraction, RecordingSession, RepositoryMatch, interactions_to_steps
+from automation_harness.recording import RecordingSession, interactions_to_steps
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
 from automation_harness.recording.observations import PointerInteraction
@@ -166,8 +170,16 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             debug_log = RecordingDebugLog(
                 preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
             )
+        recording_repository = self.repository
+        existing_path = assigned_repository_path(self.plan, self.path)
+        if existing_path is not None and existing_path.exists():
+            recording_repository = recording_repository.overlay(
+                ComponentRepository.load((existing_path,))
+            )
+        if self.registry_resources:
+            recording_repository = recording_repository.overlay(self.registry_resources.repository)
         session = RecordingSession(
-            adapters, repository=self.repository,
+            adapters, repository=recording_repository,
             diagnostics=bool(debug_log), debug_log=debug_log,
         )
         try:
@@ -251,6 +263,56 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             GLib.idle_add(self._recording_finished, interactions, None)
         threading.Thread(target=worker, name="automation-plan-recording-stop", daemon=True).start()
 
+    def _ensure_review_repository(self, repository, path):
+        """Create/load the assigned repository only when review needs to mutate it."""
+        if repository is not None:
+            return repository, path
+        self.plan, path = ensure_default_repository(self.plan, self.path)
+        repository = ComponentRepository.load((path,))
+        self.assigned_repository_path = path
+        if self.project_context:
+            project = AuthoringProject.load(self.project_context).with_object_repository(path)
+            save_authoring_project(self.project_context, project)
+            self.project = project
+        return repository, path
+
+    @staticmethod
+    def _menu_target_for_review(interaction):
+        match = interaction.repository_match
+        if (
+            match.status == "known_subobject"
+            and match.component_id is not None
+            and match.subobject_path
+        ):
+            return LogicalMenuTarget(match.component_id, match.subobject_path, ())
+        return None
+
+    @classmethod
+    def _review_requires_persistent_repository(cls, interaction, recording_repository):
+        """Predict whether shared review will create or update repository data."""
+        if interaction.target is None:
+            return False
+        evidence = dict(interaction.evidence or {})
+        if evidence.get("menu_invoking_capture") is not None:
+            return True
+        match = interaction.repository_match
+        if match.component_id is None and match.status in {"new_candidate", "unresolved"}:
+            return True
+        target = cls._menu_target_for_review(interaction)
+        if evidence.get("menu_owner_capture") is not None:
+            return not (
+                target is not None
+                and recording_repository is not None
+                and logical_menu_target_is_persisted(recording_repository, target)
+            )
+        if logical_menu_metadata(interaction.target) is not None:
+            return not (
+                target is not None
+                and recording_repository is not None
+                and logical_menu_target_is_persisted(recording_repository, target)
+            )
+        return False
+
     def _recording_finished(self, interactions, error):
         global _ACTIVE_RECORDING_WINDOW
         with _ACTIVE_RECORDING_LOCK:
@@ -263,100 +325,118 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         if error is not None:
             if diagnostic_session is not None:
                 diagnostic_session.diagnostic_exception("recording_finish_failed", error)
-            self.set_status("Recording failed"); self.error("Recording", "%s: %s" % (type(error).__name__, error)); return False
+            self.set_status("Recording failed")
+            self.error("Recording", "%s: %s" % (type(error).__name__, error))
+            return False
 
-        resolved = []; unresolved = []; captured_count = 0
+        resolved = []
+        unresolved = []
+        captured_ids = set()
+        provisional_ids = set()
         assigned_path = assigned_repository_path(self.plan, self.path)
-        assigned_repository = ComponentRepository.load((assigned_path,)) if assigned_path and assigned_path.exists() else None
-        effective_recording_repository = getattr(diagnostic_session, "repository", self.repository)
+        assigned_repository = (
+            ComponentRepository.load((assigned_path,))
+            if assigned_path and assigned_path.exists()
+            else None
+        )
+        recording_repository = getattr(diagnostic_session, "repository", None)
 
         for interaction in interactions or ():
             if diagnostic_session is not None:
-                diagnostic_session.diagnostic("review_interaction_started", interaction=interaction)
-            reviewed = interaction
-            if interaction.repository_match.component_id is None and interaction.target is not None and interaction.repository_match.status in {"new_candidate", "unresolved"}:
-                try:
-                    if assigned_repository is None:
-                        self.plan, assigned_path = ensure_default_repository(self.plan, self.path)
-                        assigned_repository = ComponentRepository.load((assigned_path,))
-                        self.assigned_repository_path = assigned_path
-                        if self.project_context:
-                            project = AuthoringProject.load(self.project_context).with_object_repository(assigned_path)
-                            save_authoring_project(self.project_context, project); self.project = project
-                    assigned_repository, component_id, created = materialize_captured_target(assigned_repository, interaction.target)
-                    reviewed = replace(
-                        interaction,
-                        repository_match=RepositoryMatch("known_unique", (component_id,)),
+                diagnostic_session.diagnostic(
+                    "review_interaction_started", interaction=interaction,
+                )
+            if assigned_repository is None and self._review_requires_persistent_repository(
+                interaction, recording_repository,
+            ):
+                assigned_repository, assigned_path = self._ensure_review_repository(
+                    assigned_repository, assigned_path,
+                )
+
+            review_repository = assigned_repository or recording_repository or self.repository
+            if review_repository is None:
+                review_repository = ComponentRepository({})
+            outcome = materialize_recorded_interaction(
+                review_repository,
+                interaction,
+                recording_repository=recording_repository,
+            )
+
+            if outcome.error is not None:
+                provisional_ids.update(outcome.provisional_component_ids)
+                captured_ids.update(outcome.created_component_ids)
+                # A provisional object is intentionally retained for review;
+                # shared materialization returns that candidate while refusing
+                # to produce an executable step. Other failures are rolled back.
+                if outcome.provisional_component_ids and assigned_repository is not None:
+                    assigned_repository = outcome.repository
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic_exception(
+                        "review_interaction_failed",
+                        outcome.error,
+                        interaction=interaction,
+                        provisional_component_ids=outcome.provisional_component_ids,
                     )
-                    if created: captured_count += 1
-                except Exception as exc:
-                    if diagnostic_session is not None:
-                        diagnostic_session.diagnostic_exception(
-                            "review_materialization_failed", exc,
-                            interaction=interaction, assigned_path=assigned_path,
-                            assigned_repository=assigned_repository.to_document() if assigned_repository else None,
-                        )
-                    unresolved.append(interaction); continue
-            elif interaction.repository_match.component_id is None:
+                unresolved.append(interaction)
+                continue
+
+            if assigned_repository is not None:
+                assigned_repository = outcome.repository
+            captured_ids.update(outcome.created_component_ids)
+            reviewed = outcome.interaction
+            if reviewed.repository_match.component_id is None:
+                unresolved.append(interaction)
                 if diagnostic_session is not None:
                     diagnostic_session.diagnostic(
-                        "review_interaction_unresolved", interaction=interaction,
-                        reason="repository_match_has_no_unique_component",
+                        "review_interaction_unresolved",
+                        interaction=interaction,
+                        reason="shared_review_returned_no_unique_component",
                     )
-                unresolved.append(interaction); continue
-
-            if reviewed.repository_match.status == "known_subobject":
-                try:
-                    if assigned_repository is None:
-                        self.plan, assigned_path = ensure_default_repository(self.plan, self.path)
-                        assigned_repository = ComponentRepository.load((assigned_path,))
-                        self.assigned_repository_path = assigned_path
-                    assigned_repository = persist_recorded_menu_owner(
-                        assigned_repository,
-                        effective_recording_repository,
-                        reviewed.repository_match.component_id,
-                    )
-                except Exception as exc:
-                    if diagnostic_session is not None:
-                        diagnostic_session.diagnostic_exception(
-                            "menu_route_persistence_failed", exc, interaction=reviewed,
-                        )
-                    unresolved.append(interaction)
-                    continue
+                continue
 
             try:
-                call = interactions_to_steps((reviewed,), start_index=len(self.plan.steps) + len(resolved) + 1)[0]
+                call = interactions_to_steps(
+                    (reviewed,),
+                    start_index=len(self.plan.steps) + len(resolved) + 1,
+                )[0]
                 resolved.append(replace(call, group="Recorded session"))
                 if diagnostic_session is not None:
-                    diagnostic_session.diagnostic("review_step_created", interaction=reviewed, step=resolved[-1])
+                    diagnostic_session.diagnostic(
+                        "review_step_created", interaction=reviewed,
+                        step=resolved[-1],
+                        changed_component_ids=outcome.changed_component_ids,
+                        inventory_changed=outcome.inventory_changed,
+                    )
             except Exception as exc:
                 if diagnostic_session is not None:
                     diagnostic_session.diagnostic_exception(
-                        "review_step_conversion_failed", exc, interaction=reviewed,
+                        "review_step_conversion_failed", exc,
+                        interaction=reviewed,
                     )
                 unresolved.append(interaction)
 
         if assigned_repository is not None and assigned_path is not None:
             assigned_repository.save(assigned_path)
-            publish_repository_change(
-                assigned_path,
-                changed_object_ids=tuple(item.object_id for item in assigned_repository.components.values()),
-            )
-            self.repository = repository_from_plan(self.plan).overlay(
-                load_repository_set(self.plan, self.path).compose()
-            )
+            self.repository = repository_from_plan(self.plan).overlay(assigned_repository)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
 
-        if resolved or captured_count:
+        if resolved or captured_ids:
             if resolved:
                 self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
-            self.mark_dirty(); self.refresh_all()
-        self.set_status("Recording complete: %d actions added, %d new objects captured, %d unresolved" % (len(resolved), captured_count, len(unresolved)))
+            self.mark_dirty()
+            self.refresh_all()
+        self.set_status(
+            "Recording complete: %d actions added, %d new objects captured, %d provisional, %d unresolved"
+            % (len(resolved), len(captured_ids), len(provisional_ids), len(unresolved))
+        )
         if diagnostic_session is not None:
             diagnostic_session.diagnostic(
-                "recording_review_complete", resolved_steps=resolved,
-                unresolved_interactions=unresolved, captured_count=captured_count,
+                "recording_review_complete",
+                resolved_steps=resolved,
+                unresolved_interactions=unresolved,
+                captured_count=len(captured_ids),
+                provisional_count=len(provisional_ids),
                 assigned_path=assigned_path,
                 final_repository=assigned_repository.to_document() if assigned_repository else None,
                 plan=self.plan,
@@ -365,9 +445,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             log_note = "\n\nVerbose diagnostic log: %s" % diagnostic_path if diagnostic_path else ""
             self.info(
                 "Recording Review",
-                "%d interaction(s) remain ambiguous or lack a semantic target. Use repository deduplication/OR merge when multiple existing objects represent the same target.%s" % (len(unresolved), log_note),
+                "%d interaction(s) remain unresolved or provisional. Provisional objects were retained in the Object Repository for review but were not added as executable Test Plan steps. Use repository deduplication/OR merge when multiple existing objects represent the same target.%s"
+                % (len(unresolved), log_note),
             )
         elif diagnostic_path:
-            self.set_status("Recording complete: %d actions added — diagnostics: %s" % (len(resolved), diagnostic_path))
+            self.set_status(
+                "Recording complete: %d actions added — diagnostics: %s"
+                % (len(resolved), diagnostic_path)
+            )
         self._recording_diagnostic_session = None
         return False

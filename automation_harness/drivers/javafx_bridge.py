@@ -500,6 +500,7 @@ def _default_discovery_dir() -> Path:
 
 
 def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> CapturedComponent:
+    node = _normalize_javafx_menu_node(node)
     node_id = _optional_str(node.get("id"))
     role = _role(node.get("accessible_role"))
     text = _optional_str(node.get("text"))
@@ -545,6 +546,12 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "sibling_index": node.get("sibling_index"),
         "sibling_count": node.get("sibling_count"),
     }
+    physical_native_class = (
+        dict(node.get("backend_properties") or {}).get("physical_native_class")
+        if isinstance(node.get("backend_properties"), Mapping) else None
+    )
+    if physical_native_class:
+        properties["physical_native_class"] = physical_native_class
     if isinstance(logical_menu, Mapping):
         properties["logical_menu"] = dict(logical_menu)
     return CapturedComponent(
@@ -766,6 +773,7 @@ def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) ->
 
 
 def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
+    node = _normalize_javafx_menu_node(node)
     state_value = node.get("state", {})
     state = state_value if isinstance(state_value, Mapping) else {}
     bounds_value = node.get("bounds")
@@ -860,6 +868,7 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
 
 
 def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
+    """Normalize JavaFX menu models into backend-neutral persisted metadata."""
     if not isinstance(raw, (list, tuple)):
         return {}
     result = {}
@@ -871,28 +880,75 @@ def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
         count = counts.get(base, 0)
         counts[base] = count + 1
         key = base if count == 0 else "%s_%d" % (base, count + 1)
-        selector = {
-            "criteria": {
-                candidate_key: candidate_value
-                for candidate_key, candidate_value in (
-                    ("id", item.get("id")),
-                    ("text", item.get("text")),
-                    ("class", item.get("class")),
-                )
-                if candidate_value not in (None, "") and not (
-                    candidate_key == "class" and _is_internal_javafx_class(str(candidate_value))
-                )
-            },
-            "ordinal": index,
+
+        native_id = item.get("id")
+        if native_id in (None, ""):
+            native_id = item.get("accessible_id")
+        text = item.get("text")
+        if text in (None, ""):
+            text = item.get("name")
+        kind = str(item.get("role") or "menu_item").replace(" ", "_").casefold()
+        criteria = {}
+        if native_id not in (None, ""):
+            criteria["id"] = native_id
+        if text not in (None, ""):
+            criteria["text"] = text
+        native_class = item.get("class") or item.get("native_class")
+        if (
+            not criteria
+            and native_class not in (None, "")
+            and not _is_internal_javafx_class(str(native_class))
+        ):
+            criteria["class"] = native_class
+
+        entry = {
+            "kind": kind,
+            "display_name": str(text or native_id or key.replace("_", " ").title()),
+            "criteria": criteria,
+            "ordinal": int(item.get("ordinal")) if isinstance(item.get("ordinal"), int) else index,
+            "selectable": kind != "separator",
         }
+        if item.get("disabled") is not None:
+            entry["enabled"] = not bool(item.get("disabled"))
+        if item.get("visible") is not None:
+            entry["visible"] = bool(item.get("visible"))
         if isinstance(item.get("relative_offset"), Mapping):
-            selector["relative_offset"] = dict(item["relative_offset"])
+            entry["relative_offset"] = dict(item["relative_offset"])
         nested = _javafx_menu_subobjects(item.get("menu_children"))
-        result[key] = {
-            "kind": str(item.get("role") or "menu_item"),
-            "selector": selector,
-            **({"subobjects": nested} if nested else {}),
-        }
+        if nested:
+            entry["subobjects"] = nested
+        result[key] = entry
+    return result
+
+
+def _normalize_javafx_menu_node(node: Mapping[str, Any]) -> dict[str, Any]:
+    """Promote JavaFX's MenuBarButton skin snapshot to its logical Menu.
+
+    Some bridge/agent versions return the physical ``MenuBarButton`` even
+    though the pointer event belongs to the backing ``javafx.scene.control.Menu``.
+    The skin is not a durable repository object and, critically, it does not
+    expose the logical item inventory unless this promotion happens first.
+    Keep the physical class as diagnostics while making the serialized target
+    semantically consistent with the Object Workbench and recorder.
+    """
+    result = dict(node)
+    native_class = str(result.get("native_class") or result.get("class") or "")
+    simple_class = native_class.rsplit(".", 1)[-1].casefold()
+    role = str(result.get("role") or result.get("accessible_role") or "").replace("_", " ").casefold()
+    if simple_class != "menubarbutton" and not (
+        simple_class == "menubutton" and native_class.startswith("com.sun.javafx.")
+    ):
+        return result
+
+    result.setdefault("backend_properties", {})
+    backend_properties = dict(result.get("backend_properties") or {})
+    backend_properties.setdefault("physical_native_class", native_class)
+    result["backend_properties"] = backend_properties
+    result["native_class"] = "javafx.scene.control.Menu"
+    result["class"] = "javafx.scene.control.Menu"
+    result["simple_class"] = "Menu"
+    result["role"] = "menu"
+    result["accessible_role"] = "MENU"
     return result
 
 

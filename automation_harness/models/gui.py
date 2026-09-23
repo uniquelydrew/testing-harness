@@ -167,5 +167,41 @@ def default_actions(object_type: ObjectType) -> frozenset[ActionType]:
 
 def classify_accessibility(role: str | None, native_class: str | None = None) -> ObjectType:
     value = f"{role or ''} {native_class or ''}".casefold()
-    rules = (("check menu item", ObjectType.CHECK_MENU_ITEM), ("radio menu item", ObjectType.RADIO_MENU_ITEM), ("checkbox", ObjectType.CHECK_BOX), ("check box", ObjectType.CHECK_BOX), ("radio", ObjectType.RADIO_BUTTON), ("toggle", ObjectType.TOGGLE_BUTTON), ("password", ObjectType.PASSWORD_FIELD), ("text area", ObjectType.TEXT_AREA), ("text", ObjectType.TEXT_FIELD), ("combo", ObjectType.COMBO_BOX), ("table", ObjectType.TABLE), ("tree", ObjectType.TREE), ("list", ObjectType.LIST), ("menu bar", ObjectType.MENU_BAR), ("context menu", ObjectType.CONTEXT_MENU), ("menu item", ObjectType.MENU_ITEM), ("menu", ObjectType.MENU), ("slider", ObjectType.SLIDER), ("spinner", ObjectType.SPINNER), ("progress", ObjectType.PROGRESS_INDICATOR), ("button", ObjectType.BUTTON), ("window", ObjectType.WINDOW), ("dialog", ObjectType.DIALOG), ("panel", ObjectType.PANEL), ("canvas", ObjectType.CANVAS), ("label", ObjectType.LABEL))
+    rules = (
+        ("check menu item", ObjectType.CHECK_MENU_ITEM),
+        ("radio menu item", ObjectType.RADIO_MENU_ITEM),
+        ("page tab list", ObjectType.TAB_CONTAINER),
+        ("tab list", ObjectType.TAB_CONTAINER),
+        ("tabbedpane", ObjectType.TAB_CONTAINER),
+        ("tabpane", ObjectType.TAB_CONTAINER),
+        ("page tab", ObjectType.TAB),
+        ("toolbar", ObjectType.TOOLBAR),
+        ("tool bar", ObjectType.TOOLBAR),
+        ("checkbox", ObjectType.CHECK_BOX),
+        ("check box", ObjectType.CHECK_BOX),
+        ("radio", ObjectType.RADIO_BUTTON),
+        ("toggle", ObjectType.TOGGLE_BUTTON),
+        ("password", ObjectType.PASSWORD_FIELD),
+        ("text area", ObjectType.TEXT_AREA),
+        ("combo", ObjectType.COMBO_BOX),
+        ("table", ObjectType.TABLE),
+        ("tree", ObjectType.TREE),
+        ("list", ObjectType.LIST),
+        ("menu bar", ObjectType.MENU_BAR),
+        ("context menu", ObjectType.CONTEXT_MENU),
+        ("popup menu", ObjectType.CONTEXT_MENU),
+        ("menu item", ObjectType.MENU_ITEM),
+        ("menu", ObjectType.MENU),
+        ("slider", ObjectType.SLIDER),
+        ("spinner", ObjectType.SPINNER),
+        ("progress", ObjectType.PROGRESS_INDICATOR),
+        ("button", ObjectType.BUTTON),
+        ("dialog", ObjectType.DIALOG),
+        ("window", ObjectType.WINDOW),
+        ("frame", ObjectType.WINDOW),
+        ("tab", ObjectType.TAB),
+        ("panel", ObjectType.PANEL),
+        ("canvas", ObjectType.CANVAS),
+        ("label", ObjectType.LABEL),
+    )
     return next((kind for needle, kind in rules if needle in value), ObjectType.CUSTOM)

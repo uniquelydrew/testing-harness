@@ -2,9 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_DIR="${AUTOMATION_HARNESS_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/automation-harness}"
-VENV_DIR="${AUTOMATION_HARNESS_VENV:-$RUNTIME_DIR/venv}"
-ENV_FILE="$RUNTIME_DIR/bootstrap-env"
+VENV_DIR="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
 SYSTEM_PYTHON="${AUTOMATION_HARNESS_PYTHON:-/usr/bin/python3}"
 DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-20}"
 PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
@@ -32,7 +30,7 @@ print("[bootstrap] System Python: %s" % sys.version.split()[0])
 PY
 }
 install_available_rpms() { command -v dnf >/dev/null 2>&1 || return 0; local packages=(python3-gobject python3-cairo python3-pyatspi at-spi2-core at-spi2-atk gtk3 dbus-x11 xorg-x11-xauth xorg-x11-server-Xvfb java-atk-wrapper); local available=() package; for package in "${packages[@]}"; do if rpm -q "$package" >/dev/null 2>&1; then log "RPM present: $package"; continue; fi; log "Checking RHEL repository for: $package"; if dnf_query list --available "$package" >/dev/null 2>&1; then available+=("$package"); else warn "RPM unavailable or repository probe timed out: $package"; fi; done; if ((${#available[@]})); then log "Installing ${#available[@]} available native RPM(s): ${available[*]}"; dnf_install "${available[@]}" || warn "Native RPM installation failed or timed out; continuing to capability checks"; fi; }
-create_venv() { mkdir -p "$(dirname -- "$VENV_DIR")"; if [[ -x "$VENV_DIR/bin/python" ]] && ! "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 6) else 1)' >/dev/null 2>&1; then warn "Removing an existing non-Python-3.6 virtual environment"; rm -rf "$VENV_DIR"; fi; if [[ ! -x "$VENV_DIR/bin/python" ]]; then log "Creating Python 3.6 virtual environment with RHEL system packages visible"; "$SYSTEM_PYTHON" -m venv --system-site-packages "$VENV_DIR" || die "python3 -m venv failed"; fi; }
+create_venv() { if [[ -x "$VENV_DIR/bin/python" ]] && ! "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 6) else 1)' >/dev/null 2>&1; then warn "Removing an existing non-Python-3.6 virtual environment"; rm -rf "$VENV_DIR"; fi; if [[ ! -x "$VENV_DIR/bin/python" ]]; then log "Creating Python 3.6 virtual environment with RHEL system packages visible"; "$SYSTEM_PYTHON" -m venv --system-site-packages "$VENV_DIR" || die "python3 -m venv failed"; fi; }
 pillow_available() { "$VENV_DIR/bin/python" - <<'PY' >/dev/null 2>&1
 import PIL
 from PIL import Image, ImageChops, ImageGrab
@@ -61,9 +59,42 @@ if image.width<=0 or image.height<=0: raise SystemExit("invalid framebuffer")
 print("[bootstrap] Pillow screen capture OK: %sx%s" % (image.width,image.height))
 PY
 }
-verify_pillow_screen_capture() { if [[ -n "${DISPLAY:-}" ]]; then probe_pillow_capture "$DISPLAY" || die "Pillow cannot capture $DISPLAY"; return; fi; command -v Xvfb >/dev/null 2>&1 || die "Pillow qualification requires DISPLAY or Xvfb"; local number display socket logf pid ready=0; for number in $(seq 200 249); do [[ ! -e "/tmp/.X11-unix/X$number" ]] && break; done; display=":$number"; socket="/tmp/.X11-unix/X$number"; logf="/tmp/automation-harness-bootstrap-xvfb.$$.log"; Xvfb "$display" -screen 0 1280x800x24 -nolisten tcp -ac >"$logf" 2>&1 & pid=$!; for _ in $(seq 1 50); do [[ -S "$socket" ]] && { ready=1; break; }; sleep .1; done; [[ "$ready" -eq 1 ]] && probe_pillow_capture "$display"; local status=$?; kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$logf"; [[ "$status" -eq 0 ]] || die "Pillow framebuffer capture failed"; }
+verify_pillow_screen_capture() {
+    if [[ -n "${DISPLAY:-}" ]]; then
+        probe_pillow_capture "$DISPLAY" || die "Pillow cannot capture $DISPLAY"
+        return
+    fi
+    command -v Xvfb >/dev/null 2>&1 || die "Pillow qualification requires DISPLAY or Xvfb"
+
+    local number="" candidate display socket logf pid ready=0 status=1
+    for candidate in $(seq 200 249); do
+        if [[ ! -e "/tmp/.X11-unix/X$candidate" ]]; then
+            number="$candidate"
+            break
+        fi
+    done
+    [[ -n "$number" ]] || die "no free Xvfb display is available in :200-:249"
+
+    display=":$number"
+    socket="/tmp/.X11-unix/X$number"
+    logf="/tmp/automation-harness-bootstrap-xvfb.$.log"
+    Xvfb "$display" -screen 0 1280x800x24 -nolisten tcp -ac >"$logf" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 50); do
+        [[ -S "$socket" ]] && { ready=1; break; }
+        sleep .1
+    done
+    if [[ "$ready" -eq 1 ]]; then
+        probe_pillow_capture "$display"
+        status=$?
+    fi
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+    rm -f "$logf"
+    [[ "$status" -eq 0 ]] || die "Pillow framebuffer capture failed"
+}
 find_java_atk_wrapper() { local candidate; for candidate in /usr/share/java/java-atk-wrapper.jar /usr/share/java/java-atk-wrapper/java-atk-wrapper.jar /usr/lib64/java-atk-wrapper/java-atk-wrapper.jar; do [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return; }; done; find /usr/share/java /usr/lib/java /usr/lib64/java /usr/lib64/java-atk-wrapper -type f -name 'java-atk-wrapper*.jar' -print -quit 2>/dev/null || true; }
-write_environment() { local wrapper="$(find_java_atk_wrapper)"; mkdir -p "$RUNTIME_DIR"; { printf '# Generated by bootstrap.sh for the RHEL 8 / Python 3.6 deployment\n'; printf '# Agent paths are exported, but JAVA_TOOL_OPTIONS is intentionally not set.\n'; printf '# Target launchers must inject the appropriate agent explicitly so JavaFX\n'; printf '# applications do not receive the Swing/JOGL agent and vice versa.\n'; printf 'export AUTOMATION_HARNESS_ROOT=%q\n' "$ROOT_DIR"; printf 'export AUTOMATION_HARNESS_RUNTIME_DIR=%q\n' "$RUNTIME_DIR"; printf 'export AUTOMATION_HARNESS_VENV=%q\n' "$VENV_DIR"; printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"; [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"; [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"; [[ -f "$JAVA_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"; } > "$ENV_FILE"; }
-qualify() { local run="$VENV_DIR/bin/automation-run" author="$VENV_DIR/bin/automation-author"; "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.6"; verify_pillow_screen_capture; if [[ -n "${DISPLAY:-}" ]]; then "$author" --smoke-test || die "automation-author smoke test failed"; fi; local display_mode=""; [[ -n "${DISPLAY:-}" ]] && display_mode="auto"; [[ -z "$display_mode" ]] && command -v Xvfb >/dev/null 2>&1 && display_mode="virtual"; if [[ -n "$display_mode" ]]; then "$run" selftest --reference-display "$display_mode" || warn "reference GUI self-test did not fully qualify"; "$run" selftest --require-atspi --reference-display "$display_mode" || warn "AT-SPI qualification did not fully qualify"; fi; if [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent ready with automatic secure endpoint discovery."; log "Source '$ENV_FILE', then inject -javaagent:\$AUTOMATION_HARNESS_JAVA_AGENT only into Swing/JOGL target JVMs."; fi; }
-main() { load_host; verify_python; install_available_rpms; create_venv; install_python_dependencies; build_javafx_agent; verify_native_python_bindings || die "required bindings are unavailable"; write_environment; qualify; log "Bootstrap complete"; log "Activate with: source '$ENV_FILE'"; }
+write_environment() { local wrapper="$(find_java_atk_wrapper)"; { printf '# Generated by bootstrap.sh for the RHEL 8 / Python 3.6 deployment\n'; printf '# Agent paths are exported, but JAVA_TOOL_OPTIONS is intentionally not set.\n'; printf '# Target launchers must inject the appropriate agent explicitly so JavaFX\n'; printf '# applications do not receive the Swing/JOGL agent and vice versa.\n'; printf 'export AUTOMATION_HARNESS_ROOT=%q\n' "$ROOT_DIR"; printf 'export AUTOMATION_HARNESS_VENV=%q\n' "$VENV_DIR"; printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"; [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"; [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"; [[ -f "$JAVA_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"; } > "$ROOT_DIR/.automation-harness-env"; }
+qualify() { local run="$VENV_DIR/bin/automation-run"; "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.6"; verify_pillow_screen_capture; if [[ -n "${DISPLAY:-}" ]]; then "$VENV_DIR/bin/automation-capture" --smoke-test || die "GTK Object Capture smoke test failed"; fi; local display_mode=""; [[ -n "${DISPLAY:-}" ]] && display_mode="auto"; [[ -z "$display_mode" ]] && command -v Xvfb >/dev/null 2>&1 && display_mode="virtual"; if [[ -n "$display_mode" ]]; then "$run" selftest --reference-display "$display_mode" || warn "reference GUI self-test did not fully qualify"; "$run" selftest --require-atspi --reference-display "$display_mode" || warn "AT-SPI qualification did not fully qualify"; fi; if [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent ready with automatic secure endpoint discovery."; log "Source '$ROOT_DIR/.automation-harness-env', then launch the target JVM with: automation-java-target --agent swing -- <target-command> [args...]"; fi; }
+main() { load_host; verify_python; install_available_rpms; create_venv; install_python_dependencies; build_javafx_agent; verify_native_python_bindings || die "required bindings are unavailable"; write_environment; qualify; log "Bootstrap complete"; log "Activate with: source '$ROOT_DIR/.automation-harness-env'"; }
 main "$@"

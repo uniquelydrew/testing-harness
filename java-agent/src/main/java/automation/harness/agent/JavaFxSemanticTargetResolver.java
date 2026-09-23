@@ -107,12 +107,29 @@ public final class JavaFxSemanticTargetResolver {
 
     private static Object invokeNoArg(Object target, String methodName) {
         try {
-            Method method = target.getClass().getMethod(methodName);
-            if (method.getParameterCount() != 0) return null;
-            return method.invoke(target);
+            Method method = findMethod(target.getClass(), methodName);
+            if (method == null || method.getParameterCount() != 0) return null;
+            try {
+                return method.invoke(target);
+            } catch (IllegalAccessException inaccessible) {
+                method.setAccessible(true);
+                return method.invoke(target);
+            }
         } catch (ReflectiveOperationException | RuntimeException ignored) {
             return null;
         }
+    }
+
+    private static Method findMethod(Class<?> type, String name) {
+        for (Method method : type.getMethods()) {
+            if (method.getName().equals(name)) return method;
+        }
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (method.getName().equals(name)) return method;
+            }
+        }
+        return null;
     }
 
     private static boolean hasMouseHandler(Object node) {

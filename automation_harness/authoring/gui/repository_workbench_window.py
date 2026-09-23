@@ -9,18 +9,30 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
-from automation_harness.authoring.capture_context import suggested_name
+from automation_harness.core.component_naming import default_payload_name
 from automation_harness.authoring.gui.repository_window import ObjectRepositoryWindow
 from automation_harness.authoring.object_identity_workbench import open_capture_workbench
+from automation_harness.authoring.object_reference_updates import (
+    apply_project_reference_updates,
+    preview_project_reference_updates,
+)
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeUnavailable
+from automation_harness.core.menu_inventory import MENU_OWNER_TYPES, with_inventory_metadata
+from automation_harness.core.repository_hierarchy import (
+    authoring_parent_ids,
+    visible_authoring_definitions,
+)
+from automation_harness.core.repository_normalization import (
+    plan_repository_normalization,
+)
 
 
 class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
     """Hierarchical Object Repository editor backed by Object Identity Workbench.
 
-    Logical objects are framework agnostic. Their qualified semantic path is the
-    repository name; framework-specific locator mechanisms live only in the
-    ordered strategy alternatives on each object.
+    Logical objects are framework agnostic. Readable authored names and semantic
+    ownership are separate from framework-specific locator mechanisms, which
+    live only in the ordered strategy alternatives on each object.
     """
 
     def __init__(self, *args, **kwargs):
@@ -29,6 +41,8 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         self._workbench_original_component_id = None
         super().__init__(*args, **kwargs)
         self.button("Capture Next Click", self.capture_next_click)
+        self.button("Refresh Menu Inventory", self.refresh_menu_inventory)
+        self.button("Normalize Repository", self.normalize_repository)
         self._rename_legacy_edit_button(self.root)
         self._install_hierarchical_tree()
         self.refresh()
@@ -47,7 +61,7 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         if columns:
             columns[0].set_title("Object")
         if len(columns) > 2:
-            columns[2].set_title("Resolvers")
+            columns[2].set_title("Locator")
 
     def selected(self, tree, column=0):
         if tree is self.tree:
@@ -62,51 +76,80 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         selected = self.selected(self.tree) if hasattr(self, "tree") else None
         query = self.search.get_text().strip().casefold() if hasattr(self, "search") else ""
         self.store.clear()
-        visible = 0
-        branches = {}
-        for component_id, definition in sorted(self.repository.components.items()):
-            resolver_names = sorted({strategy.type for strategy in definition.strategies})
-            searchable = " ".join((
-                component_id,
-                definition.description,
-                definition.object_type.value,
-                " ".join(resolver_names),
-            )).casefold()
-            if query and query not in searchable:
-                continue
-            segments = [segment for segment in component_id.split(".") if segment] or [component_id]
-            parent = None
-            prefix = []
-            for segment in segments[:-1]:
-                prefix.append(segment)
-                key = tuple(prefix)
-                iterator = branches.get(key)
-                if iterator is None:
-                    iterator = self.store.append(parent)
-                    self.store.set_value(iterator, 0, segment)
-                    self.store.set_value(iterator, 1, "")
-                    self.store.set_value(iterator, 2, "")
-                    self.store.set_value(iterator, 3, "")
-                    self.store.set_value(iterator, 4, "")
-                    branches[key] = iterator
-                parent = iterator
-            iterator = self.store.append(parent)
-            self.store.set_value(iterator, 0, segments[-1])
-            self.store.set_value(iterator, 1, definition.object_type.value)
-            self.store.set_value(iterator, 2, ", ".join(resolver_names))
+
+        definitions = {
+            definition.object_id: definition
+            for definition in visible_authoring_definitions(self.repository)
+        }
+        parents = authoring_parent_ids(self.repository)
+        if query:
+            visible = {
+                definition.object_id
+                for definition in definitions.values()
+                if query in " ".join((
+                    definition.component_id,
+                    definition.description,
+                    definition.object_type.value,
+                )).casefold()
+            }
+            for object_id in tuple(visible):
+                parent_id = parents.get(object_id)
+                while parent_id is not None and parent_id in definitions:
+                    if parent_id in visible:
+                        break
+                    visible.add(parent_id)
+                    parent_id = parents.get(parent_id)
+        else:
+            visible = set(definitions)
+
+        children = {}
+        for object_id in visible:
+            parent_id = parents.get(object_id)
+            if parent_id not in visible:
+                parent_id = None
+            children.setdefault(parent_id, []).append(object_id)
+
+        def append_branch(parent_iter, object_id):
+            definition = definitions[object_id]
+            properties = dict(definition.properties or {})
+            locator = str(properties.get("locator_status") or "ready").replace("_", " ").title()
+            inventory = properties.get("menu_inventory_status")
+            if inventory:
+                locator += " · Menu %s" % str(inventory).title()
+            iterator = self.store.append(parent_iter)
+            self.store.set_value(iterator, 0, definition.component_id)
+            self.store.set_value(
+                iterator, 1,
+                definition.object_type.value.replace("_", " ").title(),
+            )
+            self.store.set_value(iterator, 2, locator)
             self.store.set_value(iterator, 3, str(definition.revision))
-            self.store.set_value(iterator, 4, component_id)
-            visible += 1
+            self.store.set_value(iterator, 4, definition.component_id)
+            for child_id in sorted(
+                children.get(object_id, ()),
+                key=lambda value: definitions[value].component_id.casefold(),
+            ):
+                append_branch(iterator, child_id)
+
+        for object_id in sorted(
+            children.get(None, ()),
+            key=lambda value: definitions[value].component_id.casefold(),
+        ):
+            append_branch(None, object_id)
+
         self.tree.expand_all()
+        shown = len(visible)
         self.set_status(
-            "%d of %d objects" % (visible, len(self.repository.components))
-            if query else "%d objects" % visible
+            "%d of %d objects" % (shown, len(definitions))
+            if query else "%d objects" % shown
         )
         if selected:
             iterator = self._find_component_iter(selected)
             if iterator is not None:
                 self.tree.get_selection().select_iter(iterator)
-                self.tree.scroll_to_cell(self.store.get_path(iterator), None, False, 0.0, 0.0)
+                self.tree.scroll_to_cell(
+                    self.store.get_path(iterator), None, False, 0.0, 0.0,
+                )
         self.show_selected()
 
     def _find_component_iter(self, component_id):
@@ -129,34 +172,38 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
             self.detail.get_buffer().set_text("")
             return
         definition = self.repository.get(component_id)
-        strategies = []
-        for strategy in definition.strategies:
-            identity = strategy.options.get("identification")
-            strategies.append({
-                "type": strategy.type,
-                "mandatory": list((identity or {}).get("mandatory", {}).keys()) if isinstance(identity, dict) else [],
-                "assistive": list((identity or {}).get("assistive", {}).keys()) if isinstance(identity, dict) else [],
-                "ordinal": (identity or {}).get("ordinal") if isinstance(identity, dict) else None,
-            })
+        properties = dict(definition.properties or {})
+        parents = authoring_parent_ids(self.repository)
+        child_count = sum(
+            1 for owner in parents.values()
+            if owner == definition.object_id
+        )
         lines = [
             "Object: %s" % component_id,
-            "Type: %s" % definition.object_type.value,
+            "Type: %s" % definition.object_type.value.replace("_", " ").title(),
             "Revision: %s" % definition.revision,
             "Actions: %s" % (", ".join(sorted(definition.actions)) or "none"),
-            "Resolution alternatives: %d" % len(definition.strategies),
-            "",
-            "Identity strategies:",
+            "Locator status: %s" % str(
+                properties.get("locator_status") or "ready"
+            ).replace("_", " ").title(),
+            "Semantic children: %d" % child_count,
         ]
-        for index, strategy in enumerate(strategies, 1):
-            lines.append("  %d. %s" % (index, strategy["type"]))
-            lines.append("     mandatory: %s" % (", ".join(strategy["mandatory"]) or "none"))
-            lines.append("     assistive: %s" % (", ".join(strategy["assistive"]) or "none"))
-            if strategy["ordinal"] is not None:
-                lines.append("     ordinal: %s" % strategy["ordinal"])
+        if definition.object_type in MENU_OWNER_TYPES:
+            lines.extend((
+                "Menu inventory: %s" % str(
+                    properties.get("menu_inventory_status") or "unknown"
+                ).title(),
+                "Menu options: %s" % properties.get(
+                    "menu_inventory_item_count", len(definition.subobjects),
+                ),
+                "Inventory source: %s" % str(
+                    properties.get("menu_inventory_source") or "unknown"
+                ).replace("_", " "),
+            ))
         lines.extend((
             "",
-            "The logical object is framework agnostic; resolver technology belongs to each strategy.",
-            "Use Edit in Workbench to inspect the semantic tree and change identity properties.",
+            "Framework-specific locator details are intentionally hidden here.",
+            "Use Edit in Workbench to inspect or change resolver identity.",
         ))
         self.detail.get_buffer().set_text("\n".join(lines))
 
@@ -222,12 +269,236 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
                         return self.capture.javafx_driver.inspect(identification=identity)
                 if strategy.type in {"atspi", "java_accessibility"}:
                     return self.capture.capture_by_locator(identification=identity)
+                if strategy.type == "java_agent":
+                    return self.capture.java_agent_driver.inspect(
+                        identification=identity,
+                    )
             except Exception as exc:
                 errors.append("%s: %s: %s" % (strategy.type, type(exc).__name__, exc))
         raise LookupError(
             "No live semantic object matched %r. %s" %
             (definition.component_id, "; ".join(errors or ["no editable semantic locator strategy"]))
         )
+
+    def normalize_repository(self):
+        try:
+            plan = plan_repository_normalization(self.repository)
+        except Exception as exc:
+            return self.error(
+                "Normalize Repository",
+                "%s: %s" % (type(exc).__name__, exc),
+            )
+        if not plan.changed:
+            return self.info(
+                "Normalize Repository",
+                "This repository already uses the semantic authoring model.",
+            )
+
+        reference_report = None
+        if self.project_context is not None and plan.renames:
+            try:
+                reference_report = preview_project_reference_updates(
+                    self.project_context,
+                    self.path,
+                    plan.renames,
+                )
+            except Exception as exc:
+                return self.error(
+                    "Normalize Repository",
+                    "Dependent artifact preview failed: %s: %s"
+                    % (type(exc).__name__, exc),
+                )
+
+        lines = [
+            "Normalization preserves immutable object IDs and locator strategies.",
+            "",
+            "Readable renames: %d" % len(plan.renames),
+            "Structural-only objects hidden: %d" % len(plan.structural_only),
+            "Semantic ownership changes: %d" % len(plan.reparented),
+        ]
+        if reference_report is not None:
+            lines.extend((
+                "Dependent artifact files affected: %d"
+                % len(reference_report.updates),
+                "Dependent references rewritten: %d"
+                % reference_report.replacement_count,
+            ))
+
+        if plan.renames:
+            lines.extend(("", "Rename preview:"))
+            for old, new in list(plan.renames.items())[:8]:
+                lines.append("  %s  →  %s" % (old, new))
+            if len(plan.renames) > 8:
+                lines.append("  … %d more" % (len(plan.renames) - 8))
+
+        if plan.structural_only:
+            lines.extend(("", "Hidden structural objects:"))
+            for name in plan.structural_only[:6]:
+                lines.append("  %s" % name)
+            if len(plan.structural_only) > 6:
+                lines.append("  … %d more" % (len(plan.structural_only) - 6))
+
+        if plan.reparented:
+            lines.extend(("", "Ownership preview:"))
+            for name, old_parent, new_parent in plan.reparented[:8]:
+                lines.append(
+                    "  %s: %s  →  %s"
+                    % (name, old_parent or "(root)", new_parent or "(root)")
+                )
+            if len(plan.reparented) > 8:
+                lines.append("  … %d more" % (len(plan.reparented) - 8))
+
+        if self.project_context is None and plan.renames:
+            lines.extend((
+                "",
+                "Warning: this repository was opened without Project context.",
+                "Alias changes cannot be propagated to external Test Plans or Step Registries automatically.",
+                "The normalized repository will remain unsaved until you choose Save.",
+            ))
+        elif self.project_context is not None:
+            lines.extend((
+                "",
+                "Applying will atomically save the repository and update project artifacts bound to it.",
+            ))
+
+        if not self.confirm("Normalize Repository", "\n".join(lines)):
+            self.set_status("Repository normalization cancelled")
+            return
+
+        try:
+            if self.project_context is not None:
+                report = apply_project_reference_updates(
+                    self.project_context,
+                    self.path,
+                    plan.renames,
+                    repository=plan.repository,
+                )
+                self.repository = plan.repository
+                self.mark_dirty(False)
+                self.refresh()
+                self.set_status(
+                    "Repository normalized — %d artifact file(s) updated, %d reference(s) rewritten"
+                    % (len(report.updates), report.replacement_count)
+                )
+            else:
+                self.repository = plan.repository
+                self.mark_dirty(True)
+                self.refresh()
+                self.set_status(
+                    "Repository normalized in memory — Save Repository to persist"
+                )
+        except Exception as exc:
+            self.error(
+                "Normalize Repository",
+                "%s: %s" % (type(exc).__name__, exc),
+            )
+            self.set_status("Repository normalization failed")
+
+    def refresh_menu_inventory(self):
+        component_id = self.selected(self.tree)
+        if not component_id:
+            return self.info("Refresh Menu Inventory", "Select a menu object first.")
+        definition = self.repository.get(component_id)
+        if definition.object_type not in MENU_OWNER_TYPES:
+            return self.info(
+                "Refresh Menu Inventory",
+                "Select a Menu, Menu Bar, or Context Menu object.",
+            )
+        self.set_status("Refreshing menu inventory for %s…" % component_id)
+        self.window.hide()
+
+        def worker():
+            try:
+                captured = self._capture_definition(definition)
+                if not captured.logical_subobjects:
+                    raise ValueError(
+                        "live menu capture did not expose a menu inventory"
+                    )
+            except Exception as exc:
+                GLib.idle_add(
+                    self._menu_inventory_refresh_finished,
+                    component_id, None, exc,
+                )
+            else:
+                GLib.idle_add(
+                    self._menu_inventory_refresh_finished,
+                    component_id, captured, None,
+                )
+
+        threading.Thread(
+            target=worker,
+            name="repository-menu-inventory-refresh",
+            daemon=True,
+        ).start()
+
+    def _menu_inventory_refresh_finished(self, component_id, captured, error):
+        self.window.show_all()
+        self.window.present()
+        if error is not None:
+            self.set_status("Menu inventory refresh failed")
+            self.error(
+                "Refresh Menu Inventory",
+                "%s: %s" % (type(error).__name__, error),
+            )
+            return False
+
+        current = self.repository.get(component_id)
+        strategy_type = captured.candidate_strategy().type
+        complete = strategy_type in {"java_agent", "javafx"}
+        source = (
+            "native_java_model" if strategy_type == "java_agent"
+            else "javafx_model" if strategy_type == "javafx"
+            else "accessibility_snapshot"
+        )
+        old_count = dict(current.properties or {}).get(
+            "menu_inventory_item_count", len(current.subobjects),
+        )
+        new_properties = {
+            key: value for key, value in dict(current.properties or {}).items()
+            if not str(key).startswith("menu_inventory_")
+        }
+        new_properties = with_inventory_metadata(
+            new_properties,
+            current.object_type,
+            captured.logical_subobjects,
+            complete=complete,
+            source=source,
+        )
+        updated = replace(
+            current,
+            subobjects={
+                str(key): dict(value)
+                for key, value in captured.logical_subobjects.items()
+            },
+            properties=new_properties,
+            revision=current.revision + 1,
+        )
+        new_count = new_properties.get(
+            "menu_inventory_item_count", len(updated.subobjects),
+        )
+        if not self.confirm(
+            "Replace Menu Inventory",
+            "Replace the stored menu inventory for %s?\n\n"
+            "Options: %s → %s\n"
+            "Inventory status: %s"
+            % (
+                component_id,
+                old_count,
+                new_count,
+                new_properties.get("menu_inventory_status", "unknown"),
+            ),
+        ):
+            self.set_status("Menu inventory refresh discarded")
+            return False
+
+        self.repository = self.repository.with_component(updated)
+        self.mark_dirty()
+        self.refresh()
+        self.set_status(
+            "Refreshed menu inventory for %s — Save Repository to persist"
+            % component_id
+        )
+        return False
 
     def _edit_resolution_failed(self, component_id, error):
         self.window.show_all(); self.window.present()
@@ -240,24 +511,18 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         return False
 
     def _configure_workbench(self, workbench):
-        def qualified_default(instance, node):
-            if instance.context is None:
-                return suggested_name(node.payload)
-            path = instance.context.path_to(node.key)
-            segments = []
-            for item in path:
-                if item.key == node.key:
-                    value = suggested_name(item.payload)
-                elif item.is_window_root:
-                    value = _semantic_segment(item.label)
-                else:
-                    value = instance.names.get(item.key) or suggested_name(item.payload)
-                value = _semantic_segment(value)
-                if value and (not segments or value != segments[-1]):
-                    segments.append(value)
-            return ".".join(segments) or "Object"
+        def semantic_default(instance, node):
+            base = default_payload_name(node.payload)
+            existing = set(self.repository.components)
+            existing.update(value for key, value in instance.names.items() if key != node.key)
+            if base not in existing:
+                return base
+            index = 2
+            while "%s %d" % (base, index) in existing:
+                index += 1
+            return "%s %d" % (base, index)
 
-        workbench._default_component_id = MethodType(qualified_default, workbench)
+        workbench._default_component_id = MethodType(semantic_default, workbench)
         return workbench
 
     def _open_existing_workbench(self, component_id, definition, captured):

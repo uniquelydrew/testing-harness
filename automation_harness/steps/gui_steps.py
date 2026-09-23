@@ -11,6 +11,7 @@ from automation_harness.core.step_registry import step
 from automation_harness.core.test_context import TestContext
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.drivers.vision_driver import VisionDriver
 from automation_harness.models.evidence import EvidenceItem
 from automation_harness.models.gui import GuiAction
@@ -25,7 +26,7 @@ def _activate_owning_window(ctx: TestContext, handle):
     errors = []
     attempted = False
     for strategy in handle.definition.strategies:
-        if strategy.type not in {"javafx", "atspi", "java_accessibility"}:
+        if strategy.type not in {"javafx", "atspi", "java_accessibility", "java_agent"}:
             continue
         attempted = True
         options = dict(strategy.options)
@@ -33,6 +34,10 @@ def _activate_owning_window(ctx: TestContext, handle):
         try:
             if strategy.type == "javafx":
                 details = JavaFxBridgeDriver(ctx).activate_window(
+                    identification=identification,
+                )
+            elif strategy.type == "java_agent":
+                details = JavaAgentDriver(ctx).activate_window(
                     identification=identification,
                 )
             else:

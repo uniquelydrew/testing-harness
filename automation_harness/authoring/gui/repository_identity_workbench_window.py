@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import shutil
 from typing import Any, Mapping
 
 import gi
@@ -15,8 +16,11 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
-from automation_harness.core.repository_hierarchy import concrete_parent_ids
-from automation_harness.authoring.repository_events import publish as publish_repository_change
+from automation_harness.core.repository_hierarchy import (
+    authoring_parent_ids,
+    repository_migration_report,
+    visible_authoring_definitions,
+)
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy
 
 
@@ -31,7 +35,12 @@ class _RepositoryWorkbenchHost:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
-        self.repository = ComponentRepository.load((self.path,))
+        self.recovery_issues = ()
+        try:
+            self.repository = ComponentRepository.load((self.path,))
+        except Exception:
+            self.repository, self.recovery_issues = ComponentRepository.load_recoverable((self.path,))
+        self.migration_report = repository_migration_report(self.repository)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
         self.window.set_decorated(False)
@@ -59,6 +68,58 @@ class _RepositoryWorkbenchHost:
             text=title,
         )
         dialog.format_secondary_text(str(text)); dialog.run(); dialog.destroy()
+
+    def confirm_delete(self, component_id):
+        dialog = Gtk.MessageDialog(
+            transient_for=self._capture_workbench.window if self._capture_workbench else None,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Delete Object",
+        )
+        dialog.format_secondary_text(
+            "Delete %s? Child objects will be reparented to its parent." % component_id,
+        )
+        response = dialog.run(); dialog.destroy()
+        return response == Gtk.ResponseType.YES
+
+    def rebuild_context(self):
+        if self._capture_workbench is not None:
+            self._capture_workbench.reload_repository_context()
+
+    def confirm_repair(self):
+        details = "\n".join("• %s: %s" % item for item in self.recovery_issues[:12])
+        dialog = Gtk.MessageDialog(
+            transient_for=self._capture_workbench.window if self._capture_workbench else None,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Delete Invalid Objects",
+        )
+        dialog.format_secondary_text(
+            "The original repository will be backed up and the invalid entries "
+            "will be removed.\n\n%s" % details,
+        )
+        response = dialog.run(); dialog.destroy()
+        return response == Gtk.ResponseType.YES
+
+    def repair_invalid_objects(self):
+        if not self.recovery_issues:
+            return self._info("Delete Invalid Objects", "No invalid repository objects were found.")
+        if not self.confirm_repair():
+            return
+        backup = self.path.with_name(self.path.name + ".before-repair")
+        try:
+            shutil.copy2(self.path, backup)
+            self.repository.validate_persistence()
+            self.repository.save(self.path)
+            removed = len(self.recovery_issues)
+            self.recovery_issues = ()
+            self._mark_repository_dirty(False)
+            self.rebuild_context()
+        except Exception as exc:
+            return self._error("Delete Invalid Objects", "%s: %s" % (type(exc).__name__, exc))
+        self._set_status("Deleted %d invalid object(s); backup: %s" % (removed, backup.name))
 
     def _set_status(self, _value):
         return None
@@ -115,6 +176,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
 
     def _load_context_async(self):
         try:
+            self._repository_host.migration_report = repository_migration_report(self._repository_host.repository)
             context, definitions = _repository_context(self._repository_host.repository)
             self._definition_by_key = definitions
         except Exception as exc:
@@ -136,12 +198,21 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             if selected is not None and selected.is_semantic:
                 self.selected_key = selected.key
                 self._render_properties(selected)
-        self._set_status("Repository scope loaded — %d object(s) prechecked" % len(self._definition_by_key))
+        report = self._repository_host.migration_report
+        detail = ""
+        if report.synthetic_lineage_segments_ignored or report.visual_objects_needing_recapture:
+            detail = " — %d legacy scope segment(s) ignored; %d visual object(s) need recapture" % (
+                report.synthetic_lineage_segments_ignored,
+                len(report.visual_objects_needing_recapture),
+            )
+        self._set_status("Repository scope loaded — %d object(s) prechecked%s" % (len(self._definition_by_key), detail))
         return result
 
     def _configure_repository_toolbar(self):
         self._button(self.toolbar, "Recapture Selected", self.recapture_selected)
-        self._button(self.toolbar, "Delete Selected", self.delete_selected)
+        self._button(self.toolbar, "Delete Object", self.delete_selected)
+        if self._repository_host.recovery_issues:
+            self._button(self.toolbar, "Delete Invalid Objects", self._repository_host.repair_invalid_objects)
         hide = {
             "Check Siblings", "Check Branch", "Clear Checks",
             "Save Selected", "Save Checked",
@@ -151,7 +222,9 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 widget.set_text("Repository Scope")
             if isinstance(widget, Gtk.Button) and widget.get_label() in hide:
                 widget.hide()
-        # Repository membership is changed only by the explicit Delete action.
+
+        # Repository membership is fixed while editing. Checked rows communicate
+        # that every persisted object participates, but are not user toggles.
         columns = self.tree.get_columns()
         if columns:
             cells = columns[0].get_cells()
@@ -166,36 +239,28 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         node = self._selected_node()
         definition = self._definition_by_key.get(node.key) if node is not None else None
         if definition is None:
-            return self.app._info("Delete object", "Select a repository object first.")
-        repository, removed = self._repository_host.repository.delete_subtree(definition.object_id)
-        detail = "Delete %s?" % definition.component_id
-        if len(removed) > 1:
-            detail += "\n\nThis also deletes %d owned descendant(s):\n%s" % (
-                len(removed) - 1, "\n".join(removed[1:]),
+            return self._repository_host._info(
+                "Delete Object", "Select a repository object first.",
             )
-        dialog = Gtk.MessageDialog(
-            transient_for=self.window, modal=True,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.YES_NO, text="Delete repository object",
-        )
-        dialog.format_secondary_text(detail)
-        response = dialog.run(); dialog.destroy()
-        if response != Gtk.ResponseType.YES:
+        if not self._repository_host.confirm_delete(definition.component_id):
             return
-        removed_object_ids = tuple(
-            self._repository_host.repository.get(component_id).object_id
-            for component_id in removed
+        try:
+            repository = self._repository_host.repository.without_component(
+                definition.component_id, reparent_children=True,
+            )
+            repository.validate_persistence()
+            self._repository_host.repository = repository
+            self._repository_host._mark_repository_dirty(True)
+            self._repository_host.rebuild_context()
+        except Exception as exc:
+            return self._repository_host._error(
+                "Delete Object", "%s: %s" % (type(exc).__name__, exc),
+            )
+        self._set_status(
+            "Deleted %s — Save Repository to persist" % definition.component_id,
         )
-        self._repository_host.repository = repository
-        self.app.repository = repository
-        self._repository_host.repository.save(self._repository_host.path)
-        publish_repository_change(
-            self._repository_host.path,
-            deleted_object_ids=removed_object_ids,
-        )
-        self._definition_by_key = {}
-        self.selected_key = None
-        self._set_status("Deleted %d object(s)" % len(removed))
+
+    def reload_repository_context(self):
         self._load_context_async()
 
     def recapture_selected(self):
@@ -440,11 +505,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 errors.append("%s: %s" % (definition.component_id, exc))
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
+        self._repository_host.repository.validate_persistence()
         self._repository_host.repository.save(self._repository_host.path)
-        publish_repository_change(
-            self._repository_host.path,
-            changed_object_ids=tuple(item.object_id for item in self._repository_host.repository.components.values()),
-        )
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))
@@ -487,7 +549,7 @@ def _repository_context(repository: ComponentRepository):
     target_keys = []
     nodes_by_id = {}
 
-    for definition in sorted(repository.components.values(), key=lambda item: item.component_id):
+    for definition in sorted(visible_authoring_definitions(repository), key=lambda item: item.component_id):
         key = "repo-object:" + definition.object_id
         capture = _capture_from_definition(definition)
         payload = _capture_payload(capture, definition)
@@ -503,8 +565,8 @@ def _repository_context(repository: ComponentRepository):
     # Only real ComponentDefinitions may occupy the hierarchy.  Legacy dotted
     # names are not converted into pseudo-objects; when an actual prefix object
     # exists it can be inferred as the concrete owner for display/migration.
-    parent_ids = concrete_parent_ids(repository)
-    for definition in sorted(repository.components.values(), key=lambda item: item.component_id):
+    parent_ids = authoring_parent_ids(repository)
+    for definition in sorted(visible_authoring_definitions(repository), key=lambda item: item.component_id):
         owner_id = parent_ids[definition.object_id]
         parent = nodes_by_id.get(owner_id, root)
         parent.children.append(nodes_by_id[definition.object_id])

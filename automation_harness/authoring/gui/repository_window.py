@@ -5,12 +5,16 @@ import json
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import GObject, Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
-from automation_harness.authoring.repository_events import publish as publish_repository_change
 from automation_harness.authoring.plan_repository import merge_objects_or
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_naming import unique_component_name
+from automation_harness.core.repository_hierarchy import (
+    authoring_parent_ids,
+    visible_authoring_definitions,
+)
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.pointer_actions import click_bounds
 from automation_harness.drivers.atspi_driver import AtspiDriver
@@ -33,16 +37,27 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self.button("Refresh", self.reload)
         self.button("Duplicate", self.duplicate_selected)
         self.button("Merge / Deduplicate", self.merge_deduplicate)
-        self.button("Remove", self.remove_selected)
+        self.button("Delete Object", self.delete_selected)
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.root.pack_start(paned, True, True, 0)
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         paned.pack1(left, resize=True, shrink=False)
-        self.search = Gtk.SearchEntry(); self.search.set_placeholder_text("Object ID, type, framework, description")
+        self.search = Gtk.SearchEntry(); self.search.set_placeholder_text("Object name, type, or description")
         self.search.connect("search-changed", lambda *_args: self.refresh())
         left.pack_start(self.search, False, False, 0)
-        self.tree, self.store = self.list_tree((("Component", 300), ("Type", 140), ("Framework", 140), ("Revision", 80)))
+        self.store = Gtk.TreeStore(
+            GObject.TYPE_STRING, GObject.TYPE_STRING,
+            GObject.TYPE_STRING, GObject.TYPE_STRING,
+        )
+        self.tree = Gtk.TreeView(model=self.store)
+        for index, (title, width) in enumerate((
+            ("Object", 330), ("Type", 150), ("Locator", 120), ("Revision", 80),
+        )):
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn(title, renderer, text=index)
+            column.set_resizable(True); column.set_min_width(width)
+            self.tree.append_column(column)
         self.tree.get_selection().connect("changed", lambda *_args: self.show_selected())
         left.pack_start(self.scrolled(self.tree), True, True, 0)
 
@@ -61,21 +76,90 @@ class ObjectRepositoryWindow(ArtifactWindow):
     def refresh(self):
         selected = self.selected(self.tree)
         query = self.search.get_text().strip().casefold()
-        self.store.clear(); visible = 0
-        for component_id, definition in sorted(self.repository.components.items()):
-            searchable = " ".join((component_id, definition.description, definition.object_type.value, definition.framework or "")).casefold()
-            if query and query not in searchable:
-                continue
-            self.store.append((component_id, definition.object_type.value, definition.framework or "", str(definition.revision)))
-            visible += 1
-        self.set_status("%d of %d objects" % (visible, len(self.repository.components)) if query else "%d objects" % visible)
+        self.store.clear()
+
+        definitions = {
+            definition.object_id: definition
+            for definition in visible_authoring_definitions(self.repository)
+        }
+        parent_ids = authoring_parent_ids(self.repository)
+        if query:
+            visible = {
+                definition.object_id
+                for definition in definitions.values()
+                if query in " ".join((
+                    definition.component_id,
+                    definition.description,
+                    definition.object_type.value,
+                )).casefold()
+            }
+            # Preserve semantic context for search hits without inventing
+            # structural/native parents.
+            for object_id in tuple(visible):
+                parent_id = parent_ids.get(object_id)
+                while parent_id is not None and parent_id in definitions:
+                    if parent_id in visible:
+                        break
+                    visible.add(parent_id)
+                    parent_id = parent_ids.get(parent_id)
+        else:
+            visible = set(definitions)
+
+        children = {}
+        for object_id in visible:
+            parent_id = parent_ids.get(object_id)
+            if parent_id not in visible:
+                parent_id = None
+            children.setdefault(parent_id, []).append(object_id)
+
+        def append_branch(parent_iter, object_id):
+            definition = definitions[object_id]
+            locator_status = str(
+                dict(definition.properties or {}).get("locator_status") or "ready"
+            ).replace("_", " ").title()
+            iterator = self.store.append(parent_iter, (
+                definition.component_id,
+                definition.object_type.value.replace("_", " ").title(),
+                locator_status,
+                str(definition.revision),
+            ))
+            for child_id in sorted(
+                children.get(object_id, ()),
+                key=lambda value: definitions[value].component_id.casefold(),
+            ):
+                append_branch(iterator, child_id)
+
+        for object_id in sorted(
+            children.get(None, ()),
+            key=lambda value: definitions[value].component_id.casefold(),
+        ):
+            append_branch(None, object_id)
+
+        self.tree.expand_all()
+        shown = len(visible)
+        self.set_status(
+            "%d of %d objects" % (shown, len(definitions))
+            if query else "%d objects" % shown
+        )
         if selected:
-            model = self.tree.get_model(); iterator = model.get_iter_first()
-            while iterator is not None:
-                if model.get_value(iterator, 0) == selected:
-                    self.tree.get_selection().select_iter(iterator); break
-                iterator = model.iter_next(iterator)
+            iterator = self._find_tree_value(selected)
+            if iterator is not None:
+                self.tree.get_selection().select_iter(iterator)
+                self.tree.scroll_to_cell(self.store.get_path(iterator))
         self.show_selected()
+
+    def _find_tree_value(self, value):
+        def walk(iterator):
+            while iterator is not None:
+                if self.store.get_value(iterator, 0) == value:
+                    return iterator
+                child = self.store.iter_children(iterator)
+                found = walk(child)
+                if found is not None:
+                    return found
+                iterator = self.store.iter_next(iterator)
+            return None
+        return walk(self.store.get_iter_first())
 
     def show_selected(self):
         component_id = self.selected(self.tree)
@@ -99,7 +183,10 @@ class ObjectRepositoryWindow(ArtifactWindow):
         except Exception as exc:
             self.window.show_all(); self.window.present(); self.error("Object Capture", "%s: %s" % (type(exc).__name__, exc)); self.set_status("Capture failed"); return False
         self.window.show_all(); self.window.present()
-        component_id = self.ask_text("Save Captured Object", "Logical component ID:")
+        suggested = unique_component_name(self.repository.components, captured)
+        component_id = self.ask_text(
+            "Save Captured Object", "Logical object name:", suggested,
+        )
         if not component_id:
             self.set_status("Capture discarded"); return False
         try:
@@ -231,12 +318,8 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self._highlight_windows = []
 
     def save(self):
-        self.repository.save(self.path)
-        publish_repository_change(
-            self.path,
-            changed_object_ids=tuple(item.object_id for item in self.repository.components.values()),
-        )
-        self.mark_dirty(False); self.set_status("Saved object repository")
+        self.repository.validate_persistence()
+        self.repository.save(self.path); self.mark_dirty(False); self.set_status("Saved object repository")
 
     def reload(self):
         if self.dirty and not self.confirm("Reload", "Discard unsaved repository changes?"):
@@ -308,10 +391,27 @@ class ObjectRepositoryWindow(ArtifactWindow):
             return self.error("Merge Objects", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty(); self.refresh(); self.set_status("Merged %s into %s using OR locator strategies" % (source, target))
 
-    def remove_selected(self):
+    def delete_selected(self):
         component_id = self.selected(self.tree)
-        if component_id and self.confirm("Remove Object", "Remove %s from this repository?" % component_id):
-            self.repository = self.repository.without_component(component_id); self.mark_dirty(); self.refresh()
+        if not component_id:
+            return self.info("Delete Object", "Select an object first.")
+        if not self.confirm(
+            "Delete Object",
+            "Delete %s? Child objects will be reparented to its parent." % component_id,
+        ):
+            return
+        try:
+            self.repository = self.repository.without_component(
+                component_id, reparent_children=True,
+            )
+            self.repository.validate_persistence()
+        except Exception as exc:
+            return self.error("Delete Object", "%s: %s" % (type(exc).__name__, exc))
+        self.mark_dirty(); self.refresh(); self.set_status("Deleted %s — save repository to persist" % component_id)
+
+    def remove_selected(self):
+        """Backward-compatible alias for integrations using the old label."""
+        return self.delete_selected()
 
     def open_project(self):
         if self.project_context:

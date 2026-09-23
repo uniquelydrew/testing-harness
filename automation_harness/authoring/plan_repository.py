@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Iterable
 from uuid import uuid4
 
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_naming import unique_component_name
 from automation_harness.core.captured_repository import materialize_capture
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_hierarchy import hierarchy_contract
@@ -377,37 +377,4 @@ def _merge_definition_or(target: ComponentDefinition, source: ComponentDefinitio
 
 
 def _unique_component_id(repository: ComponentRepository, capture: CapturedComponent) -> str:
-    raw = _qualified_capture_name(capture)
-    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw.strip()).strip("-.") or "RecordedObject"
-    candidate = base
-    index = 2
-    while candidate in repository.components:
-        candidate = "%s-%d" % (base, index)
-        index += 1
-    return candidate
-
-
-def _qualified_capture_name(capture: CapturedComponent) -> str:
-    raw = list(getattr(capture, "hierarchy", ()) or ())
-    if not raw:
-        raw = [capture.window or capture.application, capture.accessible_id or capture.name or capture.role]
-    segments = []
-    for value in raw:
-        if value in (None, ""):
-            continue
-        text = _semantic_segment(value)
-        if text and (not segments or text != segments[-1]):
-            segments.append(text)
-    return ".".join(segments) or "RecordedObject"
-
-
-def _semantic_segment(value) -> str:
-    output = []
-    capitalize = True
-    for character in str(value or "").strip():
-        if character.isalnum():
-            output.append(character.upper() if capitalize else character)
-            capitalize = False
-        else:
-            capitalize = True
-    return "".join(output) or "Object"
+    return unique_component_name(repository.components, capture)

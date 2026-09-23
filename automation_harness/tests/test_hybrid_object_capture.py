@@ -315,6 +315,53 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert "activate" in definition.actions
 
 
+def test_menubutton_capture_is_materialized_as_logical_menu_owner():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+    )
+    captured = CapturedComponent(
+        name="Actions", role="button", description=None,
+        accessible_id="actionsMenu", application="Demo", window="Demo",
+        hierarchy=(), actions=("activate",), bounds=(0, 0, 100, 30),
+        state=ComponentState(present=True, visible=True, showing=True, enabled=True),
+        authored_strategy=ComponentStrategy("javafx", {
+            "identification": {"mandatory": {"id": "actionsMenu"}},
+        }),
+        framework="javafx", native_class="javafx.scene.control.MenuButton",
+        logical_subobjects={
+            "save": {"kind": "menu_item", "criteria": {"id": "saveItem"}},
+        },
+    )
+
+    definition = service.definition_from_capture(
+        "Actions Menu", captured, validate_live=False,
+    )
+
+    assert definition.object_type == ObjectType.MENU
+    assert "select_menu_item" in definition.actions
+    assert definition.strategies[0].options["identification"]["mandatory"] == {"id": "actionsMenu"}
+
+
+def test_transient_menubutton_skin_capture_cannot_be_persisted():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+    )
+    captured = CapturedComponent(
+        name="Actions", role="button", description=None,
+        accessible_id="actionsMenu", application="Demo", window="Demo",
+        hierarchy=(), actions=("activate",), bounds=(0, 0, 100, 30),
+        state=ComponentState(present=True),
+        authored_strategy=ComponentStrategy("javafx", {
+            "identification": {"mandatory": {"id": "actionsMenu"}},
+        }),
+        framework="javafx",
+        native_class="com.sun.javafx.scene.control.skin.MenuButtonSkin",
+    )
+
+    with pytest.raises(ValueError, match="transient"):
+        service.definition_from_capture("Actions", captured, validate_live=False)
+
+
 def test_javafx_definition_validation_is_scoped_to_captured_process():
     class ProcessAware(_JavaFxSuccess):
         process_ids = []
@@ -379,3 +426,86 @@ def test_javafx_definition_rejects_ambiguous_identity():
     import pytest
     with pytest.raises(ValueError, match="remains ambiguous"):
         service.definition_from_capture("mvd.button", captured)
+
+
+
+def _swing_semantic_capture(object_type, actions, accessible_id, native_class):
+    return CapturedComponent(
+        name=accessible_id,
+        role=object_type.value.replace("_", " "),
+        description=None,
+        accessible_id=accessible_id,
+        application="MSCT",
+        window="MSCT",
+        hierarchy=(),
+        actions=tuple(actions),
+        bounds=(10, 20, 120, 24),
+        state=ComponentState(present=True, visible=True, showing=True, enabled=True),
+        backend_properties={"process_id": 7101},
+        authored_strategy=ComponentStrategy("java_agent", {
+            "identification": {
+                "mandatory": {"accessible_id": accessible_id},
+                "assistive": {"window": "MSCT"},
+            },
+        }),
+        object_type=object_type,
+        framework="swing",
+        native_class=native_class,
+    )
+
+
+def test_mixed_java_text_capture_maps_to_canonical_text_actions():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    capture = _swing_semantic_capture(
+        ObjectType.TEXT_FIELD,
+        ("resolve", "click", "focus", "set_text"),
+        "username",
+        "javax.swing.JTextField",
+    )
+
+    definition = service.definition_from_capture(
+        "Username Text Field", capture, validate_live=False,
+    )
+
+    assert {"set_text", "clear_text", "append_text", "focus"} <= definition.actions
+
+
+def test_mixed_java_combo_capture_maps_to_canonical_selection():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    capture = _swing_semantic_capture(
+        ObjectType.COMBO_BOX,
+        ("resolve", "click", "focus", "select_item"),
+        "cameraCombo",
+        "javax.swing.JComboBox",
+    )
+
+    definition = service.definition_from_capture(
+        "Camera Combo Box", capture, validate_live=False,
+    )
+
+    assert "select_item" in definition.actions
+
+
+def test_mixed_java_slider_capture_maps_to_canonical_value_action():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    capture = _swing_semantic_capture(
+        ObjectType.SLIDER,
+        ("resolve", "click", "focus", "set_value"),
+        "zoom",
+        "javax.swing.JSlider",
+    )
+
+    definition = service.definition_from_capture(
+        "Zoom Slider", capture, validate_live=False,
+    )
+
+    assert "set_value" in definition.actions

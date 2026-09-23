@@ -15,6 +15,7 @@ from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
+from automation_harness.authoring.plan_repository import assigned_repository_path, load_authoring_repository
 from automation_harness.authoring.step_registry import load_step_registry_resources
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
@@ -37,6 +38,7 @@ class TestPlanWindow(ArtifactWindow):
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
         self.repository = repository_from_plan(self.plan)
+        self._assigned_repository_token = None
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
 
@@ -95,9 +97,11 @@ class TestPlanWindow(ArtifactWindow):
         self.object_action_tree.connect("row-activated", lambda *_args: self.insert_object_action())
         objects_page.pack_start(self.scrolled(self.object_action_tree), True, True, 0)
         self.button("Add Action", self.insert_object_action, parent=objects_page)
+        self.button("Refresh Objects", self.refresh_objects, parent=objects_page)
         notebook.append_page(objects_page, Gtk.Label(label="Objects"))
 
     def refresh_objects(self):
+        self._refresh_assigned_repository()
         selected_id = self.selected(self.object_tree, 0)
         self.object_store.clear()
         query = self.object_search.get_text().strip().casefold()
@@ -114,6 +118,22 @@ class TestPlanWindow(ArtifactWindow):
                     break
                 iterator = self.object_store.iter_next(iterator)
         self.refresh_object_actions()
+
+    def _refresh_assigned_repository(self):
+        """Reload an externally edited assigned repository when its file changes."""
+        path = assigned_repository_path(self.plan, self.path)
+        if path is None or not path.is_file():
+            return False
+        stat = path.stat()
+        token = (str(path), stat.st_mtime_ns, stat.st_size)
+        if token == self._assigned_repository_token:
+            return False
+        assigned, _path = load_authoring_repository(self.plan, self.path)
+        self.repository = repository_from_plan(self.plan).overlay(assigned)
+        if self.registry_resources:
+            self.repository = self.repository.overlay(self.registry_resources.repository)
+        self._assigned_repository_token = token
+        return True
 
     def refresh_object_actions(self):
         self.object_action_store.clear()
