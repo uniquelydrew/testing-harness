@@ -12,6 +12,7 @@ import cairo  # noqa: F401
 import gi
 
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.action_catalog import action_by_id, actions_for
@@ -1412,6 +1413,8 @@ class AuthoringApp:
     def run_reference_plan(self) -> None:
         if self._run_active: return
         self.refresh_plan()
+        if self.project is None:
+            return self._error("Test run", "Target not configured: open an authoring project before running a test.")
         issues = validate_plan(self.plan, self.registry); issues.extend(validate_plan_components(self.plan, self.repository))
         if issues: return self._error("Plan validation", "\n".join(issues))
         self._run_active = True; self.run_reference_button.set_sensitive(False)
@@ -1595,7 +1598,9 @@ def _recorded_component_id(target, repository):
 
 def _highlight_rectangles(bounds, thickness=4):
     x, y, width, height = (int(v) for v in bounds)
-    width = max(1, width); height = max(1, height); t = max(1, min(thickness, width, height))
+    if width <= 0 or height <= 0 or thickness <= 0:
+        raise ValueError("highlight dimensions and thickness must be positive")
+    t = min(thickness, width, height)
     return ((x, y, width, t), (x, y + height - t, width, t), (x, y, t, height), (x + width - t, y, t, height))
 
 

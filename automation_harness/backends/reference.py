@@ -81,7 +81,10 @@ class ReferenceBackend(ExecutionBackend):
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                raise RuntimeError(f"reference backend exited during startup with code {self._process.returncode}")
+                self._stderr_handle.flush()
+                detail = (run_dir / "logs" / "reference.stderr.log").read_text(encoding="utf-8").strip()
+                suffix = f": {detail[-2000:]}" if detail else ""
+                raise RuntimeError(f"reference backend exited during startup with code {self._process.returncode}{suffix}")
             if socket_path.exists():
                 try:
                     health = ReferenceClient(socket_path).request("health")
