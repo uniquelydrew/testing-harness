@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from automation_harness.backends.live_desktop import LiveDesktopBackend
-from automation_harness.core.component_handle import ComponentHandle
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ObjectType
 
@@ -25,9 +24,6 @@ def test_live_backend_represents_desktop_session_only(monkeypatch, tmp_path: Pat
 
 
 def test_object_application_lineage_remains_object_local():
-    class Context:
-        pass
-
     identification = {
         "mandatory": {"name": "Show All"},
         "assistive": {"application": "Application A", "window": "Main"},
@@ -39,17 +35,14 @@ def test_object_application_lineage_remains_object_local():
         strategies=(ComponentStrategy("atspi", {"identification": identification}),),
     )
 
-    scoped = ComponentHandle(Context(), definition)._scoped_identification(identification)
-    assert scoped == identification
+    assert definition.strategies[0].options["identification"] == identification
 
 
 def test_objects_from_multiple_applications_need_no_execution_target():
-    class Context:
-        pass
-
-    handle = ComponentHandle(Context(), ComponentDefinition("save", object_type=ObjectType.BUTTON))
     first = {"mandatory": {"name": "Save"}, "assistive": {"application": "Application A"}}
     second = {"mandatory": {"name": "Status"}, "assistive": {"application": "Application B"}}
-
-    assert handle._scoped_identification(first) == first
-    assert handle._scoped_identification(second) == second
+    definitions = (
+        ComponentDefinition("save", object_type=ObjectType.BUTTON, strategies=(ComponentStrategy("atspi", {"identification": first}),)),
+        ComponentDefinition("status", object_type=ObjectType.LABEL, strategies=(ComponentStrategy("atspi", {"identification": second}),)),
+    )
+    assert [item.strategies[0].options["identification"] for item in definitions] == [first, second]

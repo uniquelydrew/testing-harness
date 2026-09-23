@@ -38,7 +38,8 @@ def test_v2_repository_persists_semantic_metadata_and_subobjects():
     assert definition.supports(ActionType.SELECT_CELL)
     assert definition.subobjects["first_row"]["kind"] == "table_row"
     document = repository.to_document()
-    assert document["version"] == 2
+    # Older repositories are serialized through the canonical schema.
+    assert document["version"] == 3
     assert document["components"]["orders"]["object_type"] == "table"
 
 

@@ -184,7 +184,7 @@ class StepRegistry:
     def invoke(
         self,
         context: "TestContext",
-        name: str,
+        step_name: str,
         /,
         *args: Any,
         bind_outputs: Mapping[str, str] | None = None,
@@ -192,7 +192,7 @@ class StepRegistry:
     ) -> Any:
         return self._invoke(
             context,
-            name,
+            step_name,
             *args,
             bind_outputs=bind_outputs,
             detailed=False,
@@ -202,7 +202,7 @@ class StepRegistry:
     def invoke_detailed(
         self,
         context: "TestContext",
-        name: str,
+        step_name: str,
         /,
         *args: Any,
         bind_outputs: Mapping[str, str] | None = None,
@@ -210,7 +210,7 @@ class StepRegistry:
     ) -> StepInvocationResult:
         result = self._invoke(
             context,
-            name,
+            step_name,
             *args,
             bind_outputs=bind_outputs,
             detailed=True,
@@ -222,14 +222,14 @@ class StepRegistry:
     def _invoke(
         self,
         context: "TestContext",
-        name: str,
+        step_name: str,
         /,
         *args: Any,
         bind_outputs: Mapping[str, str] | None,
         detailed: bool,
         **kwargs: Any,
     ) -> Any:
-        definition = self.get(name)
+        definition = self.get(step_name)
         if context.globals is None:
             raise RuntimeError("test context has no global variable store")
         _validate_output_bindings(definition, bind_outputs)

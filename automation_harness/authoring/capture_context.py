@@ -343,7 +343,8 @@ def _build_fallback_context(captured):
         is_semantic=False,
     )
     current = root
-    for index, label in enumerate(_fallback_context_labels(hierarchy, window)):
+    target_label = getattr(captured, "name", None) or (hierarchy[-1] if hierarchy else None)
+    for index, label in enumerate(_fallback_context_labels(hierarchy, window, target_label=target_label)):
         child = CaptureContextNode(
             key="ancestor-%s" % index,
             label=str(label),
@@ -386,7 +387,7 @@ _GENERIC_FALLBACK_LABELS = {
 }
 
 
-def _fallback_context_labels(hierarchy, window):
+def _fallback_context_labels(hierarchy, window, *, target_label=None):
     """Keep named desktop ancestry while dropping toolkit-only wrappers.
 
     AT-SPI ancestry for Swing commonly contains repeated JPanel/JLabel/filler
@@ -397,10 +398,13 @@ def _fallback_context_labels(hierarchy, window):
     """
     labels = []
     window_label = str(window or "").strip().casefold()
-    for raw_label in hierarchy[:-1]:
+    target = str(target_label or "").strip().casefold()
+    for raw_label in hierarchy:
         label = str(raw_label or "").strip()
         normalized = label.casefold()
         if not label or normalized == window_label:
+            continue
+        if target and normalized == target:
             continue
         if normalized in _GENERIC_FALLBACK_LABELS:
             continue
@@ -463,6 +467,8 @@ def is_semantic_node(node):
     if node.get("semantic_boundary") is True:
         return True
     if node.get("actions"):
+        return True
+    if class_name == "javafx.scene.control.Label" and node.get("accessible_text"):
         return True
     properties = node.get("properties")
     if isinstance(properties, Mapping):

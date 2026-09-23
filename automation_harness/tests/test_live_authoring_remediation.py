@@ -113,11 +113,16 @@ def test_authoring_project_document_contains_no_execution_scope(tmp_path):
     project = AuthoringProject(
         name="demo",
         root=tmp_path,
-        repository=tmp_path / "components.yaml",
-        runs_dir=tmp_path / "runs",
+        object_repositories=(tmp_path / "components.ahobjects",),
     )
     document = project.to_document()
-    assert set(document) == {"version", "name", "repository", "runs_dir"}
+    assert document == {
+        "version": 2,
+        "name": "demo",
+        "test_plans": [],
+        "step_registries": [],
+        "object_repositories": ["components.ahobjects"],
+    }
 
 
 def test_authoring_core_contains_no_application_target_lifecycle():

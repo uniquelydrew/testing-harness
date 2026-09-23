@@ -214,14 +214,16 @@ def execute_plan(
                     outputs=bound_outputs,
                 )
             except Exception as exc:
-                queue.fail(node_id, f"{type(exc).__name__}: {exc}")
+                failure = f"{type(exc).__name__}: {exc}"
+                queue.fail(node_id, failure)
                 result.failed += 1
                 result.exit_code = 1
+                result.validation_errors.append(f"step {node_id!r} failed: {failure}")
                 recorder.record(
                     "plan_step_failed",
                     node_id=node_id,
                     step=definition.name,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=failure,
                 )
                 _write_execution_state(artifacts.root, queue)
                 break
