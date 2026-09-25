@@ -18,6 +18,7 @@ from automation_harness.authoring.capture_property_policy import (
     available_properties,
     property_policy,
 )
+from automation_harness.core.component_naming import default_payload_name
 from automation_harness.authoring.identity_editor import _known_classes
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeUnavailable
 

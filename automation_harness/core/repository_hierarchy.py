@@ -1,7 +1,18 @@
 """Concrete Object Repository ownership helpers."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from automation_harness.core.component_repository import ComponentRepository
+
+
+@dataclass(frozen=True)
+class RepositoryMigrationReport:
+    objects_examined: int
+    concrete_ownership_established: int
+    synthetic_lineage_segments_ignored: int
+    ambiguous_parents: tuple[str, ...]
+    visual_objects_needing_recapture: tuple[str, ...]
 
 
 def concrete_parent_ids(repository: ComponentRepository) -> dict[str, str | None]:
