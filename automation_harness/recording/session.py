@@ -64,6 +64,21 @@ class MenuRecordingContext:
     invoking_target: CapturedComponent | None = None
 
 
+@dataclass
+class ComboBoxRecordingContext:
+    """One pending ComboBox popup selection.
+
+    A ComboBox uses two physical clicks, but only the list-cell click is an
+    authorable interaction.  The popup is a transient JavaFX window and some
+    desktop capture paths can briefly resolve the covered control on the
+    second press.  Keep that press inside this context rather than allowing it
+    to become an unrelated recorded click.
+    """
+    owner: CapturedComponent
+    started_at: float
+    window: str | None
+
+
 class RecordingAdapter(Protocol):
     """An adapter must subscribe only while the session is active."""
     def start(self, emit: Callable[[Observation], None]) -> None: ...
@@ -98,6 +113,7 @@ class RecordingSession:
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
         self._menu_context: MenuRecordingContext | None = None
+        self._combo_context: ComboBoxRecordingContext | None = None
         self._captured_menu_owners: list[CapturedComponent] = []
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
@@ -178,6 +194,8 @@ class RecordingSession:
                     self._active = False
                     if self._menu_context is not None:
                         self._finish_menu_context("recording_stopped", cancelled=True)
+                    if self._combo_context is not None:
+                        self._finish_combo_context("recording_stopped", cancelled=True)
                     self._flush()
                     result = tuple(self._interactions)
                     self.diagnostic("session_stopped", interactions=result)
@@ -221,10 +239,23 @@ class RecordingSession:
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
                 combo_selection = dict(target.backend_properties or {}).get("combo_selection")
                 if isinstance(combo_selection, Mapping) and target.semantic_type() == ObjectType.COMBO_BOX:
-                    index = combo_selection.get("index")
-                    if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
-                        self._begin(ActionType.SELECT_ITEM, observation, {"value": index})
+                    value = combo_selection.get("text") or target.name
+                    if isinstance(value, str) and value:
+                        if self._combo_context is not None:
+                            self._finish_combo_context("selection_recorded")
+                        self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
                         return
+                if self._combo_context is not None:
+                    # The next release belongs to the armed ComboBox even if
+                    # a transient popup is missed and capture resolves the
+                    # covered object below it.  Never author that false
+                    # target as a second independent click.
+                    self._finish_combo_context(
+                        "selection_target_not_resolved",
+                        cancelled=True,
+                        suppressed_target=target,
+                    )
+                    return
                 if self._menu_context is not None:
                     if _is_menu_related_capture(target):
                         self._menu_context.last_target = target
@@ -246,7 +277,7 @@ class RecordingSession:
                     return
 
                 if target.semantic_type() == ObjectType.COMBO_BOX and action == ActionType.CLICK:
-                    self.diagnostic("combo_popup_opener_suppressed", owner=target)
+                    self._start_combo_context(target, observation.timestamp, "combo_pointer_open")
                     return
 
                 self._begin(action, observation, self._pointer_parameters(observation))
@@ -261,6 +292,14 @@ class RecordingSession:
                 if observation.target is None:
                     return
                 target = observation.target
+                if self._combo_context is not None:
+                    if _same_logical_target(self._combo_context.owner, target):
+                        self.diagnostic(
+                            "combo_popup_action_suppressed",
+                            observation=observation,
+                            owner=self._combo_context.owner,
+                        )
+                        return
                 if (
                     target.semantic_type() == ObjectType.COMBO_BOX
                     and self._pending is not None
@@ -312,6 +351,13 @@ class RecordingSession:
                 return
 
             if isinstance(observation, KeyboardInput):
+                if (
+                    self._combo_context is not None
+                    and observation.phase == "pressed"
+                    and str(observation.key).casefold() in {"escape", "esc"}
+                ):
+                    self._finish_combo_context("escape", cancelled=True)
+                    return
                 if (
                     self._menu_context is not None
                     and observation.phase == "pressed"
@@ -399,6 +445,37 @@ class RecordingSession:
             owner=context.owner,
             last_target=context.last_target,
             pending=self._pending,
+        )
+
+    def _start_combo_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if self._combo_context is not None:
+            if _same_logical_target(self._combo_context.owner, owner):
+                return
+            self._finish_combo_context("combo_owner_changed", cancelled=True)
+        self._combo_context = ComboBoxRecordingContext(
+            owner=owner,
+            started_at=timestamp,
+            window=owner.window or owner.application,
+        )
+        self.diagnostic("combo_popup_transaction_started", reason=reason, owner=owner)
+
+    def _finish_combo_context(
+        self,
+        reason: str,
+        *,
+        cancelled: bool = False,
+        suppressed_target: CapturedComponent | None = None,
+    ) -> None:
+        context = self._combo_context
+        if context is None:
+            return
+        self._combo_context = None
+        self.diagnostic(
+            "combo_popup_transaction_finished",
+            reason=reason,
+            cancelled=cancelled,
+            owner=context.owner,
+            suppressed_target=suppressed_target,
         )
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
@@ -593,11 +670,8 @@ def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_
             navigation = dict(interaction.evidence or {}).get("menu_navigation")
             if not isinstance(navigation, str) or not navigation.strip():
                 navigation = " > ".join(interaction.repository_match.subobject_path)
-            action: dict[str, Any] = {
-                "type": ActionType.SELECT_MENU_ITEM.value,
-                "path": list(interaction.repository_match.subobject_path),
-            }
-            description = "Recorded select_menu_item on %s -> %s" % (
+            action: dict[str, Any] = {"type": ActionType.SELECT_ITEM.value, "value": navigation}
+            description = "Recorded select_item on %s -> %s" % (
                 component_id, navigation,
             )
         else:

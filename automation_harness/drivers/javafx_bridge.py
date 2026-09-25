@@ -6,7 +6,7 @@ import queue
 import socket
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
@@ -126,6 +126,7 @@ class JavaFxBridgeDriver:
 
     context: Any = None
     discovery_dir: Path | None = None
+    _next_click_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     @property
     def available(self) -> bool:
@@ -162,6 +163,14 @@ class JavaFxBridgeDriver:
                     continue
             assert captured is not None
             return captured
+        if not self._next_click_lock.acquire(blocking=False):
+            raise RuntimeError("a JavaFX next-click capture is already active")
+        try:
+            return self._capture_one_next_click(timeout)
+        finally:
+            self._next_click_lock.release()
+
+    def _capture_one_next_click(self, timeout: float) -> CapturedComponent:
         endpoints = self.endpoints()
         if not endpoints:
             raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered")
@@ -381,6 +390,11 @@ class JavaFxBridgeDriver:
             "fallback_fired": confirmation.get("fallback_fired"),
         }
 
+    def select_popup_path(self, selectors, *, identification=None, **_kwargs):
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request("select_popup_path", timeout=5.0, identification=dict(identification or {}), selectors=[dict(item) for item in selectors])
+        return {"action": "select_item", "bridge_pid": endpoint.pid, "path": response.get("path", [])}
+
     @staticmethod
     def _await_menu_dispatch(endpoint, token: Any) -> None:
         if not isinstance(token, str) or not token:
@@ -580,7 +594,14 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         owner = _captured(endpoint, selection["owner"])
         return replace(owner, backend_properties={
             **dict(owner.backend_properties),
-            "combo_selection": {"index": selection.get("index"), "text": node.get("text")},
+            "combo_selection": {
+                "index": selection.get("index"),
+                # ListCell#getText is presentation-only (and can be empty for
+                # graphic cells).  The agent supplies the selected item value
+                # explicitly so a recording never falls back to the ComboBox
+                # owner's label.
+                "text": selection.get("text") or node.get("text") or node.get("name"),
+            },
         })
     node = _normalize_javafx_menu_node(node)
     node_id = _optional_str(node.get("id"))
@@ -861,7 +882,10 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         owner = _captured_recording_node(selection["owner"])
         return replace(owner, backend_properties={
             **dict(owner.backend_properties),
-            "combo_selection": {"index": selection.get("index"), "text": node.get("text")},
+            "combo_selection": {
+                "index": selection.get("index"),
+                "text": selection.get("text") or node.get("text") or node.get("name"),
+            },
         })
     node = _normalize_javafx_menu_node(node)
     legacy_fx_node = "id" in node and "class" in node and "backend_properties" not in node

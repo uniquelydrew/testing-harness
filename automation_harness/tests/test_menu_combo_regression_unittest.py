@@ -68,8 +68,8 @@ class MenuComboRegression(unittest.TestCase):
     def test_combo_popup_cell_is_owned_by_combo(self):
         owner = {"name": "Camera", "role": "combo box", "class": "javafx.scene.control.ComboBox",
                  "id": "camera", "window": "Main", "bounds": [10, 10, 100, 25]}
-        cell = {"name": "North", "role": "list item", "class": "javafx.scene.control.ListCell",
-                "window": "Popup", "combo_selection": {"index": 2, "owner": owner}}
+        cell = {"name": "Decorative cell", "role": "list item", "class": "javafx.scene.control.ListCell",
+                "window": "Popup", "combo_selection": {"index": 2, "text": "North", "owner": owner}}
         capture = _captured_recording_node(cell)
         self.assertEqual(capture.semantic_type(), ObjectType.COMBO_BOX)
         self.assertEqual(capture.candidate_strategy().type, "javafx")
@@ -85,7 +85,24 @@ class MenuComboRegression(unittest.TestCase):
         interactions = session.stop()
         self.assertEqual(len(interactions), 1)
         self.assertEqual(interactions[0].action, ActionType.SELECT_ITEM)
-        self.assertEqual(interactions[0].parameters, {"value": 2})
+        self.assertEqual(interactions[0].parameters, {"value": "North"})
+
+    def test_combo_popup_miss_consumes_the_second_click(self):
+        owner = _captured_recording_node({
+            "name": "Camera", "role": "combo box", "class": "javafx.scene.control.ComboBox",
+            "id": "camera", "window": "Main", "bounds": [10, 10, 100, 25],
+        })
+        covered_button = _captured_recording_node({
+            "name": "Save", "role": "button", "class": "javafx.scene.control.Button",
+            "id": "save", "window": "Main", "bounds": [10, 40, 100, 25],
+        })
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(0.5, "javafx", owner, {}, "primary", "released", (20, 20)))
+        # A transient-popup hit-test failure used to create a spurious Save
+        # click here.  It is the unresolved second half of the combo gesture.
+        session.observe(PointerInteraction(1.0, "javafx", covered_button, {}, "primary", "released", (20, 50)))
+        self.assertEqual(session.stop(), ())
 
     def test_combo_completion_checks_selected_index(self):
         owner = ComponentDefinition(

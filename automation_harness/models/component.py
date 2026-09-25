@@ -58,6 +58,9 @@ class ComponentDefinition:
         """Return canonical actions including geometry-backed pointer Click."""
         values: set[ActionType] = set()
         for action in self.actions:
+            if action == "select_menu_item":
+                values.add(ActionType.SELECT_ITEM)
+                continue
             if action == "activate":
                 values.update({ActionType.ACTIVATE, ActionType.CLICK})
                 continue
@@ -81,10 +84,12 @@ class ComponentDefinition:
             ObjectType.MENU,
             ObjectType.CONTEXT_MENU,
         }:
-            values.add(ActionType.SELECT_MENU_ITEM)
+            values.add(ActionType.SELECT_ITEM)
         return frozenset(values) or default_actions(self.object_type)
 
     def supports(self, action: ActionType) -> bool:
+        if action is ActionType.SELECT_MENU_ITEM:
+            return "select_menu_item" in self.actions
         return action in self.semantic_actions
 
 

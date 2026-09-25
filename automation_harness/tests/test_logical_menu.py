@@ -291,8 +291,8 @@ def test_recorded_menu_subobject_becomes_select_menu_item_action():
     assert step.inputs == {
         "component_id": owner.component_id,
         "action": {
-            "type": "select_menu_item",
-            "path": ["camera", "camera_selector"],
+            "type": "select_item",
+            "value": "camera > camera_selector",
         },
     }
 
@@ -316,7 +316,7 @@ def test_recorded_menu_uses_readable_navigation_when_review_supplies_it():
 
     step = interactions_to_steps((interaction,))[0]
 
-    assert step.inputs["action"]["path"] == ["camera", "camera_selector"]
+    assert step.inputs["action"]["value"] == "Camera > Camera Selector"
     assert "Camera > Camera Selector" in step.description
 
 
@@ -359,8 +359,8 @@ def test_menu_opener_and_terminal_item_record_as_one_semantic_interaction():
     assert interactions[0].repository_match.status == "known_subobject"
     step = interactions_to_steps(interactions)[0]
     assert step.inputs["component_id"] == owner.component_id
-    assert step.inputs["action"]["type"] == "select_menu_item"
-    assert step.inputs["action"]["path"] == ["openrecordingmenuitem"]
+    assert step.inputs["action"]["type"] == "select_item"
+    assert step.inputs["action"]["value"] == "openrecordingmenuitem"
 
 
 def test_click_outside_open_menu_discards_menu_opener_and_records_outside_click():

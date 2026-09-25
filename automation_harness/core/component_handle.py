@@ -19,7 +19,7 @@ from automation_harness.core.menu_navigation import resolve_navigation
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
-from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
+from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity, ObjectType
 from automation_harness.utils.wait import wait_for as wait_for_value
 
 
@@ -165,6 +165,15 @@ class ComponentHandle:
                 if not isinstance(semantic.value, str):
                     raise ValueError("append_text requires a string value")
                 payload = self.set_text(self.get_text() + semantic.value)
+            elif semantic.type == ActionType.SELECT_ITEM and (semantic.options.get("path") is not None or isinstance(semantic.value, str)):
+                navigation = semantic.options.get("path", semantic.value)
+                if self.definition.object_type is ObjectType.COMBO_BOX and isinstance(navigation, str):
+                    selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                else:
+                    path = resolve_navigation(self.definition.subobjects, navigation)
+                    selectors = self._menu_path_selectors(path)
+                operation = "select_popup_path" if self.definition.object_type is ObjectType.COMBO_BOX else "select_menu_path"
+                payload = self._accessibility_operation("select popup item", operation, selectors)
             elif semantic.type in {ActionType.SELECT, ActionType.SELECT_ITEM, ActionType.SELECT_ROW, ActionType.SELECT_CELL}:
                 index = semantic.value
                 if index is None and semantic.selector is not None:

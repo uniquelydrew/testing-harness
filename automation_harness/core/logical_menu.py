@@ -71,7 +71,8 @@ def logical_menu_metadata(capture: CapturedComponent | None) -> Mapping[str, Any
     if capture is None:
         return None
     properties = dict(capture.backend_properties or {})
-    value = properties.get("logical_menu")
+    value = properties.get("logical_popup")
+    if not isinstance(value, Mapping): value = properties.get("logical_menu")
     return value if isinstance(value, Mapping) else None
 
 
@@ -540,3 +541,9 @@ def menu_action_payload(target: LogicalMenuTarget) -> dict[str, Any]:
         "type": "select_menu_item",
         "path": list(target.subobject_path),
     }
+
+find_logical_popup_targets = find_logical_menu_targets
+stage_recorded_popup_capture = stage_recorded_menu_capture
+
+def popup_action_payload(target: LogicalMenuTarget) -> dict[str, Any]:
+    return {"type": "select_item", "path": list(target.subobject_path)}

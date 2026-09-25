@@ -32,6 +32,8 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -53,6 +55,14 @@ public final class AutomationHarnessJavaFxAgent {
     private static final Map<Object, String> REFERENCES = Collections.synchronizedMap(new IdentityHashMap<Object, String>());
     private static final String TOKEN = UUID.randomUUID().toString();
     private static final long PID = ProcessHandle.current().pid();
+    // Requests originate from independent loopback connections.  Bound their
+    // concurrency so recording cannot create one JVM thread per capture/poll
+    // and starve JavaFX or native event threads.
+    private static final ExecutorService CLIENT_EXECUTOR = Executors.newFixedThreadPool(4, runnable -> {
+        Thread thread = new Thread(runnable, "automation-harness-javafx-client");
+        thread.setDaemon(true);
+        return thread;
+    });
     private static volatile ServerSocket server;
     private static volatile Path discoveryFile;
 
@@ -78,9 +88,7 @@ public final class AutomationHarnessJavaFxAgent {
 
             while (!socket.isClosed()) {
                 Socket client = socket.accept();
-                Thread handler = new Thread(() -> handleClient(client), "automation-harness-javafx-client");
-                handler.setDaemon(true);
-                handler.start();
+                CLIENT_EXECUTOR.execute(() -> handleClient(client));
             }
         } catch (Throwable error) {
             System.err.println("[automation-harness-javafx] agent startup failed: " + error);
@@ -178,6 +186,9 @@ public final class AutomationHarnessJavaFxAgent {
                     mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors")),
                     Boolean.TRUE.equals(request.get("pointer_terminal"))));
         }
+        if ("select_popup_path".equals(op)) {
+            return ok(FxRuntime.selectPopupPath(mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors"))));
+        }
         if ("finish_menu_click".equals(op)) {
             return ok(FxRuntime.finishMenuClick(stringValue(request.get("click_token")),
                     Boolean.TRUE.equals(request.get("clicked"))));
@@ -259,6 +270,7 @@ public final class AutomationHarnessJavaFxAgent {
     }
 
     private static void cleanup() {
+        CLIENT_EXECUTOR.shutdownNow();
         try {
             ServerSocket socket = server;
             if (socket != null && !socket.isClosed()) {
@@ -334,6 +346,10 @@ public final class AutomationHarnessJavaFxAgent {
         private static final String MOUSE_EVENT = "javafx.scene.input.MouseEvent";
         private static final String EVENT_HANDLER = "javafx.event.EventHandler";
         private static final Set<String> INSTALLED_SCENES = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        // A next-click request owns temporary scene filters.  Overlapping
+        // requests multiply those filters and their proxy callbacks while the
+        // popup topology is changing, which is unsafe pressure on JavaFX.
+        private static final AtomicBoolean NEXT_CLICK_CAPTURE_ACTIVE = new AtomicBoolean(false);
         private static final Map<String, PendingMenuClick> PENDING_MENU_CLICKS = new ConcurrentHashMap<String, PendingMenuClick>();
         private static final Map<String, PendingMenuClick> MENU_DISPATCHES = new ConcurrentHashMap<String, PendingMenuClick>();
         private static final Set<String> INTERACTION_BOUNDARIES = Collections.unmodifiableSet(
@@ -406,6 +422,9 @@ public final class AutomationHarnessJavaFxAgent {
             if (!classAvailable(PLATFORM)) {
                 throw new IllegalStateException("JavaFX runtime is not loaded in this JVM");
             }
+            if (!NEXT_CLICK_CAPTURE_ACTIVE.compareAndSet(false, true)) {
+                throw new IllegalStateException("a JavaFX next-click capture is already active");
+            }
             final AtomicReference<Map<String, Object>> captured = new AtomicReference<Map<String, Object>>();
             final CountDownLatch latch = new CountDownLatch(1);
             final List<SceneFilter> filters = new ArrayList<SceneFilter>();
@@ -436,6 +455,8 @@ public final class AutomationHarnessJavaFxAgent {
                         return null;
                     });
                 } catch (Throwable ignored) {
+                } finally {
+                    NEXT_CLICK_CAPTURE_ACTIVE.set(false);
                 }
             }
         }
@@ -845,6 +866,24 @@ public final class AutomationHarnessJavaFxAgent {
                 result.put("node", nodePayload(root.node, root.window));
                 return result;
             });
+        }
+
+        static Map<String, Object> selectPopupPath(final Map<String, Object> identification, final List<Object> selectors) throws Exception {
+            if (selectors.size() != 1 || !(selectors.get(0) instanceof Map)) throw new IllegalArgumentException("popup path requires one selector");
+            @SuppressWarnings("unchecked") Map<String, Object> selector = (Map<String, Object>) selectors.get(0);
+            Object ordinal = selector.get("ordinal");
+            if (ordinal instanceof Number) return selectChild(identification, ((Number) ordinal).intValue());
+            Map<String, Object> criteria = mapValueOrEmpty(selector.get("criteria"));
+            Object wanted = criteria.get("text");
+            NodeMatch root = unique(resolve(identification, true), identification);
+            List<Object> items = listValue(call(root.node, "getItems"));
+            int match = -1;
+            for (int index = 0; index < items.size(); index++) if (String.valueOf(items.get(index)).equals(String.valueOf(wanted))) {
+                if (match >= 0) throw new IllegalArgumentException("popup text is ambiguous: " + wanted);
+                match = index;
+            }
+            if (match < 0) throw new IllegalArgumentException("popup item was not found: " + wanted);
+            return selectChild(identification, match);
         }
 
         private static Object menuChild(Object parent, Map<String, Object> selector) throws Exception {
@@ -1602,6 +1641,16 @@ public final class AutomationHarnessJavaFxAgent {
                 if (ownerWindow != null && owner != node) {
                     Map<String, Object> selection = new LinkedHashMap<String, Object>();
                     selection.put("index", ((Number) index).intValue());
+                    // ListCell#getItem is the selected domain value.  Do not
+                    // infer it from the skin's text node: custom cells often
+                    // have no text of their own, and recording must preserve
+                    // the value passed to select_item.
+                    Object item = callQuiet(cell, "getItem");
+                    String selectedText = item == null ? optionalNoArgStringQuiet(cell, "getText")
+                            : String.valueOf(item);
+                    if (selectedText != null && !selectedText.isEmpty()) {
+                        selection.put("text", selectedText);
+                    }
                     selection.put("owner", nodePayload(owner, ownerWindow));
                     payload.put("combo_selection", selection);
                 }
