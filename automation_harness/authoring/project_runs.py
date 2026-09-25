@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Optional
 
 from automation_harness.authoring.plan_repository import assigned_repositories, load_repository_set
 from automation_harness.authoring.step_registry import load_step_registry_resources
@@ -128,7 +128,7 @@ def load_batches(runs_dir: Path, project_path: Path) -> tuple[ProjectBatchRun, .
     return tuple(sorted(result, key=lambda item: item.started_at, reverse=True))
 
 
-ProgressCallback = Callable[[str, int, int, ProjectPlanRun | None], None]
+ProgressCallback = Callable[[str, int, int, Optional[ProjectPlanRun]], None]
 
 
 def execute_project_batch(project, project_path: Path, plan_paths: Iterable[Path], *, runs_dir: Path,
