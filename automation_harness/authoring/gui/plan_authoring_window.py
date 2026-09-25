@@ -16,13 +16,14 @@ from automation_harness.authoring.gui.action_widgets import (
 )
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
 from automation_harness.authoring.plan_repository import (
-    assign_repository,
+    assign_repositories,
     assigned_repository_path,
-    load_authoring_repository,
+    load_repository_set,
     merge_repository_or,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
 from automation_harness.formats import REPOSITORY_SUFFIX
@@ -35,7 +36,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         super().__init__(*args, **kwargs)
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
         if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
-            assigned, _path = load_authoring_repository(self.plan, self.path)
+            assigned = load_repository_set(self.plan, self.path).compose()
             self.repository = repository_from_plan(self.plan).overlay(assigned)
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -73,7 +74,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             if not selected.is_file():
                 raise ValueError("object repository does not exist")
             assigned = ComponentRepository.load((selected,))
-            self.plan = assign_repository(self.plan, self.path, selected)
+            self.plan = assign_repositories(self.plan, self.path, (
+                RepositoryAssociation(selected, RepositoryScope.LOCAL),
+            ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
             self.repository = repository_from_plan(self.plan).overlay(assigned)
@@ -129,7 +132,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             # Assignment happens only after a successful merge/save. From this
             # point onward recording's assigned_repository_path lookup resolves
             # to the central file, making it the destination for new captures.
-            self.plan = assign_repository(self.plan, self.path, selected)
+            self.plan = assign_repositories(self.plan, self.path, (
+                RepositoryAssociation(selected, RepositoryScope.LOCAL),
+            ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
             self.repository = repository_from_plan(self.plan).overlay(central)

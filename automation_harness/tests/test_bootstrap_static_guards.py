@@ -25,3 +25,22 @@ def test_bootstrap_uses_scoped_target_launcher_not_global_java_tool_options():
     assert "unset JAVA_TOOL_OPTIONS" in source
     assert "automation-java-target --agent swing -- <target-command>" in source
     assert "export JAVA_TOOL_OPTIONS=" not in source
+
+
+def test_bootstrap_smoke_tests_the_installed_authoring_entry_point():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+
+    assert '"$VENV_DIR/bin/automation-author" --smoke-test' in source
+    assert '"$VENV_DIR/bin/automation-capture"' not in source
+
+
+def test_plan_authoring_window_uses_current_repository_assignment_api():
+    source = (
+        ROOT / "automation_harness" / "authoring" / "gui" / "plan_authoring_window.py"
+    ).read_text(encoding="utf-8")
+
+    assert "assign_repositories" in source
+    assert "load_repository_set" in source
+    assert "RepositoryAssociation" in source
+    assert "RepositoryScope.LOCAL" in source
+    assert "assign_repository," not in source
