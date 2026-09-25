@@ -110,11 +110,14 @@ class HybridObjectCaptureService(ObjectCaptureService):
         def pointer(event_type, coordinates, _timestamp, owner_pid=None):
             if not event_type.endswith(("1p", "3p")) or not result.empty():
                 return
+            # The Capture dialog and repository editor belong to this process.
+            # Their clicks are not capture targets and must not terminate the
+            # pending recapture or trigger a native accessibility traversal.
+            if owner_pid == os.getpid():
+                return
             try:
                 if owner_pid is None:
                     raise LookupError("X11 did not identify the topmost client process")
-                if owner_pid == os.getpid():
-                    raise LookupError("the selected point belongs to Automation Harness")
                 captured, backend = self._capture_owned_point(coordinates, owner_pid)
                 result.put_nowait((captured, backend, None))
             except Exception as exc:

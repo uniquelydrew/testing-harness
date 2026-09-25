@@ -39,6 +39,7 @@ class ObjectIdentityWorkbench:
         self.name_entry = None
         self.selected_key = None
         self._loading = True
+        self._closed = False
         self._highlight_generation = 0
 
         self.window = Gtk.Window(title="Object Identity Workbench")
@@ -129,6 +130,8 @@ class ObjectIdentityWorkbench:
         threading.Thread(target=worker, name="capture-context-loader", daemon=True).start()
 
     def _context_ready(self, context):
+        if self._closed:
+            return False
         self.context = context
         self._loading = False
         self.tree_store.clear()
@@ -146,6 +149,8 @@ class ObjectIdentityWorkbench:
         return False
 
     def _context_failed(self, error):
+        if self._closed:
+            return False
         self._loading = False
         self._set_status("Capture scope unavailable")
         self.app._error("Capture scope", "%s: %s" % (type(error).__name__, error))
@@ -467,7 +472,7 @@ class ObjectIdentityWorkbench:
         ).start()
 
     def _highlight_resolution_ready(self, generation, captured):
-        if generation != self._highlight_generation:
+        if self._closed or generation != self._highlight_generation:
             return False
         rect = tuple(int(round(float(value))) for value in captured.bounds)
         self.app._show_highlight(rect, False)
@@ -476,13 +481,15 @@ class ObjectIdentityWorkbench:
         return False
 
     def _highlight_resolution_failed(self, generation, error):
-        if generation != self._highlight_generation:
+        if self._closed or generation != self._highlight_generation:
             return False
         self._set_status("Highlight resolution failed")
         self.app._error("Highlight failed", "%s: %s" % (type(error).__name__, error))
         return False
 
     def _clear_highlight(self):
+        if self._closed:
+            return False
         self.app._clear_highlight()
         return False
 
@@ -683,6 +690,8 @@ class ObjectIdentityWorkbench:
             pass
 
     def _on_destroy(self, *_args):
+        self._closed = True
+        self._highlight_generation += 1
         try:
             if getattr(self.app, "_capture_workbench", None) is self:
                 self.app._capture_workbench = None

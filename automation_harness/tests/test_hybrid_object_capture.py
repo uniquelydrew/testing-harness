@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -231,6 +232,22 @@ class _PointerMonitor:
 
 def _monitor(owner_pid):
     return lambda: _PointerMonitor(owner_pid)
+
+
+def test_recapture_ignores_own_window_before_external_click():
+    class PointerMonitor:
+        def start(self, callback):
+            callback("mouse:button:1p", (10, 10), time.monotonic(), os.getpid())
+            callback("mouse:button:1p", (25, 35), time.monotonic(), 77)
+
+        def stop(self):
+            pass
+
+    service = HybridObjectCaptureService(
+        driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(), pointer_monitor_factory=PointerMonitor,
+    )
+    assert service.capture_next_click(timeout=1.0).accessible_id == "follow"
 
 
 def test_javafx_capture_is_selected_by_topmost_process():

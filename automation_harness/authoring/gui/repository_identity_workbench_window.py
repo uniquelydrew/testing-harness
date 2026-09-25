@@ -185,6 +185,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             GLib.idle_add(self._context_ready, context)
 
     def _context_ready(self, context):
+        if self._closed:
+            return False
         result = super()._context_ready(context)
         for key, definition in self._definition_by_key.items():
             self.names[key] = definition.component_id
@@ -304,6 +306,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         threading.Thread(target=worker, name="repository-object-recapture", daemon=True).start()
 
     def _recapture_finished(self, key, proposed, comparison, captured, error):
+        if self._closed:
+            return False
         if error is not None:
             self.window.show_all()
             self.window.present()
@@ -320,6 +324,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         return False
 
     def _finish_recapture_review(self, key, proposed, comparison, captured=None):
+        if self._closed:
+            return False
         self._repository_host._clear_highlight()
         self.window.show_all()
         self.window.present()
@@ -412,7 +418,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         threading.Thread(target=worker, name="repository-highlight-resolver", daemon=True).start()
 
     def _repository_highlight_ready(self, generation, result):
-        if generation != self._highlight_generation:
+        if self._closed or generation != self._highlight_generation:
             return False
         self.app._show_highlight(result.bounds, False)
         GLib.timeout_add(1400, self._clear_highlight)
