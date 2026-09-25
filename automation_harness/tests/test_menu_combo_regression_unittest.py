@@ -4,7 +4,10 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from automation_harness.core.completion import _infer_condition
-from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver, _captured_recording_node
+from automation_harness.core.interaction_preparation import preparation_requirement
+from automation_harness.drivers.javafx_bridge import (
+    JavaFxBridgeDriver, JavaFxBridgeProtocolError, _captured_recording_node,
+)
 from automation_harness.models.component import ComponentDefinition
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
@@ -13,6 +16,11 @@ from automation_harness.recording.observations import PointerInteraction
 
 
 class MenuComboRegression(unittest.TestCase):
+    def test_menu_selection_raises_owner_window_without_focusing_popup(self):
+        requirement = preparation_requirement(ActionType.SELECT_MENU_ITEM)
+        self.assertTrue(requirement.activate_window)
+        self.assertFalse(requirement.request_focus)
+
     def test_menu_owner_survives_cancel_without_creating_a_step(self):
         owner = _captured_recording_node({
             "name": "File", "role": "menu", "object_type": "menu",
@@ -38,6 +46,24 @@ class MenuComboRegression(unittest.TestCase):
         self.assertIsNone(_infer_condition(context, call, {
             "component_id": "File Menu", "action": {"type": "select_menu_item"},
         }))
+
+    def test_click_completion_does_not_recheck_dialog_button_that_disappears(self):
+        button = ComponentDefinition(
+            component_id="OK Button", object_type=ObjectType.BUTTON,
+            expected_states={"enabled": True, "showing": True, "visible": True},
+        )
+        context = type("Context", (), {"components": type("Components", (), {
+            "contains": lambda self, key: key == "OK Button",
+            "get": lambda self, key: button,
+        })()})()
+        call = StepCall(node_id="step-001", step_id="gui.object.action")
+        self.assertIsNone(_infer_condition(context, call, {
+            "component_id": "OK Button", "action": {"type": "click"},
+        }))
+        self.assertEqual(_infer_condition(context, replace(call, completion={
+            "mode": "automatic", "effects": [{"object": "OK Button", "transition": "becomes-absent"}],
+        }), {"component_id": "OK Button", "action": {"type": "click"}}),
+            {"object": "OK Button", "state": "absent", "equals": True})
 
     def test_combo_popup_cell_is_owned_by_combo(self):
         owner = {"name": "Camera", "role": "combo box", "class": "javafx.scene.control.ComboBox",
@@ -76,17 +102,36 @@ class MenuComboRegression(unittest.TestCase):
         }), {"object": "Camera", "property": "selected_index", "equals": 2})
 
     def test_menu_path_uses_scoped_bounds_for_real_click(self):
-        endpoint = type("Endpoint", (), {
-            "pid": 42,
-            "request": lambda self, operation, **kwargs: {
-                "path": [{"id": "open"}], "terminal_bounds": [100, 200, 80, 20],
-            },
-        })()
+        requests = []
+        def request(_self, operation, **kwargs):
+            requests.append((operation, kwargs))
+            if operation == "finish_menu_click":
+                return {"pointer_action_observed": False, "fallback_fired": True}
+            return {"path": [{"id": "open"}], "terminal_bounds": [100, 200, 80, 20],
+                    "click_token": "scoped-menu-item"}
+        endpoint = type("Endpoint", (), {"pid": 42, "request": request})()
         with patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())), \
              patch("automation_harness.core.pointer_actions.click_bounds", return_value={"x": 140, "y": 210}) as click:
             result = JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
         click.assert_called_once_with([100, 200, 80, 20])
         self.assertEqual(result["pointer"], {"x": 140, "y": 210})
+        self.assertEqual(requests[-1], ("finish_menu_click", {
+            "timeout": 35.0, "click_token": "scoped-menu-item", "clicked": True,
+        }))
+        self.assertTrue(result["fallback_fired"])
+
+    def test_failed_pointer_click_does_not_fire_menu_item(self):
+        requests = []
+        def request(_self, operation, **kwargs):
+            requests.append((operation, kwargs))
+            return ({"click_token": "item", "terminal_bounds": [1, 2, 3, 4]}
+                    if operation == "select_menu_path" else {})
+        endpoint = type("Endpoint", (), {"pid": 42, "request": request})()
+        with patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())), \
+             patch("automation_harness.core.pointer_actions.click_bounds", side_effect=RuntimeError("pointer failed")):
+            with self.assertRaisesRegex(RuntimeError, "pointer failed"):
+                JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
+        self.assertFalse(requests[-1][1]["clicked"])
 
     def test_menu_refuses_to_click_without_rendered_bounds(self):
         endpoint = type("Endpoint", (), {
@@ -98,6 +143,38 @@ class MenuComboRegression(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "owner-scoped rendered bounds"):
                 JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
         click.assert_not_called()
+
+    def test_missing_rendered_bounds_fires_only_resolved_menu_path(self):
+        requests = []
+        def request(_self, operation, **kwargs):
+            requests.append((operation, kwargs))
+            if operation == "menu_dispatch_status":
+                return {"observed": True, "finished": False, "error": None}
+            if kwargs["pointer_terminal"]:
+                raise JavaFxBridgeProtocolError(
+                    "IllegalStateException: selected menu item has no rendered screen bounds"
+                )
+            return {"path": [{"id": "cameraSelectorMenuItem"}], "dispatch_token": "camera-action"}
+        endpoint = type("Endpoint", (), {"pid": 42, "request": request})()
+        with patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())), \
+             patch("automation_harness.drivers.javafx_bridge.time.monotonic", side_effect=(0.0, 2.0, 2.0)), \
+             patch("automation_harness.core.pointer_actions.click_bounds") as click:
+            result = JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "cameraSelectorMenuItem"}}])
+        self.assertEqual([args["pointer_terminal"] for operation, args in requests
+                          if operation == "select_menu_path"], [True, False])
+        self.assertEqual(requests[-1][0], "menu_dispatch_status")
+        self.assertEqual(result["execution"], "owner_scoped_javafx_fire")
+        self.assertIsNone(result["pointer"])
+        click.assert_not_called()
+
+    def test_menu_dispatch_does_not_pass_without_action_event(self):
+        endpoint = type("Endpoint", (), {
+            "request": lambda self, operation, **kwargs: {
+                "observed": False, "finished": True, "error": "handler failed",
+            },
+        })()
+        with self.assertRaisesRegex(JavaFxBridgeProtocolError, "handler failed"):
+            JavaFxBridgeDriver._await_menu_dispatch(endpoint, "resolved-menu-item")
 
 
 if __name__ == "__main__":

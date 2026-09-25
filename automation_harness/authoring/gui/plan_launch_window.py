@@ -225,13 +225,4 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
         self.set_status("Saved %s to %s" % (name, registry_path.name))
 
     def _run_finished(self, result, error):
-        launching_window = getattr(self, "launching_window", None)
-        if launching_window is not None:
-            try:
-                launching_window.deiconify()
-                launching_window.present()
-            except Exception:
-                # The launcher may have been closed while the test was running.
-                # That must not interfere with completion handling for the Plan.
-                pass
         return super()._run_finished(result, error)

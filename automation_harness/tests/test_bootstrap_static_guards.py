@@ -44,3 +44,12 @@ def test_plan_authoring_window_uses_current_repository_assignment_api():
     assert "RepositoryAssociation" in source
     assert "RepositoryScope.LOCAL" in source
     assert "assign_repository," not in source
+
+
+def test_repository_window_wrapper_resolves_project_context_with_imported_path():
+    source = (
+        ROOT / "automation_harness" / "authoring" / "repository_direct_authoring_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "from pathlib import Path" in source
+    assert "self.host.project_context = Path(project_context).resolve()" in source

@@ -170,7 +170,12 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
             if issues: return self.error("Run Test", "\n".join(issues))
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
-        self.run_button.set_sensitive(False); self.set_status("Running test…"); self.window.iconify()
+        self.run_button.set_sensitive(False); self.set_status("Running test…")
+        # All authoring toplevels belong to this GTK process; the application
+        # under test is external. Clear every harness window from its surface.
+        for window in Gtk.Window.list_toplevels():
+            if window.get_visible():
+                window.iconify()
         plan = self.plan; reusable = dict(self.reusable); repository = self.repository
         def worker():
             try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable)
@@ -180,11 +185,4 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
 
     def _run_finished(self, result, error):
         self.window.deiconify(); self.window.present()
-        launcher = getattr(self, "launching_window", None)
-        launcher_window = getattr(launcher, "window", launcher)
-        if launcher_window is not None:
-            try:
-                launcher_window.deiconify(); launcher_window.present()
-            except Exception:
-                pass
         return super()._run_finished(result, error)

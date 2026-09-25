@@ -5,6 +5,7 @@ import os
 import queue
 import socket
 import threading
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -321,32 +322,81 @@ class JavaFxBridgeDriver:
         if not selectors:
             raise ValueError("JavaFX menu path must not be empty")
         endpoint, _node, _trace = self._find_unique(identification)
-        import time
         deadline = time.monotonic() + 1.0
+        request = {
+            "identification": dict(identification or {}),
+            "selectors": [dict(selector) for selector in selectors],
+        }
         while True:
             try:
                 response = endpoint.request(
-                    "select_menu_path", timeout=5.0,
-                    identification=dict(identification or {}),
-                    selectors=[dict(selector) for selector in selectors],
+                    "select_menu_path", timeout=35.0,
+                    **request,
                     pointer_terminal=True,
                 )
                 break
             except JavaFxBridgeProtocolError as exc:
-                if "selected menu item has no rendered screen bounds" not in str(exc) or time.monotonic() >= deadline:
+                if "selected menu item has no rendered screen bounds" not in str(exc):
                     raise
+                if time.monotonic() >= deadline:
+                    # The logical owner and every path segment resolved. A skin
+                    # without public screen geometry still supports MenuItem.fire().
+                    # Keep the action scoped to that graph; never guess a click.
+                    semantic = endpoint.request(
+                        "select_menu_path", timeout=35.0,
+                        **request, pointer_terminal=False,
+                    )
+                    self._await_menu_dispatch(endpoint, semantic.get("dispatch_token"))
+                    return {
+                        "action": "select_menu_item", "bridge_pid": endpoint.pid,
+                        "path": semantic.get("path", []), "pointer": None,
+                        "execution": "owner_scoped_javafx_fire",
+                        "terminal_bounds_unavailable": True,
+                    }
                 time.sleep(0.08)
         bounds = response.get("terminal_bounds")
         if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
             raise RuntimeError("JavaFX menu item has no owner-scoped rendered bounds")
+        token = response.get("click_token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("JavaFX agent did not register menu action confirmation; rebuild the JavaFX agent")
         from automation_harness.core.pointer_actions import click_bounds
-        pointer = click_bounds(bounds)
+        pointer = None
+        try:
+            pointer = click_bounds(bounds)
+        finally:
+            confirmation = endpoint.request(
+                "finish_menu_click", timeout=35.0, click_token=token,
+                clicked=pointer is not None,
+            )
+            if pointer is not None and confirmation.get("dispatch_token"):
+                self._await_menu_dispatch(endpoint, confirmation["dispatch_token"])
         return {
             "action": "select_menu_item",
             "bridge_pid": endpoint.pid,
             "path": response.get("path", []),
             "pointer": pointer,
+            "execution": "visible_pointer_click",
+            "pointer_action_observed": confirmation.get("pointer_action_observed"),
+            "fallback_fired": confirmation.get("fallback_fired"),
         }
+
+    @staticmethod
+    def _await_menu_dispatch(endpoint, token: Any) -> None:
+        if not isinstance(token, str) or not token:
+            raise JavaFxBridgeProtocolError("JavaFX agent omitted the menu dispatch receipt")
+        deadline = time.monotonic() + 5.0
+        while True:
+            status = endpoint.request("menu_dispatch_status", timeout=5.0, dispatch_token=token)
+            if status.get("observed"):
+                return
+            if status.get("error") or status.get("finished"):
+                raise JavaFxBridgeProtocolError(
+                    "JavaFX menu item did not dispatch an action event: %s" % status.get("error")
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("JavaFX menu action event was not observed within 5s")
+            time.sleep(0.05)
 
     def select_child(self, index: int, *, identification=None, **_kwargs) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)

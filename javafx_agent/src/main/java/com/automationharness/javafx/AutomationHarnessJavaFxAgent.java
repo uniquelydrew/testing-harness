@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -176,6 +177,13 @@ public final class AutomationHarnessJavaFxAgent {
             return ok(FxRuntime.selectMenuPath(
                     mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors")),
                     Boolean.TRUE.equals(request.get("pointer_terminal"))));
+        }
+        if ("finish_menu_click".equals(op)) {
+            return ok(FxRuntime.finishMenuClick(stringValue(request.get("click_token")),
+                    Boolean.TRUE.equals(request.get("clicked"))));
+        }
+        if ("menu_dispatch_status".equals(op)) {
+            return ok(FxRuntime.menuDispatchStatus(stringValue(request.get("dispatch_token"))));
         }
         if ("select_child".equals(op)) {
             return ok(FxRuntime.selectChild(
@@ -326,6 +334,8 @@ public final class AutomationHarnessJavaFxAgent {
         private static final String MOUSE_EVENT = "javafx.scene.input.MouseEvent";
         private static final String EVENT_HANDLER = "javafx.event.EventHandler";
         private static final Set<String> INSTALLED_SCENES = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        private static final Map<String, PendingMenuClick> PENDING_MENU_CLICKS = new ConcurrentHashMap<String, PendingMenuClick>();
+        private static final Map<String, PendingMenuClick> MENU_DISPATCHES = new ConcurrentHashMap<String, PendingMenuClick>();
         private static final Set<String> INTERACTION_BOUNDARIES = Collections.unmodifiableSet(
                 new java.util.HashSet<String>(java.util.Arrays.asList(
                         "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
@@ -564,19 +574,25 @@ public final class AutomationHarnessJavaFxAgent {
         static Map<String, Object> activateWindow(final Map<String, Object> identification) throws Exception {
             return onFx(() -> {
                 NodeMatch match = unique(resolve(identification, true), identification);
-                Method toFront = findMethod(match.window.getClass(), "toFront");
-                Method requestFocus = findMethod(match.window.getClass(), "requestFocus");
+                Object owner = match.window;
+                for (int depth = 0; depth < 8 && isInstance("javafx.stage.PopupWindow", owner); depth++) {
+                    Object parent = call(owner, "getOwnerWindow");
+                    if (parent == null) break;
+                    owner = parent;
+                }
+                Method toFront = findMethod(owner.getClass(), "toFront");
+                Method requestFocus = findMethod(owner.getClass(), "requestFocus");
                 if (toFront == null || toFront.getParameterCount() != 0
                         || requestFocus == null || requestFocus.getParameterCount() != 0) {
                     throw new UnsupportedOperationException(
                             "JavaFX owning window does not expose toFront()/requestFocus()");
                 }
-                toFront.invoke(match.window);
-                requestFocus.invoke(match.window);
-                boolean focused = boolCall(match.window, "isFocused", false);
+                toFront.invoke(owner);
+                requestFocus.invoke(owner);
+                boolean focused = boolCall(owner, "isFocused", false);
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
                 result.put("operation", "activate_window");
-                result.put("window", windowTitle(match.window));
+                result.put("window", windowTitle(owner));
                 result.put("focused", focused);
                 return result;
             });
@@ -659,11 +675,13 @@ public final class AutomationHarnessJavaFxAgent {
                 NodeMatch root = unique(resolve(identification, true), identification);
                 Object current = logicalMenuObject(root.node);
                 if (current == null) current = root.node;
-                if (pointerTerminal && isInstance("javafx.scene.control.Menu", current)) {
+                if (isInstance("javafx.scene.control.Menu", current)) {
                     call(current, "show");
                 }
                 List<Object> traversed = new ArrayList<Object>();
                 double[] terminalBounds = null;
+                String clickToken = null;
+                String dispatchToken = null;
                 for (int index = 0; index < selectors.size(); index++) {
                     if (!(selectors.get(index) instanceof Map)) {
                         throw new IllegalArgumentException("menu path selector must be an object");
@@ -681,7 +699,8 @@ public final class AutomationHarnessJavaFxAgent {
                         if (terminalBounds == null || terminalBounds[2] <= 0 || terminalBounds[3] <= 0) {
                             throw new IllegalStateException("selected menu item has no rendered screen bounds");
                         }
-                        traversed.add(menuSnapshot(child));
+                        traversed.add(menuIdentity(child));
+                        clickToken = observeMenuAction(child);
                         break;
                     }
                     Method operation = findMethod(
@@ -692,16 +711,117 @@ public final class AutomationHarnessJavaFxAgent {
                                         + (!terminal || terminalMenu ? "show()" : "fire()")
                                         + ": " + child.getClass().getName());
                     }
-                    operation.invoke(child);
-                    traversed.add(menuSnapshot(child));
+                    if (terminal && !terminalMenu) {
+                        dispatchToken = observeMenuAction(child);
+                        scheduleMenuFire(PENDING_MENU_CLICKS.remove(dispatchToken), dispatchToken);
+                    } else {
+                        operation.invoke(child);
+                    }
+                    traversed.add(menuIdentity(child));
                     current = child;
                 }
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
                 result.put("action", "select_menu_item");
                 result.put("path", traversed);
                 if (pointerTerminal) result.put("terminal_bounds", boundsList(terminalBounds));
+                if (clickToken != null) result.put("click_token", clickToken);
+                if (dispatchToken != null) result.put("dispatch_token", dispatchToken);
                 return result;
-            });
+            }, 30);
+        }
+
+        private static String observeMenuAction(Object item) throws Exception {
+            Class<?> eventType = Class.forName("javafx.event.EventType");
+            Class<?> handlerType = Class.forName(EVENT_HANDLER);
+            Object action = Class.forName("javafx.event.ActionEvent").getField("ACTION").get(null);
+            AtomicBoolean observed = new AtomicBoolean(false);
+            InvocationHandler invocation = (proxy, method, args) -> {
+                if ("handle".equals(method.getName())) observed.set(true);
+                return null;
+            };
+            Object handler = Proxy.newProxyInstance(handlerType.getClassLoader(), new Class<?>[]{handlerType}, invocation);
+            Method add = item.getClass().getMethod("addEventFilter", eventType, handlerType);
+            add.invoke(item, action, handler);
+            String token = UUID.randomUUID().toString();
+            PENDING_MENU_CLICKS.put(token, new PendingMenuClick(item, action, handler, observed));
+            return token;
+        }
+
+        static Map<String, Object> finishMenuClick(final String token, final boolean clicked) throws Exception {
+            PendingMenuClick pending = PENDING_MENU_CLICKS.remove(token);
+            if (pending == null) throw new IllegalArgumentException("unknown menu click token");
+            if (clicked) {
+                for (int attempt = 0; attempt < 25 && !pending.observed.get(); attempt++) {
+                    Thread.sleep(10);
+                }
+            }
+            boolean observed = pending.observed.get();
+            Map<String, Object> result = new LinkedHashMap<String, Object>();
+            result.put("pointer_action_observed", observed);
+            result.put("fallback_fired", clicked && !observed);
+            if (clicked && !observed) {
+                scheduleMenuFire(pending, token);
+                result.put("dispatch_token", token);
+            } else {
+                scheduleMenuCleanup(pending);
+            }
+            return result;
+        }
+
+        private static void scheduleMenuFire(PendingMenuClick pending, String token) throws Exception {
+            MENU_DISPATCHES.put(token, pending);
+            try {
+                Class.forName(PLATFORM).getMethod("runLater", Runnable.class).invoke(null, (Runnable) () -> {
+                    try {
+                        call(pending.item, "fire");
+                    } catch (Throwable error) {
+                        pending.failure.set(String.valueOf(error));
+                    } finally {
+                        pending.finished.set(true);
+                        try { removeMenuObserver(pending); } catch (Exception ignored) { }
+                    }
+                });
+            } catch (Exception error) {
+                MENU_DISPATCHES.remove(token);
+                throw error;
+            }
+        }
+
+        static Map<String, Object> menuDispatchStatus(String token) {
+            PendingMenuClick pending = MENU_DISPATCHES.get(token);
+            if (pending == null) throw new IllegalArgumentException("unknown menu dispatch token");
+            Map<String, Object> result = new LinkedHashMap<String, Object>();
+            result.put("observed", pending.observed.get());
+            result.put("finished", pending.finished.get());
+            result.put("error", pending.failure.get());
+            if (pending.observed.get() || pending.finished.get()) MENU_DISPATCHES.remove(token);
+            return result;
+        }
+
+        private static void scheduleMenuCleanup(PendingMenuClick pending) throws Exception {
+            Class.forName(PLATFORM).getMethod("runLater", Runnable.class).invoke(null,
+                    (Runnable) () -> { try { removeMenuObserver(pending); } catch (Exception ignored) { } });
+        }
+
+        private static void removeMenuObserver(PendingMenuClick pending) throws Exception {
+            pending.item.getClass().getMethod("removeEventFilter",
+                    Class.forName("javafx.event.EventType"), Class.forName(EVENT_HANDLER))
+                    .invoke(pending.item, pending.action, pending.handler);
+        }
+
+        private static final class PendingMenuClick {
+            final Object item;
+            final Object action;
+            final Object handler;
+            final AtomicBoolean observed;
+            final AtomicBoolean finished = new AtomicBoolean(false);
+            final AtomicReference<String> failure = new AtomicReference<String>();
+            PendingMenuClick(Object item, Object action, Object handler, AtomicBoolean observed) {
+                this.item = item;
+                this.action = action;
+                this.handler = handler;
+                this.observed = observed;
+            }
         }
 
         static Map<String, Object> selectChild(
@@ -734,7 +854,7 @@ public final class AutomationHarnessJavaFxAgent {
                     ? ((Number) selector.get("ordinal")).intValue() : null;
             List<Object> matches = new ArrayList<Object>();
             for (Object child : children) {
-                if (payloadMatches(menuSnapshot(child), criteria)) {
+                if (payloadMatches(menuIdentity(child), criteria)) {
                     matches.add(child);
                 }
             }
@@ -752,7 +872,7 @@ public final class AutomationHarnessJavaFxAgent {
             // Ordinal is deliberately last: it tolerates missing semantic
             // metadata, but should not override a durable identity match.
             if (ordinal != null && ordinal >= 0 && ordinal < children.size()
-                    && payloadMatches(menuSnapshot(children.get(ordinal)), criteria)) {
+                    && payloadMatches(menuIdentity(children.get(ordinal)), criteria)) {
                 return children.get(ordinal);
             }
             throw new IllegalArgumentException(
@@ -798,16 +918,42 @@ public final class AutomationHarnessJavaFxAgent {
         private static double[] menuBounds(Object logical) throws Exception {
             double[] direct = boundsOnScreen(logical);
             if (direct != null) return direct;
+            boolean terminal = isInstance("javafx.scene.control.MenuItem", logical)
+                    && !isInstance("javafx.scene.control.Menu", logical);
             for (Object window : windows()) {
                 if (!boolCall(window, "isShowing", true)) continue;
+                if (terminal && !isInstance("javafx.scene.control.ContextMenu", window)) continue;
+                if (terminal && !menuChildrenIfPresent(window).contains(logical)) continue;
                 Object scene = call(window, "getScene");
                 Object found = findMenuVisual(call(scene, "getRoot"), logical, 0);
                 if (found != null) {
                     double[] bounds = boundsOnScreen(found);
                     if (bounds != null) return bounds;
                 }
+                // MenuItem skins live in encapsulated com.sun packages on many
+                // JavaFX releases. Scope a public text-node lookup to the popup
+                // whose public items actually contain this logical MenuItem.
+                if (terminal) {
+                    List<Object> labels = new ArrayList<Object>();
+                    findMenuTextVisual(call(scene, "getRoot"), logical, labels, 0);
+                    if (labels.size() == 1) return boundsOnScreen(labels.get(0));
+                }
             }
             return null;
+        }
+
+        private static void findMenuTextVisual(Object node, Object logical,
+                List<Object> matches, int depth) throws Exception {
+            if (node == null || depth > 64) return;
+            String expected = optionalNoArgStringQuiet(logical, "getText");
+            if (expected != null && !expected.isEmpty()
+                    && expected.equals(optionalNoArgStringQuiet(node, "getText"))
+                    && boundsOnScreen(node) != null) {
+                matches.add(node);
+            }
+            for (Object child : children(node)) {
+                findMenuTextVisual(child, logical, matches, depth + 1);
+            }
         }
 
         private static Object findMenuVisual(Object node, Object logical, int depth) throws Exception {
@@ -839,6 +985,22 @@ public final class AutomationHarnessJavaFxAgent {
 
         private static Map<String, Object> menuSnapshot(Object item) throws Exception {
             return menuSnapshotWithSelector(item, null, null);
+        }
+
+        private static Map<String, Object> menuIdentity(Object item) throws Exception {
+            Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            String id = stringOrNull(call(item, "getId"));
+            String name = optionalNoArgString(item, "getText");
+            String role = menuRole(item);
+            payload.put("class", item.getClass().getName());
+            payload.put("simple_class", item.getClass().getSimpleName());
+            payload.put("id", id);
+            payload.put("accessible_id", id);
+            payload.put("text", name);
+            payload.put("name", name);
+            payload.put("role", role);
+            payload.put("accessible_role", role);
+            return payload;
         }
 
         private static Map<String, Object> menuSnapshotWithSelector(
@@ -1803,6 +1965,10 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static <T> T onFx(Callable<T> callable) throws Exception {
+            return onFx(callable, 10);
+        }
+
+        private static <T> T onFx(Callable<T> callable, long timeoutSeconds) throws Exception {
             Class<?> platform = Class.forName(PLATFORM);
             boolean onThread = Boolean.TRUE.equals(platform.getMethod("isFxApplicationThread").invoke(null));
             if (onThread) {
@@ -1825,8 +1991,9 @@ public final class AutomationHarnessJavaFxAgent {
             } catch (Throwable error) {
                 throw new IllegalStateException("JavaFX toolkit is not running", error);
             }
-            if (!latch.await(10, TimeUnit.SECONDS)) {
-                throw new java.util.concurrent.TimeoutException("JavaFX application thread did not respond within 10 seconds");
+            if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
+                throw new java.util.concurrent.TimeoutException(
+                        "JavaFX application thread did not respond within " + timeoutSeconds + " seconds");
             }
             if (failure.get() != null) {
                 Throwable error = failure.get();
