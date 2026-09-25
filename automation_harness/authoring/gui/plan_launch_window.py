@@ -162,6 +162,8 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
             payload = json.loads(raw)
             updated = replace(
                 call,
+                name=str(payload.get("name", call.name)).strip(),
+                description=str(payload.get("description", call.description)).strip(),
                 group=str(payload.get("group", call.group)),
                 inputs=_decode(payload.get("inputs", {})),
                 outputs={str(k): str(v) for k, v in payload.get("outputs", {}).items()},
@@ -188,15 +190,6 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
             return self.info("Step Registry", "Select a Test Flow call first.")
         selected_ids = set(node_ids)
         selected_calls = [item for item in self.plan.steps if item.node_id in selected_ids]
-        groups = {item.group for item in selected_calls if item.group}
-        if not groups:
-            return self.info("Step Registry", "The selected call(s) are not part of a composed group.")
-        if len(groups) != 1 or any(not item.group for item in selected_calls):
-            return self.info(
-                "Step Registry",
-                "Selected calls must all belong to the same composed group.",
-            )
-        group = next(iter(groups))
         project = AuthoringProject.load(self.project_context)
         if not project.step_registries:
             return self.info(
@@ -204,10 +197,10 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
                 "Create or add a Step Registry from the Project window first.",
             )
         registry_path = project.step_registries[0]
-        step_id = self.ask_text("Save Group to Registry", "Reusable step ID:")
+        step_id = self.ask_text("Save to Registry", "Reusable step ID:")
         if not step_id:
             return
-        name = self.ask_text("Save Group to Registry", "Display name:", group)
+        name = self.ask_text("Save to Registry", "Display name:", selected_calls[0].name or selected_calls[0].step_id if len(selected_calls) == 1 else "Selected steps")
         if not name:
             return
         try:
@@ -218,7 +211,8 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
                 registry_path=registry_path,
                 step_id=step_id,
                 name=name,
-                group=group,
+                node_ids=node_ids,
+                description=selected_calls[0].description if len(selected_calls) == 1 else "",
             )
             self.project = project
             self.registry_resources = load_step_registry_resources(project.step_registries)

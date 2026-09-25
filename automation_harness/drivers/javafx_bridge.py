@@ -321,16 +321,41 @@ class JavaFxBridgeDriver:
         if not selectors:
             raise ValueError("JavaFX menu path must not be empty")
         endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request(
-            "select_menu_path", timeout=5.0,
-            identification=dict(identification or {}),
-            selectors=[dict(selector) for selector in selectors],
-        )
+        import time
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                response = endpoint.request(
+                    "select_menu_path", timeout=5.0,
+                    identification=dict(identification or {}),
+                    selectors=[dict(selector) for selector in selectors],
+                    pointer_terminal=True,
+                )
+                break
+            except JavaFxBridgeProtocolError as exc:
+                if "selected menu item has no rendered screen bounds" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.08)
+        bounds = response.get("terminal_bounds")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            raise RuntimeError("JavaFX menu item has no owner-scoped rendered bounds")
+        from automation_harness.core.pointer_actions import click_bounds
+        pointer = click_bounds(bounds)
         return {
             "action": "select_menu_item",
             "bridge_pid": endpoint.pid,
             "path": response.get("path", []),
+            "pointer": pointer,
         }
+
+    def select_child(self, index: int, *, identification=None, **_kwargs) -> dict[str, Any]:
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "select_child", timeout=5.0,
+            identification=dict(identification or {}), index=index,
+        )
+        return {"action": "select_item", "bridge_pid": endpoint.pid,
+                "index": response.get("index"), "node": response.get("node")}
 
     def count_matches(
         self,
@@ -500,6 +525,13 @@ def _default_discovery_dir() -> Path:
 
 
 def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> CapturedComponent:
+    selection = node.get("combo_selection")
+    if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
+        owner = _captured(endpoint, selection["owner"])
+        return replace(owner, backend_properties={
+            **dict(owner.backend_properties),
+            "combo_selection": {"index": selection.get("index"), "text": node.get("text")},
+        })
     node = _normalize_javafx_menu_node(node)
     node_id = _optional_str(node.get("id"))
     role = _role(node.get("accessible_role"))
@@ -522,6 +554,7 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         properties={
             "managed": node.get("managed"),
             "focus_traversable": node.get("focus_traversable"),
+            **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {}),
         },
     )
     node_properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
@@ -773,13 +806,21 @@ def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) ->
 
 
 def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
+    selection = node.get("combo_selection")
+    if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
+        owner = _captured_recording_node(selection["owner"])
+        return replace(owner, backend_properties={
+            **dict(owner.backend_properties),
+            "combo_selection": {"index": selection.get("index"), "text": node.get("text")},
+        })
     node = _normalize_javafx_menu_node(node)
+    legacy_fx_node = "id" in node and "class" in node and "backend_properties" not in node
     state_value = node.get("state", {})
     state = state_value if isinstance(state_value, Mapping) else {}
     bounds_value = node.get("bounds")
     bounds = tuple(int(value) for value in bounds_value) if isinstance(bounds_value, (list, tuple)) and len(bounds_value) == 4 else None
     native_class = _optional_str(node.get("native_class") or node.get("class"))
-    role = _optional_str(node.get("role"))
+    role = _optional_str(node.get("role")) or _role(node.get("accessible_role"))
     object_type_value = node.get("object_type")
     try:
         object_type = ObjectType(str(object_type_value)) if object_type_value else (
@@ -841,19 +882,22 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             "mandatory": mandatory or {"native_class": native_class or "java.awt.Component"},
             **({"assistive": assistive} if assistive else {}),
         }})
+    elif framework == "javafx" and legacy_fx_node:
+        strategy = ComponentStrategy("javafx", {"identification": _candidate_identification(node)})
     else:
         strategy = None
     logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
-        name=_optional_str(node.get("name") or node.get("text")), role=role,
-        description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
-        application=_optional_str(node.get("application")), window=_optional_str(node.get("window")),
+        name=_optional_str(node.get("name") or node.get("accessible_text") or node.get("text") or node.get("id")), role=role,
+        description=_optional_str(node.get("description") or node.get("accessible_help")), accessible_id=_optional_str(node.get("accessible_id") or node.get("id")),
+        application=_optional_str(node.get("application") or node.get("window")), window=_optional_str(node.get("window")),
         hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
         actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
-        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
+        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible", node.get("visible")), showing=state.get("showing", node.get("visible")), enabled=state.get("enabled", None if node.get("disabled") is None else not bool(node.get("disabled"))), focused=state.get("focused", node.get("focused")), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties={**(dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}), **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {})}),
         backend_properties={
             **dict(properties),
+            **({"javafx_id": node.get("id"), "accessible_role": node.get("accessible_role"), "text": node.get("text"), "style_classes": node.get("style_classes", []), "stable_ancestors": node.get("stable_ancestors", [])} if legacy_fx_node else {}),
             **({"component_path": node["component_path"]} if node.get("component_path") else {}),
             **({"sibling_index": node["sibling_index"]} if node.get("sibling_index") is not None else {}),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),

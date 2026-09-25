@@ -238,7 +238,7 @@ class TestPlanWindow(ArtifactWindow):
         item("Move Up", lambda: self.move_selected(-1))
         item("Move Down", lambda: self.move_selected(1))
         call = next((value for value in self.plan.steps if value.node_id == node_id), None)
-        item("Save as Reusable Step", self.save_group_to_registry, bool(call and call.group))
+        item("Save as Reusable Step", self.save_group_to_registry, bool(call))
         item("Remove", self.remove_selected)
         menu.show_all()
         menu.popup_at_pointer(None)
@@ -410,7 +410,7 @@ class TestPlanWindow(ArtifactWindow):
         dialog.show_all(); response = dialog.run(); buffer = text.get_buffer(); raw = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True); dialog.destroy()
         if response != Gtk.ResponseType.OK: return
         try:
-            payload = json.loads(raw); updated = replace(call, group=str(payload.get("group", call.group)), inputs=_decode(payload.get("inputs", {})), outputs={str(k): str(v) for k, v in payload.get("outputs", {}).items()}, depends_on=tuple(payload.get("depends_on", call.depends_on)))
+            payload = json.loads(raw); updated = replace(call, name=str(payload.get("name", "")), description=str(payload.get("description", "")), group=str(payload.get("group", call.group)), inputs=_decode(payload.get("inputs", {})), outputs={str(k): str(v) for k, v in payload.get("outputs", {}).items()}, depends_on=tuple(payload.get("depends_on", call.depends_on)))
             self.plan = replace(self.plan, steps=tuple(updated if item.node_id == node_id else item for item in self.plan.steps))
         except Exception as exc: return self.error("Edit Call", str(exc))
         self.mark_dirty(); self.refresh_all()
@@ -450,7 +450,6 @@ class TestPlanWindow(ArtifactWindow):
         node_id = self.selected(self.flow_tree, 1)
         if not node_id: return self.info("Step Registry", "Select a Test Flow call first.")
         selected = next(item for item in self.plan.steps if item.node_id == node_id)
-        if not selected.group: return self.info("Step Registry", "The selected call is not part of a composed group.")
         project = AuthoringProject.load(self.project_context)
         if not project.step_registries: return self.info("Step Registry", "Create or add a Step Registry from the Project window first.")
         dialog = Gtk.Dialog(title="Save as Reusable Step", transient_for=self.window, modal=True)
@@ -461,7 +460,7 @@ class TestPlanWindow(ArtifactWindow):
         step_id_entry = Gtk.Entry()
         step_id_entry.set_placeholder_text("Reusable step ID")
         name_entry = Gtk.Entry()
-        name_entry.set_text(selected.group)
+        name_entry.set_text(selected.name or selected.group or selected.step_id)
         registry_combo = Gtk.ComboBoxText()
         for registry_path in project.step_registries:
             registry_combo.append(str(registry_path), registry_path.stem)
@@ -486,7 +485,8 @@ class TestPlanWindow(ArtifactWindow):
                 registry_path=registry_path,
                 step_id=step_id,
                 name=name,
-                group=selected.group,
+                node_ids=(selected.node_id,),
+                description=selected.description,
             )
             self.project = project
             self.registry_resources = load_step_registry_resources(project.step_registries)

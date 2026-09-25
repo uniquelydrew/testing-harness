@@ -17,6 +17,7 @@ from automation_harness.authoring.recording_review import (
 from automation_harness.authoring.plan_repository import (
     assigned_repository_path,
     ensure_default_repository,
+    materialize_captured_target,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
@@ -341,6 +342,27 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         )
         recording_repository = getattr(diagnostic_session, "repository", None)
 
+        # Menu opening is capture evidence, not an executable click. Retain its
+        # durable owner even when the traversal is cancelled or no terminal
+        # item is observed during this recording.
+        owners = diagnostic_session.captured_menu_owners() if diagnostic_session else ()
+        for owner_capture in owners:
+            try:
+                if assigned_repository is None:
+                    assigned_repository, assigned_path = self._ensure_review_repository(
+                        assigned_repository, assigned_path,
+                    )
+                assigned_repository, owner_id, created = materialize_captured_target(
+                    assigned_repository, owner_capture,
+                )
+                if created:
+                    captured_ids.add(owner_id)
+            except Exception as exc:
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic_exception(
+                        "review_menu_owner_failed", exc, owner=owner_capture,
+                    )
+
         for interaction in interactions or ():
             if diagnostic_session is not None:
                 diagnostic_session.diagnostic(
@@ -421,6 +443,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
 
+        if resolved:
+            resolved = self._review_recorded_step_details(resolved)
         if resolved or captured_ids:
             if resolved:
                 self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
@@ -455,3 +479,47 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             )
         self._recording_diagnostic_session = None
         return False
+
+    def _review_recorded_step_details(self, calls):
+        """Offer optional author-facing metadata before adding recorded calls."""
+        dialog = Gtk.Dialog(title="Recorded Step Details", transient_for=self.window, modal=True)
+        dialog.add_buttons("Use Defaults", Gtk.ResponseType.CANCEL, "Add Steps", Gtk.ResponseType.OK)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_size_request(650, min(520, max(180, len(calls) * 145)))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_border_width(10)
+        scroll.add(box)
+        dialog.get_content_area().pack_start(scroll, True, True, 0)
+        fields = []
+        for call in calls:
+            name = call.name or call.description or call.step_id
+            frame = Gtk.Frame(label=call.node_id)
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            column.set_border_width(6)
+            frame.add(column)
+            column.pack_start(Gtk.Label(label="Name", xalign=0), False, False, 0)
+            entry = Gtk.Entry()
+            entry.set_text(name)
+            column.pack_start(entry, False, False, 0)
+            column.pack_start(Gtk.Label(label="Description (optional)", xalign=0), False, False, 0)
+            description = Gtk.TextView()
+            description.set_wrap_mode(Gtk.WrapMode.WORD)
+            description.get_buffer().set_text("")
+            description.set_size_request(-1, 55)
+            column.pack_start(description, False, False, 0)
+            box.pack_start(frame, False, False, 0)
+            fields.append((entry, description))
+        dialog.show_all()
+        response = dialog.run()
+        result = []
+        for call, (entry, description) in zip(calls, fields):
+            buffer = description.get_buffer()
+            result.append(replace(
+                call,
+                name=(entry.get_text().strip() or call.description or call.step_id)
+                if response == Gtk.ResponseType.OK else (call.description or call.step_id),
+                description=buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True).strip()
+                if response == Gtk.ResponseType.OK else "",
+            ))
+        dialog.destroy()
+        return result

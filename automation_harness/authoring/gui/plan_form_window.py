@@ -47,7 +47,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             self.flow_store.append((
                 call.group or "Ungrouped",
                 call.node_id,
-                call.step_id,
+                call.name or call.step_id,
                 _call_summary(call, self.repository),
             ))
         self._restore_flow_selection(selected)
@@ -79,6 +79,8 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         lines = [
             "Node: %s" % call.node_id,
             "Step: %s" % call.step_id,
+            "Name: %s" % (call.name or "—"),
+            "Description: %s" % (call.description or "—"),
             "Group: %s" % (call.group or "Ungrouped"),
             "",
             "Parameters:",
@@ -134,6 +136,17 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
 
         row = _readonly_row(grid, row, "Node", call.node_id)
         row = _readonly_row(grid, row, "Step", call.step_id)
+        name_entry = Gtk.Entry()
+        name_entry.set_text(call.name or "")
+        name_entry.set_placeholder_text("Readable step name")
+        row = _entry_row(grid, row, "Name", name_entry)
+        description_view = Gtk.TextView()
+        description_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        description_view.get_buffer().set_text(call.description or "")
+        description_scroll = Gtk.ScrolledWindow()
+        description_scroll.set_size_request(-1, 90)
+        description_scroll.add(description_view)
+        row = _entry_row(grid, row, "Description", description_scroll)
         group_entry = Gtk.Entry()
         group_entry.set_text(call.group or "")
         row = _entry_row(grid, row, "Group", group_entry)
@@ -290,6 +303,11 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             )
             updated = replace(
                 call,
+                name=name_entry.get_text().strip(),
+                description=description_view.get_buffer().get_text(
+                    description_view.get_buffer().get_start_iter(),
+                    description_view.get_buffer().get_end_iter(), True,
+                ).strip(),
                 group=group_entry.get_text().strip(),
                 inputs=inputs,
                 outputs=outputs,

@@ -24,6 +24,7 @@ class StepCall:
     group: str = ""
     completion: Mapping[str, Any] = field(default_factory=lambda: {"mode": "automatic"})
     scope: Mapping[str, Any] = field(default_factory=dict)
+    name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -38,6 +39,8 @@ class StepCall:
         }
         if self.group:
             result["group"] = self.group
+        if self.name:
+            result["name"] = self.name
         return result
 
 

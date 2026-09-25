@@ -98,6 +98,7 @@ class RecordingSession:
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
         self._menu_context: MenuRecordingContext | None = None
+        self._captured_menu_owners: list[CapturedComponent] = []
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
         # must be serialized as one transaction.
@@ -190,6 +191,10 @@ class RecordingSession:
         with self._lock:
             return tuple(self._interactions) + ((self._pending,) if self._pending else ())
 
+    def captured_menu_owners(self) -> tuple[CapturedComponent, ...]:
+        with self._lock:
+            return tuple(self._captured_menu_owners)
+
     def observe(self, observation: Observation) -> None:
         with self._lock:
             self.diagnostic("observation_received", observation=observation, active=self._active)
@@ -214,6 +219,12 @@ class RecordingSession:
 
                 target = observation.target
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
+                combo_selection = dict(target.backend_properties or {}).get("combo_selection")
+                if isinstance(combo_selection, Mapping) and target.semantic_type() == ObjectType.COMBO_BOX:
+                    index = combo_selection.get("index")
+                    if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                        self._begin(ActionType.SELECT_ITEM, observation, {"value": index})
+                        return
                 if self._menu_context is not None:
                     if _is_menu_related_capture(target):
                         self._menu_context.last_target = target
@@ -234,6 +245,10 @@ class RecordingSession:
                     self._start_menu_context(target, observation.timestamp, "menu_pointer_open")
                     return
 
+                if target.semantic_type() == ObjectType.COMBO_BOX and action == ActionType.CLICK:
+                    self.diagnostic("combo_popup_opener_suppressed", owner=target)
+                    return
+
                 self._begin(action, observation, self._pointer_parameters(observation))
                 return
 
@@ -246,6 +261,13 @@ class RecordingSession:
                 if observation.target is None:
                     return
                 target = observation.target
+                if (
+                    target.semantic_type() == ObjectType.COMBO_BOX
+                    and self._pending is not None
+                    and self._pending.action == ActionType.SELECT_ITEM
+                    and _same_logical_target(self._pending.target, target)
+                ):
+                    return
                 if self._menu_context is not None and _is_menu_related_capture(target):
                     self._menu_context.last_target = target
                     if _is_terminal_menu_capture(target):
@@ -331,6 +353,8 @@ class RecordingSession:
         )
 
     def _start_menu_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if not any(_same_logical_target(existing, owner) for existing in self._captured_menu_owners):
+            self._captured_menu_owners.append(owner)
         if self._menu_context is not None:
             if _same_logical_target(self._menu_context.owner, owner):
                 self._menu_context.last_target = owner
@@ -384,8 +408,9 @@ class RecordingSession:
         )
         if (
             self._pending
-            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK}
+            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK, ActionType.SELECT_ITEM}
             and self._pending.action == action
+            and (action != ActionType.SELECT_ITEM or self._pending.parameters == parameters)
             and abs(observation.timestamp - self._pending.completed_at) <= min(self.correlation_window, 0.2)
             and _same_logical_target(self._pending.target, observation.target)
         ):

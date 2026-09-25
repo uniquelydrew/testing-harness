@@ -174,7 +174,12 @@ public final class AutomationHarnessJavaFxAgent {
         }
         if ("select_menu_path".equals(op)) {
             return ok(FxRuntime.selectMenuPath(
-                    mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors"))));
+                    mapValue(request.get("identification")), FxRuntime.listValue(request.get("selectors")),
+                    Boolean.TRUE.equals(request.get("pointer_terminal"))));
+        }
+        if ("select_child".equals(op)) {
+            return ok(FxRuntime.selectChild(
+                    mapValue(request.get("identification")), intValue(request.get("index"), -1)));
         }
         return error("unsupported op: " + op);
     }
@@ -645,7 +650,8 @@ public final class AutomationHarnessJavaFxAgent {
 
         static Map<String, Object> selectMenuPath(
                 final Map<String, Object> identification,
-                final List<Object> selectors) throws Exception {
+                final List<Object> selectors,
+                final boolean pointerTerminal) throws Exception {
             return onFx(() -> {
                 if (selectors.isEmpty()) {
                     throw new IllegalArgumentException("menu path must not be empty");
@@ -653,7 +659,11 @@ public final class AutomationHarnessJavaFxAgent {
                 NodeMatch root = unique(resolve(identification, true), identification);
                 Object current = logicalMenuObject(root.node);
                 if (current == null) current = root.node;
+                if (pointerTerminal && isInstance("javafx.scene.control.Menu", current)) {
+                    call(current, "show");
+                }
                 List<Object> traversed = new ArrayList<Object>();
+                double[] terminalBounds = null;
                 for (int index = 0; index < selectors.size(); index++) {
                     if (!(selectors.get(index) instanceof Map)) {
                         throw new IllegalArgumentException("menu path selector must be an object");
@@ -663,6 +673,17 @@ public final class AutomationHarnessJavaFxAgent {
                     Object child = menuChild(current, selector);
                     boolean terminal = index == selectors.size() - 1;
                     boolean terminalMenu = terminal && isInstance("javafx.scene.control.Menu", child);
+                    if (terminal && pointerTerminal) {
+                        if (terminalMenu) {
+                            throw new IllegalArgumentException("terminal menu path must identify a selectable item");
+                        }
+                        terminalBounds = menuBounds(child);
+                        if (terminalBounds == null || terminalBounds[2] <= 0 || terminalBounds[3] <= 0) {
+                            throw new IllegalStateException("selected menu item has no rendered screen bounds");
+                        }
+                        traversed.add(menuSnapshot(child));
+                        break;
+                    }
                     Method operation = findMethod(
                             child.getClass(), !terminal || terminalMenu ? "show" : "fire");
                     if (operation == null || operation.getParameterCount() != 0) {
@@ -678,6 +699,30 @@ public final class AutomationHarnessJavaFxAgent {
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
                 result.put("action", "select_menu_item");
                 result.put("path", traversed);
+                if (pointerTerminal) result.put("terminal_bounds", boundsList(terminalBounds));
+                return result;
+            });
+        }
+
+        static Map<String, Object> selectChild(
+                final Map<String, Object> identification, final int index) throws Exception {
+            return onFx(() -> {
+                NodeMatch root = unique(resolve(identification, true), identification);
+                if (!isInstance("javafx.scene.control.ComboBox", root.node)) {
+                    throw new IllegalArgumentException("select_child requires a ComboBox owner");
+                }
+                Object items = call(root.node, "getItems");
+                int count = listValue(items).size();
+                if (index < 0 || index >= count) {
+                    throw new IllegalArgumentException("combo selection index " + index + " outside " + count + " items");
+                }
+                Object model = call(root.node, "getSelectionModel");
+                Class.forName("javafx.scene.control.SelectionModel")
+                        .getMethod("select", int.class).invoke(model, index);
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "select_item");
+                result.put("index", index);
+                result.put("node", nodePayload(root.node, root.window));
                 return result;
             });
         }
@@ -1332,6 +1377,10 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("focused", boolCall(node, "isFocused", false));
             payload.put("managed", boolCall(node, "isManaged", true));
             payload.put("focus_traversable", boolCall(node, "isFocusTraversable", false));
+            if (isInstance("javafx.scene.control.ComboBox", node)) {
+                Object model = callQuiet(node, "getSelectionModel");
+                payload.put("selected_index", callQuiet(model, "getSelectedIndex"));
+            }
             payload.put("style_classes", listValue(call(node, "getStyleClass")));
             double[] bounds = boundsOnScreen(node);
             if (bounds == null && (isInstance("javafx.scene.control.Menu", node)
@@ -1373,6 +1422,28 @@ public final class AutomationHarnessJavaFxAgent {
                     snapshots.add(menuSnapshotWithSelector(menuChildren.get(index), logicalMenuNode, index));
                 }
                 payload.put("menu_children", snapshots);
+            }
+            Object cell = node;
+            for (int depth = 0; cell != null && depth < 16; depth++, cell = callQuiet(cell, "getParent")) {
+                if (!isInstance("javafx.scene.control.ListCell", cell)) continue;
+                Object index = callQuiet(cell, "getIndex");
+                Object owner = callQuiet(window, "getOwnerNode");
+                for (int ownerDepth = 0; owner != null
+                        && !isInstance("javafx.scene.control.ComboBox", owner)
+                        && ownerDepth < 16; ownerDepth++) {
+                    owner = callQuiet(owner, "getParent");
+                }
+                if (!(index instanceof Number) || ((Number) index).intValue() < 0
+                        || owner == null || !isInstance("javafx.scene.control.ComboBox", owner)) break;
+                Object scene = callQuiet(owner, "getScene");
+                Object ownerWindow = callQuiet(scene, "getWindow");
+                if (ownerWindow != null && owner != node) {
+                    Map<String, Object> selection = new LinkedHashMap<String, Object>();
+                    selection.put("index", ((Number) index).intValue());
+                    selection.put("owner", nodePayload(owner, ownerWindow));
+                    payload.put("combo_selection", selection);
+                }
+                break;
             }
             return payload;
         }

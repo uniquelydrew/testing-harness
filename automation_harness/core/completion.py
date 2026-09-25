@@ -6,6 +6,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_handle import ComponentResolutionError
 from automation_harness.core.predicates import compare, evaluate_state
 from automation_harness.models.plan import PlanVariableRef, StepCall
+from automation_harness.models.gui import ObjectType
 from automation_harness.utils.wait import wait_for
 
 
@@ -103,6 +104,16 @@ def _infer_condition(context, call: StepCall, inputs: Mapping[str, Any]) -> Mapp
         return {"object": component_id, "state": "expanded", "equals": action == "expand"}
     if action == "close":
         return {"object": component_id, "state": "absent", "equals": True}
+    if action == "select_menu_item":
+        # Selecting a terminal item commonly closes its menu immediately.
+        # Capture-time visible/showing states describe the owner before the
+        # action and are not a completion contract for this transition.
+        return None
+    if action == "select_item" and component.object_type == ObjectType.COMBO_BOX:
+        action_input = inputs.get("action")
+        index = action_input.get("value") if isinstance(action_input, Mapping) else inputs.get("index")
+        if isinstance(index, int) and not isinstance(index, bool):
+            return {"object": component_id, "property": "selected_index", "equals": index}
     expected = component.expected_states
     if expected:
         return {
