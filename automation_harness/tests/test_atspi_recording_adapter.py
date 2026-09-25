@@ -1,4 +1,5 @@
 from dataclasses import replace
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -51,6 +52,21 @@ def _target():
         application="Example", hierarchy=(), actions=("click",), bounds=(10, 20, 30, 40),
         state=ComponentState(True),
     )
+
+
+def test_stop_recording_press_skips_accessibility_resolution_for_own_process():
+    class UnreachableBridge:
+        def capture_at_point(self, *args, **kwargs):
+            raise AssertionError("own process must not be resolved")
+
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(
+        driver, javafx_driver=UnreachableBridge(),
+        java_agent_driver=UnreachableBridge(),
+    )
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=os.getpid()) is None
+    assert driver.point_snapshots == []
 
 
 def test_javafx_point_capture_queries_only_the_x11_owner_process():

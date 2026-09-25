@@ -1,6 +1,7 @@
 """AT-SPI event adapter for recording native GTK and Swing interactions."""
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -480,6 +481,10 @@ class AtspiRecordingAdapter:
         # X11 owns z-order arbitration. Query only a bridge belonging to the
         # topmost client process; a bridge for a covered JavaFX window must
         # never participate merely because its bounds contain the pointer.
+        # A press on our own Stop Recording window must not enter AT-SPI
+        # traversal while that same press is shutting down the adapter.
+        if owner_pid == os.getpid():
+            return None
         if owner_pid is not None:
             try:
                 # The dedicated JavaFX bridge enumerates PopupWindow scenes.
