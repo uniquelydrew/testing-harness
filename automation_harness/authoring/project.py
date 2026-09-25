@@ -123,7 +123,7 @@ def _resolve_members(root: Path, raw: Any, field: str, suffix: str) -> tuple[Pat
 
 
 def _relative_members(root: Path, paths: tuple[Path, ...]) -> list[str]:
-    return [os.path.relpath(str(path), str(root)) for path in paths]
+    return [Path(os.path.relpath(str(path), str(root))).as_posix() for path in paths]
 
 
 def _append_member(existing: tuple[Path, ...], path: Path) -> tuple[Path, ...]:
