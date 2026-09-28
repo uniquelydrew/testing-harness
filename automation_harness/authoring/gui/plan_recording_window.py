@@ -17,6 +17,7 @@ from automation_harness.authoring.recording_review import (
 from automation_harness.authoring.plan_repository import (
     assigned_repository_path,
     ensure_default_repository,
+    recording_repository_path,
     materialize_captured_target,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
@@ -26,7 +27,7 @@ from automation_harness.core.logical_menu import (
     logical_menu_metadata,
     logical_menu_target_is_persisted,
 )
-from automation_harness.core.test_plan import repository_from_plan
+from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan
 from automation_harness.drivers.java_agent import configured_java_recording_transports
 from automation_harness.recording import RecordingSession, interactions_to_steps
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
@@ -172,7 +173,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                 preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
             )
         recording_repository = self.repository
-        existing_path = assigned_repository_path(self.plan, self.path)
+        existing_path = recording_repository_path(self.plan, self.path)
         if existing_path is not None and existing_path.exists():
             recording_repository = recording_repository.overlay(
                 ComponentRepository.load((existing_path,))
@@ -270,8 +271,11 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             return repository, path
         self.plan, path = ensure_default_repository(self.plan, self.path)
         repository = ComponentRepository.load((path,))
-        self.assigned_repository_path = path
-        if self.project_context:
+        self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
+        # Do not publish the plan-owned recording fallback in the project's
+        # repository catalogue. It becomes visible only after an explicit
+        # repository assignment.
+        if self.project_context and self.assigned_repository_path is not None:
             project = AuthoringProject.load(self.project_context).with_object_repository(path)
             save_authoring_project(self.project_context, project)
             self.project = project
@@ -334,7 +338,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         unresolved = []
         captured_ids = set()
         provisional_ids = set()
-        assigned_path = assigned_repository_path(self.plan, self.path)
+        assigned_path = recording_repository_path(self.plan, self.path)
         assigned_repository = (
             ComponentRepository.load((assigned_path,))
             if assigned_path and assigned_path.exists()
@@ -437,17 +441,27 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     )
                 unresolved.append(interaction)
 
+        assigned_for_resolution = assigned_repository_path(self.plan, self.path)
         if assigned_repository is not None and assigned_path is not None:
             assigned_repository.save(assigned_path)
-            self.repository = assigned_repository
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
 
         if resolved:
             resolved = self._review_recorded_step_details(resolved)
         if resolved or captured_ids:
             if resolved:
                 self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
+            if assigned_repository is not None:
+                if assigned_for_resolution is None:
+                    # The plan-side fallback is recording evidence only.  Copy
+                    # references used by the new steps into the portable plan
+                    # instead of placing that fallback in the resolution set.
+                    portable = repository_from_plan(self.plan).overlay(assigned_repository)
+                    self.plan = embed_plan_repository(self.plan, portable)
+                    self.repository = repository_from_plan(self.plan)
+                else:
+                    self.repository = repository_from_plan(self.plan).overlay(assigned_repository)
+                if self.registry_resources:
+                    self.repository = self.repository.overlay(self.registry_resources.repository)
             self.mark_dirty()
             self.refresh_all()
         self.set_status(

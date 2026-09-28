@@ -143,14 +143,14 @@ class ComponentRepository:
         # repository and report each one for the explicit repair action.
         while True:
             try:
-                return cls(merged).with_inferred_ownership(), tuple(issues)
+                return cls(merged), tuple(issues)
             except ComponentRepositoryError as exc:
                 removable = None
                 for name in tuple(merged):
                     candidate = dict(merged)
                     candidate.pop(name)
                     try:
-                        cls(candidate).with_inferred_ownership()
+                        cls(candidate)
                     except ComponentRepositoryError:
                         continue
                     removable = name

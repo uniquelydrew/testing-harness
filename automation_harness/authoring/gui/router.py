@@ -29,7 +29,15 @@ _OPEN_PROJECT_WINDOWS = {}
 def detect_artifact(path: Path) -> ArtifactType:
     path = Path(path)
     suffix_type = _SUFFIX_TYPES.get(path.suffix.casefold())
-    raw = _load_mapping(path)
+    try:
+        raw = _load_mapping(path)
+    except ValueError:
+        # A repository may be opened specifically because its YAML is broken.
+        # Route it to the recovery-capable workbench instead of making the
+        # file impossible to open from the authoring UI.
+        if suffix_type is ArtifactType.OBJECT_REPOSITORY:
+            return suffix_type
+        raise
     schema_type = _detect_schema(raw)
     if suffix_type is not None and schema_type is not None and suffix_type != schema_type:
         raise ValueError("%s uses the %s extension but its document schema is %s" % (path, suffix_type.value, schema_type.value))

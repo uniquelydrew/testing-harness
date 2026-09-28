@@ -8,6 +8,7 @@ from automation_harness.authoring.plan_repository import (
     materialize_captured_target,
     merge_objects_or,
     persist_recorded_menu_owner,
+    recording_repository_path,
 )
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope, RepositorySet
@@ -92,16 +93,15 @@ def test_multiple_repository_associations_round_trip_scopes(tmp_path):
     assert assigned_repository_path(updated, plan_path) == local.resolve()
 
 
-def test_default_repository_is_added_without_replacing_shared_associations(tmp_path):
+def test_default_repository_does_not_shadow_an_existing_shared_assignment(tmp_path):
     plan_path = tmp_path / "plans" / "smoke.ahplan"
     shared = tmp_path / "shared" / "common.ahobjects"
     plan = assign_repositories(TestPlan(name="smoke"), plan_path, (
         RepositoryAssociation(shared, RepositoryScope.SHARED),
     ))
     updated, local = ensure_default_repository(plan, plan_path)
-    assert local == plan_path.with_suffix(".ahobjects")
+    assert local == shared.resolve()
     assert assigned_repositories(updated, plan_path) == (
-        RepositoryAssociation(local.resolve(), RepositoryScope.LOCAL),
         RepositoryAssociation(shared.resolve(), RepositoryScope.SHARED),
     )
 
@@ -111,7 +111,22 @@ def test_default_repository_is_created_next_to_plan(tmp_path):
     plan, repository_path = ensure_default_repository(TestPlan(name="login"), plan_path)
     assert repository_path == tmp_path / "login.ahobjects"
     assert repository_path.is_file()
-    assert assigned_repository_path(plan, plan_path) == repository_path.resolve()
+    assert assigned_repository_path(plan, plan_path) is None
+    assert recording_repository_path(plan, plan_path) == repository_path.resolve()
+    assert assigned_repositories(plan, plan_path) == (
+        RepositoryAssociation(repository_path.resolve(), RepositoryScope.RECORDING),
+    )
+
+
+def test_recording_fallback_is_excluded_from_executable_composition(tmp_path):
+    plan_path = tmp_path / "login.ahplan"
+    plan, fallback = ensure_default_repository(TestPlan(name="login"), plan_path)
+    captured = ComponentRepository({})
+    captured, _object_id, _created = materialize_captured_target(captured, _capture())
+    captured.save(fallback)
+
+    assert assigned_repository_path(plan, plan_path) is None
+    assert RepositorySet.load(assigned_repositories(plan, plan_path)).compose().components == {}
 
 
 def test_repeated_capture_reuses_same_repository_object():
@@ -169,6 +184,22 @@ def test_or_merge_unions_locator_strategies_and_removes_duplicate():
     assert "submit-alt" not in merged.components
     assert len(merged.get("submit").strategies) == 2
     assert merged.get("submit").object_id == one.object_id
+
+
+def test_or_merge_reparents_children_of_removed_duplicate():
+    parent = ComponentDefinition("submit")
+    duplicate = ComponentDefinition("submit-alt")
+    child = ComponentDefinition("submit-alt.icon", owner_object_id=duplicate.object_id)
+    repository = ComponentRepository({
+        parent.component_id: parent,
+        duplicate.component_id: duplicate,
+        child.component_id: child,
+    })
+
+    merged = merge_objects_or(repository, parent.component_id, (duplicate.component_id,))
+
+    assert not merged.contains(duplicate.component_id)
+    assert merged.get(child.component_id).owner_object_id == parent.object_id
 
 
 def test_recorded_route_on_shared_menu_creates_explicit_local_override():

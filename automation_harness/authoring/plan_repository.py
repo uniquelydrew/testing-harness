@@ -38,7 +38,7 @@ def assigned_repositories(plan, plan_path: Path) -> tuple[RepositoryAssociation,
             try:
                 scope = RepositoryScope(str(item.get("scope")))
             except ValueError as exc:
-                raise ValueError("object repository association scope must be 'local' or 'shared'") from exc
+                raise ValueError("object repository association scope must be 'local', 'shared', or 'recording'") from exc
             if not isinstance(value, str) or not value.strip():
                 raise ValueError("object repository association requires a path")
             result.append(RepositoryAssociation(_resolve_repository_path(value, plan_path), scope))
@@ -47,9 +47,27 @@ def assigned_repositories(plan, plan_path: Path) -> tuple[RepositoryAssociation,
 
 
 def assigned_repository_path(plan, plan_path: Path) -> Path | None:
+    """Return a user-assigned repository, never the recording fallback."""
     associations = assigned_repositories(plan, plan_path)
     local = next((item.path for item in associations if item.scope is RepositoryScope.LOCAL), None)
-    return local or (associations[0].path if associations else None)
+    shared = next((item.path for item in associations if item.scope is RepositoryScope.SHARED), None)
+    return local or shared
+
+
+def recording_repository_path(plan, plan_path: Path) -> Path | None:
+    """Return the repository recording may update.
+
+    An explicitly assigned repository always wins.  The hidden plan-side
+    fallback is selected only when there is no assignment.
+    """
+    assigned = assigned_repository_path(plan, plan_path)
+    if assigned is not None:
+        return assigned
+    return next(
+        (item.path for item in assigned_repositories(plan, plan_path)
+         if item.scope is RepositoryScope.RECORDING),
+        None,
+    )
 
 
 def assign_repositories(plan, plan_path: Path, associations: Iterable[RepositoryAssociation]):
@@ -76,7 +94,13 @@ def load_repository_set(plan, plan_path: Path) -> RepositorySet:
 
 def ensure_default_repository(plan, plan_path: Path):
     associations = assigned_repositories(plan, plan_path)
-    existing = next((item.path for item in associations if item.scope is RepositoryScope.LOCAL), None)
+    # Do not manufacture a test-scoped repository beside a plan that already
+    # has a real assignment.  The fallback is a recording implementation
+    # detail, not another layer of resolution.
+    assigned = assigned_repository_path(plan, plan_path)
+    if assigned is not None:
+        return plan, assigned
+    existing = next((item.path for item in associations if item.scope is RepositoryScope.RECORDING), None)
     if existing is not None:
         if not existing.exists():
             ComponentRepository({}).save(existing)
@@ -87,11 +111,11 @@ def ensure_default_repository(plan, plan_path: Path):
     if associations:
         plan = assign_repositories(
             plan, plan_path,
-            (RepositoryAssociation(default_path, RepositoryScope.LOCAL), *associations),
+            (RepositoryAssociation(default_path, RepositoryScope.RECORDING), *associations),
         )
     else:
         plan = assign_repositories(plan, plan_path, (
-            RepositoryAssociation(default_path, RepositoryScope.LOCAL),
+            RepositoryAssociation(default_path, RepositoryScope.RECORDING),
         ))
     return plan, default_path
 
@@ -105,7 +129,9 @@ def load_authoring_repository(plan, plan_path: Path) -> tuple[ComponentRepositor
     # the returned path. Never return a composed view here: doing so would copy
     # shared objects into the local file. Read-only/execution consumers use
     # load_repository_set(...).compose().
-    path = path or associations[0].path
+    path = path or next((item.path for item in associations if item.scope is RepositoryScope.SHARED), None)
+    if path is None:
+        return ComponentRepository({}), None
     return ComponentRepository.load((path,)), path
 
 
@@ -292,6 +318,16 @@ def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids
     for source in sources:
         merged = _merge_definition_or(merged, source)
     result = repository.with_component(merged)
+    # Preserve object hierarchy when a duplicate parent is folded into its
+    # canonical object.  The old implementation removed the duplicate before
+    # repairing its children, leaving deduplication unable to complete for a
+    # perfectly ordinary captured subtree.
+    source_object_ids = {source.object_id for source in sources}
+    for definition in tuple(result.components.values()):
+        if definition.owner_object_id in source_object_ids:
+            result = result.with_component(replace(
+                definition, owner_object_id=target.object_id,
+            ))
     for source in sources:
         result = result.without_component(source.component_id)
     return result
