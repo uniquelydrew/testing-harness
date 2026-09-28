@@ -102,21 +102,37 @@ class ProjectWindow(ArtifactWindow):
         )
         self.refresh_detail()
 
-    def _selected_plan_paths(self):
+    def _selected_artifacts(self):
+        """Return selected artifact rows without using GTK's single-selection API."""
         model, paths = self.tree.get_selection().get_selected_rows()
-        selected = {Path(model[path][2]).resolve() for path in paths if model[path][0] == "Test Plan"}
+        return tuple((model[path][0], model[path][2]) for path in paths)
+
+    def _selected_artifact(self):
+        selected = self._selected_artifacts()
+        return selected[0] if len(selected) == 1 else None
+
+    def _selected_plan_paths(self):
+        selected = {
+            Path(path_text).resolve()
+            for label, path_text in self._selected_artifacts()
+            if label == "Test Plan"
+        }
         return tuple(path for path in self.project.test_plans if path.resolve() in selected)
 
     def refresh_detail(self):
-        model, selected_paths = self.tree.get_selection().get_selected_rows()
-        if len(selected_paths) > 1:
+        selected_artifacts = self._selected_artifacts()
+        if len(selected_artifacts) > 1:
             plans = self._selected_plan_paths()
             self.detail.get_buffer().set_text(
-                "%d artifacts selected%s" % (len(selected_paths), "\n\n%d Test Plans ready to run." % len(plans) if plans else "")
+                "%d artifacts selected%s" % (len(selected_artifacts), "\n\n%d Test Plans ready to run." % len(plans) if plans else "")
             )
             return
-        path_text = self.selected(self.tree, 2)
-        label = self.selected(self.tree, 0)
+        selected = self._selected_artifact()
+        if selected is None:
+            path_text = None
+            label = None
+        else:
+            label, path_text = selected
         if not path_text:
             text = (
                 "%s\n\nTest Plans: %d\nStep Registries: %d\nObject Repositories: %d" %
@@ -303,7 +319,10 @@ class ProjectWindow(ArtifactWindow):
         if path_info is None:
             return False
         path, _column, _cell_x, _cell_y = path_info
-        self.tree.get_selection().select_path(path)
+        selection = self.tree.get_selection()
+        if not selection.path_is_selected(path):
+            selection.unselect_all()
+            selection.select_path(path)
         menu = Gtk.Menu()
         open_item = Gtk.MenuItem(label="Open")
         open_item.connect("activate", lambda *_args: self.open_selected())
@@ -326,15 +345,20 @@ class ProjectWindow(ArtifactWindow):
         self.mark_dirty(False); self.set_status("Saved project")
 
     def open_selected(self):
-        path = self.selected(self.tree, 2)
-        if path:
-            return self.open_artifact(Path(path), project_context=self.path)
+        selected = self._selected_artifact()
+        if selected is None:
+            if self._selected_artifacts():
+                return self.info("Project", "Select exactly one artifact to open.")
+            return
+        _label, path_text = selected
+        return self.open_artifact(Path(path_text), project_context=self.path)
 
     def remove_selected(self):
-        path_text = self.selected(self.tree, 2)
-        label = self.selected(self.tree, 0)
-        if not path_text:
-            return self.info("Project", "Select an artifact first.")
+        selected = self._selected_artifact()
+        if selected is None:
+            message = "Select exactly one artifact to remove." if self._selected_artifacts() else "Select an artifact first."
+            return self.info("Project", message)
+        label, path_text = selected
         path = Path(path_text)
         if not self.confirm("Remove from Project", "Remove %s from Project membership? The file will not be deleted." % path.name):
             return
