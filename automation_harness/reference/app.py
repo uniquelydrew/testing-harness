@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import signal
+import socket
 import socketserver
 import threading
 import tempfile
@@ -31,7 +32,10 @@ class ReferenceHandler(socketserver.StreamRequestHandler):
         self.wfile.write((json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8"))
 
 
-class ReferenceServer(socketserver.ThreadingUnixStreamServer):
+_ReferenceServerBase = getattr(socketserver, "ThreadingUnixStreamServer", socketserver.ThreadingTCPServer)
+
+
+class ReferenceServer(_ReferenceServerBase):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -40,12 +44,21 @@ class ReferenceServer(socketserver.ThreadingUnixStreamServer):
         super().__init__(socket_path, ReferenceHandler)
 
 
-def serve(socket_path: Path, *, gui: bool) -> None:
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
-    if socket_path.exists():
-        socket_path.unlink()
+def serve(socket_path: str | Path, *, gui: bool) -> None:
+    endpoint = str(socket_path)
+    is_tcp = endpoint.startswith("tcp://")
+    if is_tcp:
+        host, port = endpoint.removeprefix("tcp://").rsplit(":", 1)
+        address: object = (host, int(port))
+        cleanup_path = None
+    else:
+        cleanup_path = Path(endpoint)
+        cleanup_path.parent.mkdir(parents=True, exist_ok=True)
+        if cleanup_path.exists():
+            cleanup_path.unlink()
+        address = str(cleanup_path)
     state = ReferenceState()
-    server = ReferenceServer(str(socket_path), state)
+    server = ReferenceServer(address, state)
     server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
     server_thread.start()
 
@@ -76,14 +89,14 @@ def serve(socket_path: Path, *, gui: bool) -> None:
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=2)
-        if socket_path.exists():
-            socket_path.unlink()
+        if cleanup_path is not None and cleanup_path.exists():
+            cleanup_path.unlink()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the isolated automation reference target")
     parser.add_argument(
-        "--socket", type=Path,
+        "--socket", type=str,
         default=Path(tempfile.gettempdir()) / "automation-harness-reference.sock",
         help="Unix control socket (default: %(default)s)",
     )
@@ -91,7 +104,8 @@ def main() -> None:
     mode.add_argument("--gui", action="store_true", help="run the synthetic desktop GUI")
     mode.add_argument("--headless", action="store_true", help="run service-only reference state")
     args = parser.parse_args()
-    serve(args.socket.resolve(), gui=bool(args.gui and not args.headless))
+    endpoint = args.socket if str(args.socket).startswith("tcp://") else str(Path(args.socket).resolve())
+    serve(endpoint, gui=bool(args.gui and not args.headless))
 
 
 if __name__ == "__main__":

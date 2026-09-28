@@ -17,9 +17,10 @@ class ReferenceClient:
 
     def request(self, action: str, **payload: Any) -> Any:
         message = json.dumps({"action": action, **payload}, separators=(",", ":")) + "\n"
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        family, address = _socket_address(self.socket_path)
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(self.timeout)
-            sock.connect(self.socket_path)
+            sock.connect(address)
             sock.sendall(message.encode("utf-8"))
             response = self._readline(sock)
         data = json.loads(response)
@@ -41,3 +42,12 @@ class ReferenceClient:
         if not raw:
             raise ReferenceProtocolError("reference backend returned no response")
         return raw.decode("utf-8")
+
+
+def _socket_address(value: str):
+    if value.startswith("tcp://"):
+        host_port = value.removeprefix("tcp://").rsplit(":", 1)
+        if len(host_port) != 2:
+            raise ReferenceProtocolError("invalid TCP reference endpoint")
+        return socket.AF_INET, (host_port[0], int(host_port[1]))
+    return socket.AF_UNIX, value

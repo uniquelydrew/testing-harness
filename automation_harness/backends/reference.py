@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ class ReferenceBackend(ExecutionBackend):
         self.display_mode = display_mode
         self._process: subprocess.Popen[str] | None = None
         self._xvfb_process: subprocess.Popen[str] | None = None
-        self._socket_path: Path | None = None
+        self._socket_path: Path | str | None = None
         self._stdout_handle = None
         self._stderr_handle = None
         self._xvfb_stdout_handle = None
@@ -64,7 +65,7 @@ class ReferenceBackend(ExecutionBackend):
     def start(self, *, run_dir: Path) -> dict[str, str]:
         if self._process is not None:
             raise RuntimeError("reference backend already started")
-        socket_path = Path("/tmp") / f"automation-run-{os.getpid()}-{uuid.uuid4().hex[:12]}.sock"
+        socket_path = _reference_endpoint()
         self._socket_path = socket_path
         self._stdout_handle = (run_dir / "logs" / "reference.stdout.log").open("w", encoding="utf-8")
         self._stderr_handle = (run_dir / "logs" / "reference.stderr.log").open("w", encoding="utf-8")
@@ -85,7 +86,7 @@ class ReferenceBackend(ExecutionBackend):
                 detail = (run_dir / "logs" / "reference.stderr.log").read_text(encoding="utf-8").strip()
                 suffix = f": {detail[-2000:]}" if detail else ""
                 raise RuntimeError(f"reference backend exited during startup with code {self._process.returncode}{suffix}")
-            if socket_path.exists():
+            if isinstance(socket_path, str) or socket_path.exists():
                 try:
                     health = ReferenceClient(socket_path).request("health")
                     gui_ready = bool(health.get("ui_ready"))
@@ -146,11 +147,13 @@ class ReferenceBackend(ExecutionBackend):
             handle = getattr(self, handle_name)
             if handle is not None:
                 handle.close(); setattr(self, handle_name, None)
-        if self._socket_path is not None:
+        if isinstance(self._socket_path, Path):
             try:
                 self._socket_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            self._socket_path = None
+        else:
             self._socket_path = None
         self._display = None
 
@@ -177,3 +180,11 @@ def _pillow_available() -> bool:
     except ImportError:
         return False
     return True
+
+
+def _reference_endpoint() -> Path | str:
+    if os.name != "nt":
+        return Path("/tmp") / f"automation-run-{os.getpid()}-{uuid.uuid4().hex[:12]}.sock"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return "tcp://127.0.0.1:%d" % probe.getsockname()[1]
