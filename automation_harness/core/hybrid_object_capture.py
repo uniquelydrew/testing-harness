@@ -195,10 +195,14 @@ class HybridObjectCaptureService(ObjectCaptureService):
     ) -> ComponentDefinition:
         authored = captured.candidate_strategy()
         native_class = str(captured.native_class or "").casefold()
-        if "menubuttonskin" in native_class or "menuitemcontainer" in native_class:
+        transient_javafx = (
+            "menubuttonskin", "menuitemcontainer", "contextmenucontent",
+            "listcell", "tablecell", "treecell", "treetablecell", "datecell", "colorrect",
+        )
+        if any(marker in native_class for marker in transient_javafx):
             raise ValueError(
-                "JavaFX menu skin captures are transient; capture the logical "
-                "MenuButton/Menu owner instead"
+                "JavaFX popup/skin captures are transient; capture the durable "
+                "owner instead"
             )
         if authored.type not in {"javafx", "java_agent"}:
             return super().definition_from_capture(

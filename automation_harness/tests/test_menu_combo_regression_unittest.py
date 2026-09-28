@@ -13,6 +13,45 @@ from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
 from automation_harness.recording import RecordingSession
 from automation_harness.recording.observations import PointerInteraction
+from automation_harness.recording.observations import StateChanged
+
+
+def _popup_owner(name, native_class, accessible_id):
+    return {
+        "name": name,
+        "role": "combo box",
+        "class": native_class,
+        "id": accessible_id,
+        "window": "Main",
+        "bounds": [10, 10, 100, 25],
+    }
+
+
+def _popup_selection(owner, *, native_class, role, index, value):
+    return _captured_recording_node({
+        "name": value,
+        "role": role,
+        "class": native_class,
+        "window": "Popup",
+        "popup_selection": {
+            "index": index,
+            "value": value,
+            "family": "popup_selector",
+            "owner": owner,
+        },
+    })
+
+
+def _record_popup_selection(selected):
+    session = RecordingSession()
+    session.start()
+    opener = replace(selected, backend_properties={
+        key: value for key, value in selected.backend_properties.items()
+        if key != "popup_selection"
+    })
+    session.observe(PointerInteraction(0.5, "javafx", opener, {}, "primary", "released", (20, 20)))
+    session.observe(PointerInteraction(1.0, "javafx", selected, {}, "primary", "released", (20, 20)))
+    return session.stop()
 
 
 class MenuComboRegression(unittest.TestCase):
@@ -65,33 +104,34 @@ class MenuComboRegression(unittest.TestCase):
         }), {"component_id": "OK Button", "action": {"type": "click"}}),
             {"object": "OK Button", "state": "absent", "equals": True})
 
-    def test_combo_popup_cell_is_owned_by_combo(self):
-        owner = {"name": "Camera", "role": "combo box", "class": "javafx.scene.control.ComboBox",
-                 "id": "camera", "window": "Main", "bounds": [10, 10, 100, 25]}
+    def test_legacy_combo_selection_payload_normalizes_to_popup_selection(self):
+        owner = _popup_owner("Camera", "javafx.scene.control.ComboBox", "camera")
         cell = {"name": "Decorative cell", "role": "list item", "class": "javafx.scene.control.ListCell",
-                "window": "Popup", "combo_selection": {"index": 2, "text": "North", "owner": owner}}
+                 "window": "Popup", "combo_selection": {"index": 2, "text": "North", "owner": owner}}
         capture = _captured_recording_node(cell)
         self.assertEqual(capture.semantic_type(), ObjectType.COMBO_BOX)
         self.assertEqual(capture.candidate_strategy().type, "javafx")
-        self.assertEqual(capture.backend_properties["combo_selection"]["index"], 2)
-        session = RecordingSession()
-        session.start()
-        opener = replace(capture, backend_properties={
-            key: value for key, value in capture.backend_properties.items() if key != "combo_selection"
-        })
-        session.observe(PointerInteraction(0.5, "javafx", opener, {}, "primary", "released", (20, 20)))
-        session.observe(PointerInteraction(1.0, "javafx", capture, {}, "primary", "released", (20, 20)))
-        session.observe(PointerInteraction(1.05, "javafx", capture, {}, "primary", "released", (20, 20)))
-        interactions = session.stop()
-        self.assertEqual(len(interactions), 1)
-        self.assertEqual(interactions[0].action, ActionType.SELECT_ITEM)
-        self.assertEqual(interactions[0].parameters, {"value": "North"})
+        self.assertEqual(capture.backend_properties["popup_selection"]["index"], 2)
+
+    def test_popup_selector_nodes_are_owned_by_their_selector(self):
+        cases = (
+            ("Camera", "javafx.scene.control.ComboBox", "camera", "javafx.scene.control.ListCell", "list item"),
+            ("Site", "javafx.scene.control.ChoiceBox", "siteSelector_", "javafx.scene.control.MenuItem", "menu item"),
+        )
+        for name, owner_class, owner_id, popup_class, popup_role in cases:
+            with self.subTest(owner_class=owner_class, popup_class=popup_class):
+                selected = _popup_selection(
+                    _popup_owner(name, owner_class, owner_id), native_class=popup_class,
+                    role=popup_role, index=1, value="North",
+                )
+                self.assertEqual(selected.semantic_type(), ObjectType.COMBO_BOX)
+                interactions = _record_popup_selection(selected)
+                self.assertEqual([(item.action, item.target.accessible_id, item.parameters) for item in interactions], [
+                    (ActionType.SELECT_ITEM, owner_id, {"value": "North"}),
+                ])
 
     def test_combo_popup_miss_consumes_the_second_click(self):
-        owner = _captured_recording_node({
-            "name": "Camera", "role": "combo box", "class": "javafx.scene.control.ComboBox",
-            "id": "camera", "window": "Main", "bounds": [10, 10, 100, 25],
-        })
+        owner = _captured_recording_node(_popup_owner("Camera", "javafx.scene.control.ComboBox", "camera"))
         covered_button = _captured_recording_node({
             "name": "Save", "role": "button", "class": "javafx.scene.control.Button",
             "id": "save", "window": "Main", "bounds": [10, 40, 100, 25],
@@ -103,6 +143,32 @@ class MenuComboRegression(unittest.TestCase):
         # click here.  It is the unresolved second half of the combo gesture.
         session.observe(PointerInteraction(1.0, "javafx", covered_button, {}, "primary", "released", (20, 50)))
         self.assertEqual(session.stop(), ())
+
+    def test_popup_selection_miss_cannot_author_covered_control(self):
+        owner = _captured_recording_node(_popup_owner("Site", "javafx.scene.control.ChoiceBox", "siteSelector_"))
+        covered = _captured_recording_node({
+            "name": "Follow", "role": "button", "class": "javafx.scene.control.Button",
+            "id": "followButton_", "window": "Main", "bounds": [10, 40, 100, 25],
+        })
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(0.5, "javafx", owner, {}, "primary", "released", (20, 20)))
+        session.observe(PointerInteraction(1.0, "javafx", covered, {}, "primary", "released", (20, 50)))
+        self.assertEqual(session.stop(), ())
+
+    def test_popup_owner_value_change_is_authoritative_when_popup_node_is_unavailable(self):
+        owner = _captured_recording_node({
+            "name": "Date", "role": "date picker", "class": "javafx.scene.control.DatePicker",
+            "id": "dateSelector", "window": "Main", "bounds": [10, 10, 100, 25],
+        })
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(0.5, "javafx", owner, {}, "primary", "released", (20, 20)))
+        session.observe(StateChanged(1.0, "javafx", owner, {}, "value", None, "2026-09-28"))
+        interactions = session.stop()
+        self.assertEqual([(item.action, item.target.accessible_id, item.parameters) for item in interactions], [
+            (ActionType.SELECT_ITEM, "dateSelector", {"value": "2026-09-28"}),
+        ])
 
     def test_combo_completion_checks_selected_index(self):
         owner = ComponentDefinition(

@@ -59,7 +59,7 @@ class ComponentDefinition:
         values: set[ActionType] = set()
         for action in self.actions:
             if action == "select_menu_item":
-                values.add(ActionType.SELECT_ITEM)
+                values.add(ActionType.SELECT_MENU_ITEM)
                 continue
             if action == "activate":
                 values.update({ActionType.ACTIVATE, ActionType.CLICK})
@@ -84,7 +84,7 @@ class ComponentDefinition:
             ObjectType.MENU,
             ObjectType.CONTEXT_MENU,
         }:
-            values.add(ActionType.SELECT_ITEM)
+            values.add(ActionType.SELECT_MENU_ITEM)
         return frozenset(values) or default_actions(self.object_type)
 
     def supports(self, action: ActionType) -> bool:

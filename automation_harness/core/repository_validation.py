@@ -41,7 +41,10 @@ _SUPPORTED_STRATEGIES = {
     "atspi", "java_accessibility", "java_agent", "javafx",
     "anchored_visual", "reference_inspection",
 }
-_TRANSIENT_JAVAFX_CLASSES = {"MenuButtonSkin", "MenuItemContainer", "ContextMenuContent"}
+_TRANSIENT_JAVAFX_CLASSES = {
+    "MenuButtonSkin", "MenuItemContainer", "ContextMenuContent", "ListCell",
+    "TableCell", "TreeCell", "TreeTableCell", "DateCell", "ColorRect",
+}
 
 
 def validate_repository(
