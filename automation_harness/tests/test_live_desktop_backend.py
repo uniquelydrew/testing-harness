@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from automation_harness.backends.live_desktop import LiveDesktopBackend
+from automation_harness.core.component_handle import ComponentHandle
 from automation_harness.models.component import ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ObjectType
 
@@ -35,14 +36,42 @@ def test_object_application_lineage_remains_object_local():
         strategies=(ComponentStrategy("atspi", {"identification": identification}),),
     )
 
-    assert definition.strategies[0].options["identification"] == identification
+    # Resolution receives the repository strategy unchanged. Application and
+    # window are object-local assistive criteria, not a process-wide execution
+    # target injected by the harness.
+    import automation_harness.core.component_handle as component_handle
+    from types import SimpleNamespace
+
+    observed = []
+    original = component_handle.resolve_live_capture
+    component_handle.resolve_live_capture = lambda strategy, options, context: (
+        observed.append((strategy, options))
+        or SimpleNamespace(to_dict=lambda: {}, bounds=None)
+    )
+    try:
+        ComponentHandle(SimpleNamespace(), definition)._resolve_strategy(
+            "atspi", definition.strategies[0].options,
+        )
+    finally:
+        component_handle.resolve_live_capture = original
+
+    assert observed == [("atspi", {"identification": identification})]
 
 
 def test_objects_from_multiple_applications_need_no_execution_target():
     first = {"mandatory": {"name": "Save"}, "assistive": {"application": "Application A"}}
     second = {"mandatory": {"name": "Status"}, "assistive": {"application": "Application B"}}
+
     definitions = (
-        ComponentDefinition("save", object_type=ObjectType.BUTTON, strategies=(ComponentStrategy("atspi", {"identification": first}),)),
-        ComponentDefinition("status", object_type=ObjectType.LABEL, strategies=(ComponentStrategy("atspi", {"identification": second}),)),
+        ComponentDefinition(
+            "save", object_type=ObjectType.BUTTON,
+            strategies=(ComponentStrategy("atspi", {"identification": first}),),
+        ),
+        ComponentDefinition(
+            "status", object_type=ObjectType.BUTTON,
+            strategies=(ComponentStrategy("atspi", {"identification": second}),),
+        ),
     )
-    assert [item.strategies[0].options["identification"] for item in definitions] == [first, second]
+    assert [item.strategies[0].options["identification"] for item in definitions] == [
+        first, second,
+    ]

@@ -691,24 +691,33 @@ The key under `components` is the reusable logical name:
 tracking.follow_button
 ```
 
-Choose IDs according to the object's semantic role rather than its screen coordinates or current hierarchy position.
+Repository object names are readable authored aliases. Capture defaults to the
+object's distinguishing text plus its canonical type; immutable `object_id`
+values carry durable identity behind the alias.
 
 Good:
 
 ```text
-tracking.follow_button
-navigation.file_menu
-mosaic.add_tile_button
-session.username_field
+Follow Button
+File Menu
+Add Tile Button
+Username Text Field
+Cancel Button
+Cancel Button 2
 ```
 
 Poor:
 
 ```text
+MainWindow.JPanel.JPanel.cancelButton
 button_4
 x1182_y744
 third_button
 ```
+
+Semantic ownership is stored separately from the name. A button beneath a
+Window or Tab therefore remains `Cancel Button`; framework layout containers
+such as JPanel, HBox, VBox, and Pane are locator context, not naming scopes.
 
 ## Description
 
@@ -749,9 +758,9 @@ The harness does not assume that every resolvable object is activatable.
 
 ## Standard menu hierarchies
 
-Captured AT-SPI and JavaFX menu bars persist standard menus, submenus, and
-items as nested `subobjects`. The authoring UI presents each terminal path as
-one **Select Menu Item** action:
+Captured Swing, JavaFX, and AT-SPI menus persist standard menus, submenus, and
+items as nested `subobjects`. The authoring UI presents the inventory as a
+readable hierarchy and each terminal path as one **Select Menu Option** action:
 
 ```yaml
 components:
@@ -771,7 +780,8 @@ components:
                 criteria: {name: Report, role: menu item}
 ```
 
-A test stores only the stable subobject IDs:
+The UI may display a breadcrumb such as `File > Recent > Report`, while the
+test stores the stable structured subobject path:
 
 ```yaml
 - id: open-recent-report

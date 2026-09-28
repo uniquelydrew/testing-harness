@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver, discover_javafx_endpoints
+from automation_harness.drivers.javafx_bridge import (
+    JavaFxBridgeDriver,
+    _captured_recording_node,
+    discover_javafx_endpoints,
+)
 
 
 _NODE = {
@@ -289,6 +293,56 @@ def test_internal_javafx_menu_skin_class_is_not_persisted(tmp_path):
         assert identity["ordinal"] == 1
     finally:
         server.close()
+
+
+def test_menubar_button_is_promoted_to_logical_menu_with_inventory(tmp_path):
+    target = dict(_NODE)
+    target.update({
+        "class": "com.sun.javafx.scene.control.MenuBarButton",
+        "simple_class": "MenuBarButton",
+        "id": "fileMenu",
+        "accessible_role": "MENU",
+        "accessible_text": "File",
+        "text": "File",
+        "menu_children": [{
+            "class": "javafx.scene.control.MenuItem",
+            "id": "openItem",
+            "text": "Open",
+            "role": "menu_item",
+            "ordinal": 0,
+        }],
+    })
+    server = _BridgeServer(node=target)
+    try:
+        _write_discovery(tmp_path, server)
+        captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
+        assert captured.native_class == "javafx.scene.control.Menu"
+        assert captured.semantic_type().value == "menu"
+        assert captured.logical_subobjects["openitem"]["criteria"] == {
+            "id": "openItem", "text": "Open",
+        }
+    finally:
+        server.close()
+
+
+def test_recording_menu_bar_button_is_promoted_before_materialization():
+    captured = _captured_recording_node({
+        "class": "com.sun.javafx.scene.control.MenuBarButton",
+        "role": "menu",
+        "name": "File",
+        "accessible_id": "fileMenu",
+        "framework": "javafx",
+        "state": {"present": True, "visible": True},
+        "menu_children": [{
+            "class": "javafx.scene.control.MenuItem",
+            "id": "openItem",
+            "text": "Open",
+            "role": "menu_item",
+        }],
+    })
+    assert captured.native_class == "javafx.scene.control.Menu"
+    assert captured.semantic_type().value == "menu"
+    assert "select_menu_item" not in captured.actions
 
 
 def test_resolve_and_semantic_operations_use_same_bridge(tmp_path):

@@ -20,6 +20,17 @@ from automation_harness.models.plan import TestPlan
 class StartWindow(ArtifactWindow):
     title_prefix = "Automation Harness"
 
+    def open_artifact(self, path, *, project_context=None):
+        opened = super().open_artifact(path, project_context=project_context)
+        if opened is not None:
+            self.window.iconify()
+            opened.window.connect("destroy", lambda *_args: self._restore_after_artifact())
+        return opened
+
+    def _restore_after_artifact(self):
+        self.window.deiconify()
+        self.window.present()
+
     def __init__(self, *, opener=None):
         super().__init__(None, opener=opener)
         self.window.set_default_size(760, 520)

@@ -343,8 +343,7 @@ def _build_fallback_context(captured):
         is_semantic=False,
     )
     current = root
-    target_label = getattr(captured, "name", None) or (hierarchy[-1] if hierarchy else None)
-    for index, label in enumerate(_fallback_context_labels(hierarchy, window, target_label=target_label)):
+    for index, label in enumerate(_fallback_context_labels(hierarchy, window)):
         child = CaptureContextNode(
             key="ancestor-%s" % index,
             label=str(label),
@@ -387,7 +386,7 @@ _GENERIC_FALLBACK_LABELS = {
 }
 
 
-def _fallback_context_labels(hierarchy, window, *, target_label=None):
+def _fallback_context_labels(hierarchy, window):
     """Keep named desktop ancestry while dropping toolkit-only wrappers.
 
     AT-SPI ancestry for Swing commonly contains repeated JPanel/JLabel/filler
@@ -398,13 +397,16 @@ def _fallback_context_labels(hierarchy, window, *, target_label=None):
     """
     labels = []
     window_label = str(window or "").strip().casefold()
-    target = str(target_label or "").strip().casefold()
-    for raw_label in hierarchy:
+    hierarchy = list(hierarchy or ())
+    for index, raw_label in enumerate(hierarchy):
         label = str(raw_label or "").strip()
         normalized = label.casefold()
         if not label or normalized == window_label:
             continue
-        if target and normalized == target:
+        # The final ancestry segment is usually the captured leaf, but a
+        # named visual host is meaningful authoring context even when the
+        # capture backend reports the rendered leaf separately.
+        if index == len(hierarchy) - 1 and not _looks_like_visual_host(label):
             continue
         if normalized in _GENERIC_FALLBACK_LABELS:
             continue
@@ -412,6 +414,11 @@ def _fallback_context_labels(hierarchy, window, *, target_label=None):
             continue
         labels.append(label)
     return labels
+
+
+def _looks_like_visual_host(label):
+    folded = str(label).casefold().replace("-", " ").replace("_", " ")
+    return any(token in folded.split() for token in ("visual", "region", "map", "surface", "canvas"))
 
 
 def _semantic_children(raw, target_ref):
@@ -423,14 +430,20 @@ def _semantic_children(raw, target_ref):
     return result
 
 
-def _semanticize(raw, target_ref):
+def _semanticize(raw, target_ref, *, under_semantic_boundary=False):
+    is_target = str(raw.get("ref")) == str(target_ref)
+    semantic = is_target or is_semantic_node(raw)
+    inherited_boundary = under_semantic_boundary or semantic
     promoted = []
     for child in raw.get("children", []) if isinstance(raw.get("children"), list) else []:
         if isinstance(child, Mapping):
-            promoted.extend(_semanticize(dict(child), target_ref))
-    is_target = str(raw.get("ref")) == str(target_ref)
-    semantic = is_target or is_semantic_node(raw)
-    structural = bool(promoted) and is_structural_context_node(raw)
+            promoted.extend(
+                _semanticize(
+                    dict(child), target_ref,
+                    under_semantic_boundary=inherited_boundary,
+                )
+            )
+    structural = is_structural_context_node(raw) and not under_semantic_boundary
     if not semantic and not structural:
         return promoted
     node = _context_node(raw, target_ref)
@@ -467,8 +480,6 @@ def is_semantic_node(node):
     if node.get("semantic_boundary") is True:
         return True
     if node.get("actions"):
-        return True
-    if class_name == "javafx.scene.control.Label" and node.get("accessible_text"):
         return True
     properties = node.get("properties")
     if isinstance(properties, Mapping):

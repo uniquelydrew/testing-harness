@@ -37,6 +37,10 @@ def resolve_repository_object(service, repository: ComponentRepository, definiti
         raise ObjectResolutionError(
             "object locator requires recapture after its rendering-surface owner changed"
         )
+    if status == "provisional":
+        raise ObjectResolutionError(
+            "object locator is provisional and cannot execute until durable identity is captured"
+        )
 
     errors = []
     for strategy in definition.strategies:

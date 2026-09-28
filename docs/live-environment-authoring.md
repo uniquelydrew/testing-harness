@@ -81,8 +81,13 @@ promotes presentation leaves to their nearest actionable owner.
 
 Use Capture Next Click for an isolated object. Use recording for interactions
 whose intermediate state must remain open, such as menu and submenu navigation.
-Standard menu descendants are persisted under their menu component and executed
-as one atomic `select_menu_item` path.
+Standard menu descendants are persisted as metadata under their Menu object
+and executed as one atomic `select_menu_item` path. During recording, opening
+and traversing a menu is treated as one menu transaction: intermediate clicks,
+hover-driven submenu transitions, and transient popup implementation objects
+are evidence only. A terminal choice produces one Select Menu Option step;
+Escape or dismissal cancels the unfinished transaction. The authoring picker
+renders the stored structured path as a readable breadcrumb.
 
 Stopping a recording is asynchronous. When adapter shutdown completes, the
 Object Identity Workbench opens with all distinct interacted semantic targets

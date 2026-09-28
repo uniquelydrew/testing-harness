@@ -18,7 +18,8 @@ def install_javafx_menu_execution() -> None:
             return original(self, selectors, identification=identification, **kwargs)
         except Exception as owner_error:
             raise RuntimeError(
-                "JavaFX menu owner/path traversal failed; refusing an unscoped terminal click"
+                "JavaFX menu owner/path traversal failed; refusing an unscoped terminal click: "
+                "%s: %s" % (type(owner_error).__name__, owner_error)
             ) from owner_error
 
     JavaFxBridgeDriver.select_menu_path = select_menu_path

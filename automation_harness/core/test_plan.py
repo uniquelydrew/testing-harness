@@ -66,6 +66,7 @@ def load_plan(path: Path) -> TestPlan:
                 depends_on=tuple(str(value) for value in depends_on),
                 description=str(item.get("description", "")),
                 group=str(item.get("group", "")),
+                name=str(item.get("name", "")),
                 completion=_decode_refs(dict(completion)),
                 scope=_decode_refs(dict(scope)),
             )

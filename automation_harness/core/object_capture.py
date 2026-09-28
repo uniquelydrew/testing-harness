@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.menu_inventory import with_inventory_metadata
 from automation_harness.core.object_hierarchy import hierarchy_contract, recapture_comparison
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
@@ -282,7 +283,7 @@ class ObjectCaptureService:
         action_names = {value.casefold() for value in captured.actions}
         if action_names & {"click", "press", "activate"}:
             actions.add("activate")
-        if captured.logical_subobjects and captured.semantic_type() in {
+        if captured.semantic_type() in {
             ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
         }:
             actions.add(ActionType.SELECT_MENU_ITEM.value)
@@ -301,7 +302,13 @@ class ObjectCaptureService:
             expected_states=expected,
             revision=revision,
             object_type=captured.semantic_type(),
-            properties=dict(captured.backend_properties),
+            properties=with_inventory_metadata(
+                captured.backend_properties,
+                captured.semantic_type(),
+                captured.logical_subobjects,
+                complete=False,
+                source="accessibility_snapshot",
+            ),
             framework=captured.framework,
             native_class=captured.native_class,
             subobjects=captured.logical_subobjects,

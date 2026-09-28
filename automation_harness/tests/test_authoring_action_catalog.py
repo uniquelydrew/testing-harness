@@ -40,6 +40,44 @@ def test_typed_action_values_are_embedded_in_semantic_action():
     assert call.inputs["action"] == {"type": "set_text", "value": "Drew"}
 
 
+def test_action_input_schema_uses_semantic_value_types():
+    text = action_by_id(
+        _component(ObjectType.TEXT_FIELD, {ActionType.SET_TEXT.value}), "set_text",
+    )
+    numeric = action_by_id(
+        _component(ObjectType.SLIDER, {ActionType.SET_VALUE.value}), "set_value",
+    )
+    menu = action_by_id(
+        _component(ObjectType.MENU, {ActionType.SELECT_MENU_ITEM.value}),
+        "select_menu_item",
+    )
+    selector = action_by_id(
+        _component(ObjectType.LIST, {ActionType.SELECT_ITEM.value}), "select_item",
+    )
+    assert text.inputs[0].value_type == "string"
+    assert numeric.inputs[0].value_type == "number"
+    assert menu.inputs[0].value_type == "menu_path"
+    assert selector.inputs[0].value_type == "object"
+
+
+def test_menu_actions_hide_backend_variants_outside_canonical_contract():
+    definition = _component(
+        ObjectType.MENU,
+        {"click", "activate", "open", "close", ActionType.SELECT_MENU_ITEM.value},
+    )
+    action_ids = [item.action_id for item in actions_for(definition)]
+    assert "click" in action_ids
+    assert "select_menu_item" in action_ids
+    assert "activate" not in action_ids
+    assert "open" not in action_ids
+    assert "close" not in action_ids
+
+
+def test_legacy_menu_owner_without_capability_list_still_exposes_route_action():
+    definition = _component(ObjectType.MENU, {"click", "activate"})
+    assert "select_menu_item" in [item.action_id for item in actions_for(definition)]
+
+
 def test_menu_path_is_offered_and_embedded_as_one_semantic_action():
     definition = _component(ObjectType.MENU_BAR, {ActionType.SELECT_MENU_ITEM.value})
     call = action_by_id(definition, "select_menu_item").to_step_call(

@@ -50,6 +50,59 @@ def test_repository_rejects_missing_owner_and_cycles():
         ComponentRepository({"Panel": panel, "Child": child})
 
 
+def test_delete_reparents_children_and_preserves_child_identity():
+    panel = _object("Panel")
+    child = _object("Panel.Save", owner_object_id=panel.object_id)
+    repository = ComponentRepository({panel.component_id: panel, child.component_id: child})
+
+    updated = repository.without_component("Panel", reparent_children=True)
+
+    assert not updated.contains("Panel")
+    assert updated.get("Panel.Save").object_id == child.object_id
+    assert updated.get("Panel.Save").owner_object_id is None
+    updated.validate_persistence()
+
+
+def test_delete_rejects_dangling_children_without_explicit_safe_mode():
+    panel = _object("Panel")
+    child = _object("Panel.Save", owner_object_id=panel.object_id)
+    repository = ComponentRepository({panel.component_id: panel, child.component_id: child})
+
+    with pytest.raises(ComponentRepositoryError, match="child object"):
+        repository.without_component("Panel")
+
+
+def test_recoverable_load_isolates_invalid_object_for_workbench_repair(tmp_path):
+    path = tmp_path / "broken.ahobjects"
+    path.write_text(
+        """version: 3
+components:
+  Good:
+    object_id: 4f0d8a3d-1c5a-4e31-8bb8-4e1dbd11df35
+    actions: [resolve]
+    strategies:
+      - type: atspi
+        identification:
+          mandatory: {accessible_id: good}
+  Broken MenuButton:
+    object_id: 8b3b6f95-4c56-4a54-a2e4-6c75de43fd1e
+    actions: [resolve, activate]
+    strategies:
+      - type: atspi
+        identification:
+          mandatory: {}
+""",
+        encoding="utf-8",
+    )
+
+    repository, issues = ComponentRepository.load_recoverable((path,))
+
+    assert repository.contains("Good")
+    assert not repository.contains("Broken MenuButton")
+    assert any(item[0] == "Broken MenuButton" for item in issues)
+    repository.validate_persistence()
+
+
 def test_visual_leaf_requires_rendering_surface_parent():
     panel = _object("Panel", framework="swing")
     visual = ComponentDefinition(

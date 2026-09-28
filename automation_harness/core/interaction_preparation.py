@@ -97,11 +97,9 @@ def preparation_requirement(
     if semantic.type in _POINTER_ACTIONS:
         return PreparationRequirement(True, False, require_window_activation=True)
     if semantic.type == ActionType.SELECT_MENU_ITEM:
-        # Menu paths are state transitions in their own right. Focusing the
-        # transient popup/skin before selection can close a ContextMenu or move
-        # focus back to its owner. Let the semantic menu executor perform the
-        # traversal; its rendered-terminal fallback uses the already-open popup.
-        return PreparationRequirement(False, False, require_window_activation=False)
+        # Raise the owning Stage, but do not focus its transient menu skin.
+        # The executor opens and traverses the path after activation.
+        return PreparationRequirement(True, False, require_window_activation=True)
     if semantic.type in _FOCUS_REQUIRED_ACTIONS:
         return PreparationRequirement(True, True, require_window_activation=True, require_focus=True)
     return PreparationRequirement(True, True, require_window_activation=True, require_focus=False)
