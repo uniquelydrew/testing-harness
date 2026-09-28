@@ -15,6 +15,7 @@ from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
+from automation_harness.authoring.plan_repository import assigned_repository_path, load_authoring_repository
 from automation_harness.authoring.step_registry import load_step_registry_resources
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.core.component_repository import ComponentRepository
@@ -37,6 +38,7 @@ class TestPlanWindow(ArtifactWindow):
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
         self.repository = repository_from_plan(self.plan)
+        self._assigned_repository_token = None
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
 
@@ -95,9 +97,11 @@ class TestPlanWindow(ArtifactWindow):
         self.object_action_tree.connect("row-activated", lambda *_args: self.insert_object_action())
         objects_page.pack_start(self.scrolled(self.object_action_tree), True, True, 0)
         self.button("Add Action", self.insert_object_action, parent=objects_page)
+        self.button("Refresh Objects", self.refresh_objects, parent=objects_page)
         notebook.append_page(objects_page, Gtk.Label(label="Objects"))
 
     def refresh_objects(self):
+        self._refresh_assigned_repository()
         selected_id = self.selected(self.object_tree, 0)
         self.object_store.clear()
         query = self.object_search.get_text().strip().casefold()
@@ -114,6 +118,22 @@ class TestPlanWindow(ArtifactWindow):
                     break
                 iterator = self.object_store.iter_next(iterator)
         self.refresh_object_actions()
+
+    def _refresh_assigned_repository(self):
+        """Reload an externally edited assigned repository when its file changes."""
+        path = assigned_repository_path(self.plan, self.path)
+        if path is None or not path.is_file():
+            return False
+        stat = path.stat()
+        token = (str(path), stat.st_mtime_ns, stat.st_size)
+        if token == self._assigned_repository_token:
+            return False
+        assigned, _path = load_authoring_repository(self.plan, self.path)
+        self.repository = repository_from_plan(self.plan).overlay(assigned)
+        if self.registry_resources:
+            self.repository = self.repository.overlay(self.registry_resources.repository)
+        self._assigned_repository_token = token
+        return True
 
     def refresh_object_actions(self):
         self.object_action_store.clear()
@@ -218,7 +238,7 @@ class TestPlanWindow(ArtifactWindow):
         item("Move Up", lambda: self.move_selected(-1))
         item("Move Down", lambda: self.move_selected(1))
         call = next((value for value in self.plan.steps if value.node_id == node_id), None)
-        item("Save as Reusable Step", self.save_group_to_registry, bool(call and call.group))
+        item("Save as Reusable Step", self.save_group_to_registry, bool(call))
         item("Remove", self.remove_selected)
         menu.show_all()
         menu.popup_at_pointer(None)
@@ -390,7 +410,7 @@ class TestPlanWindow(ArtifactWindow):
         dialog.show_all(); response = dialog.run(); buffer = text.get_buffer(); raw = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True); dialog.destroy()
         if response != Gtk.ResponseType.OK: return
         try:
-            payload = json.loads(raw); updated = replace(call, group=str(payload.get("group", call.group)), inputs=_decode(payload.get("inputs", {})), outputs={str(k): str(v) for k, v in payload.get("outputs", {}).items()}, depends_on=tuple(payload.get("depends_on", call.depends_on)))
+            payload = json.loads(raw); updated = replace(call, name=str(payload.get("name", "")), description=str(payload.get("description", "")), group=str(payload.get("group", call.group)), inputs=_decode(payload.get("inputs", {})), outputs={str(k): str(v) for k, v in payload.get("outputs", {}).items()}, depends_on=tuple(payload.get("depends_on", call.depends_on)))
             self.plan = replace(self.plan, steps=tuple(updated if item.node_id == node_id else item for item in self.plan.steps))
         except Exception as exc: return self.error("Edit Call", str(exc))
         self.mark_dirty(); self.refresh_all()
@@ -430,7 +450,6 @@ class TestPlanWindow(ArtifactWindow):
         node_id = self.selected(self.flow_tree, 1)
         if not node_id: return self.info("Step Registry", "Select a Test Flow call first.")
         selected = next(item for item in self.plan.steps if item.node_id == node_id)
-        if not selected.group: return self.info("Step Registry", "The selected call is not part of a composed group.")
         project = AuthoringProject.load(self.project_context)
         if not project.step_registries: return self.info("Step Registry", "Create or add a Step Registry from the Project window first.")
         dialog = Gtk.Dialog(title="Save as Reusable Step", transient_for=self.window, modal=True)
@@ -441,7 +460,7 @@ class TestPlanWindow(ArtifactWindow):
         step_id_entry = Gtk.Entry()
         step_id_entry.set_placeholder_text("Reusable step ID")
         name_entry = Gtk.Entry()
-        name_entry.set_text(selected.group)
+        name_entry.set_text(selected.name or selected.group or selected.step_id)
         registry_combo = Gtk.ComboBoxText()
         for registry_path in project.step_registries:
             registry_combo.append(str(registry_path), registry_path.stem)
@@ -466,7 +485,8 @@ class TestPlanWindow(ArtifactWindow):
                 registry_path=registry_path,
                 step_id=step_id,
                 name=name,
-                group=selected.group,
+                node_ids=(selected.node_id,),
+                description=selected.description,
             )
             self.project = project
             self.registry_resources = load_step_registry_resources(project.step_registries)

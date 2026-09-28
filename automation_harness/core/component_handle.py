@@ -15,10 +15,11 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.core.object_resolution import owner_relative_bounds, resolve_live_capture
+from automation_harness.core.menu_navigation import resolve_navigation
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
-from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity
+from automation_harness.models.gui import ActionType, ExecutionResult, GuiAction, GuiState, ObjectIdentity, ObjectType
 from automation_harness.utils.wait import wait_for as wait_for_value
 
 
@@ -124,7 +125,7 @@ class ComponentHandle:
                 f"object {self.definition.component_id!r} type {self.definition.object_type.value} does not support "
                 f"{semantic.type.value}; supported actions: {available}"
             )
-        if strategy not in {None, "pointer", "accessibility", "atspi", "java_accessibility", "javafx"}:
+        if strategy not in {None, "pointer", "accessibility", "atspi", "java_accessibility", "javafx", "java_agent"}:
             raise ComponentResolutionError(f"execution strategy {strategy!r} is not available for this object")
 
         execution_strategy = strategy or "accessibility"
@@ -164,6 +165,15 @@ class ComponentHandle:
                 if not isinstance(semantic.value, str):
                     raise ValueError("append_text requires a string value")
                 payload = self.set_text(self.get_text() + semantic.value)
+            elif semantic.type == ActionType.SELECT_ITEM and (semantic.options.get("path") is not None or isinstance(semantic.value, str)):
+                navigation = semantic.options.get("path", semantic.value)
+                if self.definition.object_type is ObjectType.COMBO_BOX and isinstance(navigation, str):
+                    selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                else:
+                    path = resolve_navigation(self.definition.subobjects, navigation)
+                    selectors = self._menu_path_selectors(path)
+                operation = "select_popup_path" if self.definition.object_type is ObjectType.COMBO_BOX else "select_menu_path"
+                payload = self._accessibility_operation("select popup item", operation, selectors)
             elif semantic.type in {ActionType.SELECT, ActionType.SELECT_ITEM, ActionType.SELECT_ROW, ActionType.SELECT_CELL}:
                 index = semantic.value
                 if index is None and semantic.selector is not None:
@@ -172,11 +182,8 @@ class ComponentHandle:
                     raise ValueError(f"{semantic.type.value} currently requires selector.criteria.index")
                 payload = self.select_child(index)
             elif semantic.type == ActionType.SELECT_MENU_ITEM:
-                path = semantic.options.get("path")
-                if not isinstance(path, (list, tuple)) or not path or not all(
-                    isinstance(segment, str) and segment for segment in path
-                ):
-                    raise ValueError("select_menu_item requires a non-empty string path")
+                navigation = semantic.options.get("path")
+                path = resolve_navigation(self.definition.subobjects, navigation)
                 selectors = self._menu_path_selectors(path)
                 payload = self._accessibility_operation(
                     "select menu item", "select_menu_path", selectors,
@@ -242,7 +249,7 @@ class ComponentHandle:
 
         candidates = [
             item for item in self.definition.strategies
-            if item.type in {"atspi", "java_accessibility", "javafx"}
+            if item.type in {"atspi", "java_accessibility", "javafx", "java_agent"}
             and strategy in {None, "accessibility", item.type}
         ]
         if not candidates:
@@ -270,7 +277,12 @@ class ComponentHandle:
                 "accessible_id": _optional_str(selected.options.get("accessible_id")),
             }
         else:
-            driver = JavaAccessibilityDriver(self.context) if selected.type == "java_accessibility" else JavaFxBridgeDriver(self.context)
+            if selected.type == "java_accessibility":
+                driver = JavaAccessibilityDriver(self.context)
+            elif selected.type == "java_agent":
+                driver = JavaAgentDriver(self.context)
+            else:
+                driver = JavaFxBridgeDriver(self.context)
             kwargs = {"identification": identification}
 
         window = PreparationOutcome.skipped("activate_window", "not required")
@@ -431,13 +443,15 @@ class ComponentHandle:
     def _accessibility_operation(self, label: str, method: str, *args: Any):
         errors: list[str] = []
         for strategy in self.definition.strategies:
-            if strategy.type not in {"atspi", "java_accessibility", "javafx"}:
+            if strategy.type not in {"atspi", "java_accessibility", "javafx", "java_agent"}:
                 continue
             try:
                 if strategy.type == "atspi":
                     driver = AtspiDriver(self.context)
                 elif strategy.type == "java_accessibility":
                     driver = JavaAccessibilityDriver(self.context)
+                elif strategy.type == "java_agent":
+                    driver = JavaAgentDriver(self.context)
                 else:
                     driver = JavaFxBridgeDriver(self.context)
                 identification = strategy.options.get("identification")

@@ -12,6 +12,7 @@ setup(
     package_data={
         "automation_harness": [
             "resources/**/*.yaml",
+            "resources/**/*.json",
             "examples/**/*.yaml",
             "examples/**/*.py",
             "examples/**/*.png",
@@ -38,6 +39,7 @@ setup(
             "automation-reference=automation_harness.compat.python36:run_reference",
             "automation-author=automation_harness.authoring.entrypoint:main",
             "automation-javafx=automation_harness.compat.python36:run_javafx",
+            "automation-java-target=automation_harness.compat.java_target:main",
         ]
     },
 )

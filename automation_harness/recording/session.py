@@ -2,26 +2,21 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import threading
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.logical_menu import (
-    find_logical_menu_targets,
-    is_javafx_menu_capture,
-    is_javafx_menu_skin_capture,
-    is_terminal_menu_capture,
-    logical_menu_route,
-)
+from automation_harness.core.logical_menu import find_logical_menu_targets, is_javafx_menu_skin_capture
 from automation_harness.core.locator_matching import _javafx_node_matches
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
-from automation_harness.models.gui import ActionType
+from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
 from automation_harness.recording.evidence import parameters_for_pointer
 from automation_harness.recording.diagnostics import RecordingDebugLog
 from automation_harness.recording.observations import (
-    ActionFired, FocusChanged, Observation, PointerInteraction, StateChanged, TextChanged,
+    ActionFired, FocusChanged, KeyboardInput, Observation, PointerInteraction,
+    StateChanged, TextChanged, WindowChanged,
 )
 
 
@@ -59,6 +54,31 @@ class RecordedInteraction:
     repository_match: RepositoryMatch = field(default_factory=lambda: RepositoryMatch("unresolved"))
 
 
+@dataclass
+class MenuRecordingContext:
+    """One semantic menu traversal; intermediate physical input is evidence only."""
+    owner: CapturedComponent
+    started_at: float
+    window: str | None
+    last_target: CapturedComponent | None = None
+    invoking_target: CapturedComponent | None = None
+
+
+@dataclass
+class ComboBoxRecordingContext:
+    """One pending ComboBox popup selection.
+
+    A ComboBox uses two physical clicks, but only the list-cell click is an
+    authorable interaction.  The popup is a transient JavaFX window and some
+    desktop capture paths can briefly resolve the covered control on the
+    second press.  Keep that press inside this context rather than allowing it
+    to become an unrelated recorded click.
+    """
+    owner: CapturedComponent
+    started_at: float
+    window: str | None
+
+
 class RecordingAdapter(Protocol):
     """An adapter must subscribe only while the session is active."""
     def start(self, emit: Callable[[Observation], None]) -> None: ...
@@ -92,9 +112,9 @@ class RecordingSession:
         self._active = False
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
-        self._menu_route_active = False
-        self._menu_route_started_at: float | None = None
-        self._menu_route_target: CapturedComponent | None = None
+        self._menu_context: MenuRecordingContext | None = None
+        self._combo_context: ComboBoxRecordingContext | None = None
+        self._captured_menu_owners: list[CapturedComponent] = []
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
         # must be serialized as one transaction.
@@ -172,8 +192,10 @@ class RecordingSession:
             finally:
                 with self._lock:
                     self._active = False
-                    if self._menu_route_active:
-                        self._abandon_menu_route("recording_stopped")
+                    if self._menu_context is not None:
+                        self._finish_menu_context("recording_stopped", cancelled=True)
+                    if self._combo_context is not None:
+                        self._finish_combo_context("recording_stopped", cancelled=True)
                     self._flush()
                     result = tuple(self._interactions)
                     self.diagnostic("session_stopped", interactions=result)
@@ -187,6 +209,10 @@ class RecordingSession:
         with self._lock:
             return tuple(self._interactions) + ((self._pending,) if self._pending else ())
 
+    def captured_menu_owners(self) -> tuple[CapturedComponent, ...]:
+        with self._lock:
+            return tuple(self._captured_menu_owners)
+
     def observe(self, observation: Observation) -> None:
         with self._lock:
             self.diagnostic("observation_received", observation=observation, active=self._active)
@@ -195,6 +221,7 @@ class RecordingSession:
                 return
             if self.diagnostics:
                 self._diagnostics.append(observation)
+
             if isinstance(observation, PointerInteraction):
                 if observation.target is not None and observation.target.framework == "solipsys_rendered":
                     self.diagnostic(
@@ -207,91 +234,249 @@ class RecordingSession:
                         observation=observation,
                     )
                     return
-                if self._observe_menu_interaction(observation):
-                    return
+
+                target = observation.target
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
+                combo_selection = dict(target.backend_properties or {}).get("combo_selection")
+                if isinstance(combo_selection, Mapping) and target.semantic_type() == ObjectType.COMBO_BOX:
+                    value = combo_selection.get("text") or target.name
+                    if isinstance(value, str) and value:
+                        if self._combo_context is not None:
+                            self._finish_combo_context("selection_recorded")
+                        self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
+                        return
+                if self._combo_context is not None:
+                    # The next release belongs to the armed ComboBox even if
+                    # a transient popup is missed and capture resolves the
+                    # covered object below it.  Never author that false
+                    # target as a second independent click.
+                    self._finish_combo_context(
+                        "selection_target_not_resolved",
+                        cancelled=True,
+                        suppressed_target=target,
+                    )
+                    return
+                if self._menu_context is not None:
+                    if _is_menu_related_capture(target):
+                        self._menu_context.last_target = target
+                        if _is_terminal_menu_capture(target):
+                            self._begin(action, observation, self._pointer_parameters(observation))
+                            self._attach_menu_context_to_pending()
+                            self._finish_menu_context("terminal_pointer_selection")
+                        else:
+                            self.diagnostic(
+                                "menu_traversal_observation_suppressed",
+                                observation=observation,
+                                owner=self._menu_context.owner,
+                            )
+                        return
+                    self._finish_menu_context("pointer_left_menu_scope", cancelled=True)
+
+                if _is_menu_owner_capture(target):
+                    self._start_menu_context(target, observation.timestamp, "menu_pointer_open")
+                    return
+
+                if target.semantic_type() == ObjectType.COMBO_BOX and action == ActionType.CLICK:
+                    self._start_combo_context(target, observation.timestamp, "combo_pointer_open")
+                    return
+
                 self._begin(action, observation, self._pointer_parameters(observation))
-            elif isinstance(observation, TextChanged):
+                return
+
+            if isinstance(observation, TextChanged):
                 if observation.target is not None and observation.after is not None:
                     self._begin(ActionType.SET_TEXT, observation, {"value": observation.after})
-            elif isinstance(observation, ActionFired):
+                return
+
+            if isinstance(observation, ActionFired):
                 if observation.target is None:
                     return
-                if self._observe_menu_interaction(observation):
+                target = observation.target
+                if self._combo_context is not None:
+                    if _same_logical_target(self._combo_context.owner, target):
+                        self.diagnostic(
+                            "combo_popup_action_suppressed",
+                            observation=observation,
+                            owner=self._combo_context.owner,
+                        )
+                        return
+                if (
+                    target.semantic_type() == ObjectType.COMBO_BOX
+                    and self._pending is not None
+                    and self._pending.action == ActionType.SELECT_ITEM
+                    and _same_logical_target(self._pending.target, target)
+                ):
                     return
-                if self._pending and _same_logical_target(self._pending.target, observation.target):
+                if self._menu_context is not None and _is_menu_related_capture(target):
+                    self._menu_context.last_target = target
+                    if _is_terminal_menu_capture(target):
+                        if self._pending and _same_logical_target(self._pending.target, target):
+                            self._merge_action(observation)
+                        else:
+                            self._begin(_action_type(observation.action), observation, {})
+                        self._attach_menu_context_to_pending()
+                        self._finish_menu_context("terminal_menu_action")
+                    else:
+                        self.diagnostic(
+                            "menu_traversal_action_suppressed",
+                            observation=observation,
+                            owner=self._menu_context.owner,
+                        )
+                    return
+                if self._pending and _same_logical_target(self._pending.target, target):
                     self._merge_action(observation)
                 else:
                     self._begin(_action_type(observation.action), observation, {})
-            elif isinstance(observation, StateChanged):
-                if observation.target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
+                return
+
+            if isinstance(observation, StateChanged):
+                target = observation.target
+                if (
+                    target is not None
+                    and observation.property in {"visible", "showing", "expanded", "active"}
+                    and observation.before != observation.after
+                ):
+                    if bool(observation.after) and _is_menu_owner_capture(target):
+                        self._start_menu_context(target, observation.timestamp, "menu_became_active")
+                        return
+                    if (
+                        self._menu_context is not None
+                        and not bool(observation.after)
+                        and _is_menu_related_capture(target)
+                    ):
+                        self._finish_menu_context("menu_became_inactive", cancelled=self._pending is None)
+                        return
+                if target is not None and observation.property not in _NOISE_STATE and observation.before != observation.after:
                     self._add_delta(observation)
-            elif isinstance(observation, FocusChanged):
+                return
+
+            if isinstance(observation, KeyboardInput):
+                if (
+                    self._combo_context is not None
+                    and observation.phase == "pressed"
+                    and str(observation.key).casefold() in {"escape", "esc"}
+                ):
+                    self._finish_combo_context("escape", cancelled=True)
+                    return
+                if (
+                    self._menu_context is not None
+                    and observation.phase == "pressed"
+                    and str(observation.key).casefold() in {"escape", "esc"}
+                ):
+                    self._finish_menu_context("escape", cancelled=True)
+                    return
+                self.diagnostic("observation_ignored", reason="keyboard_not_semantic_action", observation=observation)
+                return
+
+            if isinstance(observation, WindowChanged):
+                if self._menu_context is not None:
+                    owner_window = self._menu_context.window
+                    changed_window = observation.window
+                    if changed_window and owner_window and changed_window != owner_window:
+                        self._finish_menu_context("top_level_window_changed", cancelled=self._pending is None)
+                self.diagnostic("observation_ignored", reason="window_change", observation=observation)
+                return
+
+            if isinstance(observation, FocusChanged):
                 self.diagnostic("observation_ignored", reason="focus_change", observation=observation)
                 return
 
-    def _observe_menu_interaction(self, observation: Observation) -> bool:
-        target = observation.target
-        if not is_javafx_menu_capture(target):
-            if self._menu_route_active:
-                self._abandon_menu_route("focus_left_menu")
-            return False
+    def _attach_menu_context_to_pending(self) -> None:
+        context = self._menu_context
+        pending = self._pending
+        if context is None or pending is None:
+            return
+        evidence = {
+            **dict(pending.evidence),
+            "menu_owner_capture": context.owner,
+            "menu_transaction_started_at": context.started_at,
+        }
+        if context.invoking_target is not None:
+            evidence["menu_invoking_capture"] = context.invoking_target
+        self._pending = replace(
+            pending,
+            evidence=evidence,
+        )
 
-        route = logical_menu_route(target)
-        if not is_terminal_menu_capture(target):
-            if self._pending is not None:
-                self._flush()
-            if not self._menu_route_active:
-                self._menu_route_started_at = observation.timestamp
-            self._menu_route_active = True
-            self._menu_route_target = target
-            self.diagnostic(
-                "menu_route_extended",
-                route=route,
-                target=target,
-                terminal=False,
-            )
-            return True
+    def _start_menu_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if not any(_same_logical_target(existing, owner) for existing in self._captured_menu_owners):
+            self._captured_menu_owners.append(owner)
+        if self._menu_context is not None:
+            if _same_logical_target(self._menu_context.owner, owner):
+                self._menu_context.last_target = owner
+                return
+            self._finish_menu_context("menu_owner_changed", cancelled=True)
 
-        started_at = self._menu_route_started_at or observation.timestamp
-        self._menu_route_active = False
-        self._menu_route_started_at = None
-        self._menu_route_target = None
-        action = ActionType.RIGHT_CLICK if (
-            isinstance(observation, PointerInteraction) and observation.button == "secondary"
-        ) else ActionType.CLICK
-        parameters = self._pointer_parameters(observation) if isinstance(observation, PointerInteraction) else {}
-        self._begin(action, observation, parameters)
-        if self._pending is not None:
-            self._pending = RecordedInteraction(
-                self._pending.action,
-                self._pending.target,
-                self._pending.parameters,
-                min(started_at, self._pending.started_at),
-                self._pending.completed_at,
-                self._pending.resulting_changes,
-                {**dict(self._pending.evidence), "menu_route": [dict(item) for item in route]},
-                self._pending.confidence,
-                self._pending.repository_match,
-            )
-        self.diagnostic("menu_route_committed", route=route, interaction=self._pending)
-        return True
+        # A context menu is commonly preceded by a right click on its invoking
+        # object. Once the popup becomes active that physical opener is evidence
+        # for the menu transaction, not an independent authored step.
+        absorbed = None
+        if (
+            self._pending is not None
+            and self._pending.action in {ActionType.CLICK, ActionType.RIGHT_CLICK}
+            and timestamp - self._pending.completed_at <= self.correlation_window
+        ):
+            absorbed = self._pending
+            self._pending = None
 
-    def _reset_menu_route(self) -> None:
-        self._menu_route_active = False
-        self._menu_route_started_at = None
-        self._menu_route_target = None
+        self._menu_context = MenuRecordingContext(
+            owner=owner,
+            started_at=timestamp,
+            window=owner.window or owner.application,
+            last_target=owner,
+            invoking_target=absorbed.target if absorbed is not None else None,
+        )
+        self.diagnostic(
+            "menu_transaction_started",
+            reason=reason,
+            owner=owner,
+            absorbed_opener=absorbed,
+        )
 
-    def _abandon_menu_route(self, reason: str) -> None:
-        self.diagnostic("menu_route_cancelled", reason=reason, target=self._menu_route_target)
-        if self._menu_route_target is not None:
-            timestamp = self._menu_route_started_at or 0.0
-            self._interactions.append(RecordedInteraction(
-                ActionType.CLICK, self._menu_route_target, {}, timestamp, timestamp,
-                evidence={"menu_route_error": reason}, confidence=0.0,
-                repository_match=RepositoryMatch("unresolved"),
-            ))
-        self._reset_menu_route()
+    def _finish_menu_context(self, reason: str, *, cancelled: bool = False) -> None:
+        context = self._menu_context
+        if context is None:
+            return
+        self._menu_context = None
+        self.diagnostic(
+            "menu_transaction_finished",
+            reason=reason,
+            cancelled=cancelled,
+            owner=context.owner,
+            last_target=context.last_target,
+            pending=self._pending,
+        )
+
+    def _start_combo_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if self._combo_context is not None:
+            if _same_logical_target(self._combo_context.owner, owner):
+                return
+            self._finish_combo_context("combo_owner_changed", cancelled=True)
+        self._combo_context = ComboBoxRecordingContext(
+            owner=owner,
+            started_at=timestamp,
+            window=owner.window or owner.application,
+        )
+        self.diagnostic("combo_popup_transaction_started", reason=reason, owner=owner)
+
+    def _finish_combo_context(
+        self,
+        reason: str,
+        *,
+        cancelled: bool = False,
+        suppressed_target: CapturedComponent | None = None,
+    ) -> None:
+        context = self._combo_context
+        if context is None:
+            return
+        self._combo_context = None
+        self.diagnostic(
+            "combo_popup_transaction_finished",
+            reason=reason,
+            cancelled=cancelled,
+            owner=context.owner,
+            suppressed_target=suppressed_target,
+        )
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
         self.diagnostic(
@@ -300,8 +485,9 @@ class RecordingSession:
         )
         if (
             self._pending
-            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK}
+            and action in {ActionType.CLICK, ActionType.RIGHT_CLICK, ActionType.SELECT_ITEM}
             and self._pending.action == action
+            and (action != ActionType.SELECT_ITEM or self._pending.parameters == parameters)
             and abs(observation.timestamp - self._pending.completed_at) <= min(self.correlation_window, 0.2)
             and _same_logical_target(self._pending.target, observation.target)
         ):
@@ -392,26 +578,21 @@ class RecordingSession:
             result = RepositoryMatch("new_candidate")
             self.diagnostic("repository_match", target=target, result=result, reason="no_repository")
             return result
-        if is_javafx_menu_skin_capture(target):
+        if _is_terminal_menu_capture(target):
             logical = find_logical_menu_targets(self.repository.components.values(), target)
             if len(logical) == 1:
                 match = logical[0]
-                owner_object_id = self.repository.get(match.owner_component_id).object_id
-                return RepositoryMatch("known_subobject", (owner_object_id,), match.subobject_path)
+                return RepositoryMatch("known_subobject", (match.owner_component_id,), match.subobject_path)
             if len(logical) > 1:
-                owners = tuple(dict.fromkeys(
-                    self.repository.get(item.owner_component_id).object_id for item in logical
-                ))
+                owners = tuple(dict.fromkeys(item.owner_component_id for item in logical))
                 return RepositoryMatch("ambiguous", owners)
-            if is_terminal_menu_capture(target):
-                return RepositoryMatch("unresolved")
         evaluations = []
         matches = []
         for component_id, definition in self.repository.components.items():
             matched, details = _matches_capture_details(definition, target)
             evaluations.append({"component_id": component_id, "matched": matched, "details": details})
             if matched:
-                matches.append(definition.object_id)
+                matches.append(component_id)
         if len(matches) == 1:
             result = RepositoryMatch("known_unique", tuple(matches))
             self.diagnostic("repository_match", target=target, result=result, evaluations=evaluations)
@@ -430,6 +611,53 @@ class RecordingSession:
         return parameters_for_pointer(action, observation.target, observation.coordinates)
 
 
+_MENU_OWNER_TYPES = frozenset({
+    ObjectType.MENU_BAR,
+    ObjectType.MENU,
+    ObjectType.CONTEXT_MENU,
+})
+_MENU_TERMINAL_TYPES = frozenset({
+    ObjectType.MENU_ITEM,
+    ObjectType.CHECK_MENU_ITEM,
+    ObjectType.RADIO_MENU_ITEM,
+})
+
+
+def _is_menu_owner_capture(target: CapturedComponent | None) -> bool:
+    return target is not None and target.semantic_type() in _MENU_OWNER_TYPES
+
+
+def _is_menu_related_capture(target: CapturedComponent | None) -> bool:
+    if target is None:
+        return False
+    if target.semantic_type() in (_MENU_OWNER_TYPES | _MENU_TERMINAL_TYPES):
+        return True
+    if is_javafx_menu_skin_capture(target):
+        return True
+    properties = dict(target.backend_properties or {})
+    return isinstance(properties.get("logical_menu"), Mapping)
+
+
+def _is_terminal_menu_capture(target: CapturedComponent | None) -> bool:
+    if target is None:
+        return False
+    if target.semantic_type() in _MENU_TERMINAL_TYPES:
+        return True
+    properties = dict(target.backend_properties or {})
+    metadata = properties.get("logical_menu")
+    if not isinstance(metadata, Mapping):
+        return False
+    path = metadata.get("path")
+    if not isinstance(path, (list, tuple)) or not path:
+        return False
+    last = path[-1]
+    if not isinstance(last, Mapping):
+        return False
+    kind = str(last.get("kind") or "").replace("_", " ").casefold()
+    return kind in {"menu item", "check menu item", "radio menu item"}
+
+
+
 def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_index: int = 1) -> tuple[StepCall, ...]:
     result: list[StepCall] = []
     for index, interaction in enumerate(interactions, start_index):
@@ -439,12 +667,12 @@ def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_
         if interaction.repository_match.status == "known_subobject":
             if not interaction.repository_match.subobject_path:
                 raise ValueError("recorded menu subobject match has no owner-relative path")
-            action: dict[str, Any] = {
-                "type": ActionType.SELECT_MENU_ITEM.value,
-                "path": list(interaction.repository_match.subobject_path),
-            }
-            description = "Recorded select_menu_item on %s -> %s" % (
-                component_id, " -> ".join(interaction.repository_match.subobject_path),
+            navigation = dict(interaction.evidence or {}).get("menu_navigation")
+            if not isinstance(navigation, str) or not navigation.strip():
+                navigation = " > ".join(interaction.repository_match.subobject_path)
+            action: dict[str, Any] = {"type": ActionType.SELECT_ITEM.value, "value": navigation}
+            description = "Recorded select_item on %s -> %s" % (
+                component_id, navigation,
             )
         else:
             action = {"type": interaction.action.value}

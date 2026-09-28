@@ -5,7 +5,8 @@ import os
 import queue
 import socket
 import threading
-from dataclasses import dataclass, replace
+import time
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
@@ -125,6 +126,7 @@ class JavaFxBridgeDriver:
 
     context: Any = None
     discovery_dir: Path | None = None
+    _next_click_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     @property
     def available(self) -> bool:
@@ -161,6 +163,14 @@ class JavaFxBridgeDriver:
                     continue
             assert captured is not None
             return captured
+        if not self._next_click_lock.acquire(blocking=False):
+            raise RuntimeError("a JavaFX next-click capture is already active")
+        try:
+            return self._capture_one_next_click(timeout)
+        finally:
+            self._next_click_lock.release()
+
+    def _capture_one_next_click(self, timeout: float) -> CapturedComponent:
         endpoints = self.endpoints()
         if not endpoints:
             raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered")
@@ -321,16 +331,95 @@ class JavaFxBridgeDriver:
         if not selectors:
             raise ValueError("JavaFX menu path must not be empty")
         endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request(
-            "select_menu_path", timeout=5.0,
-            identification=dict(identification or {}),
-            selectors=[dict(selector) for selector in selectors],
-        )
+        deadline = time.monotonic() + 1.0
+        request = {
+            "identification": dict(identification or {}),
+            "selectors": [dict(selector) for selector in selectors],
+        }
+        while True:
+            try:
+                response = endpoint.request(
+                    "select_menu_path", timeout=35.0,
+                    **request,
+                    pointer_terminal=True,
+                )
+                break
+            except JavaFxBridgeProtocolError as exc:
+                if "selected menu item has no rendered screen bounds" not in str(exc):
+                    raise
+                if time.monotonic() >= deadline:
+                    # The logical owner and every path segment resolved. A skin
+                    # without public screen geometry still supports MenuItem.fire().
+                    # Keep the action scoped to that graph; never guess a click.
+                    semantic = endpoint.request(
+                        "select_menu_path", timeout=35.0,
+                        **request, pointer_terminal=False,
+                    )
+                    self._await_menu_dispatch(endpoint, semantic.get("dispatch_token"))
+                    return {
+                        "action": "select_menu_item", "bridge_pid": endpoint.pid,
+                        "path": semantic.get("path", []), "pointer": None,
+                        "execution": "owner_scoped_javafx_fire",
+                        "terminal_bounds_unavailable": True,
+                    }
+                time.sleep(0.08)
+        bounds = response.get("terminal_bounds")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            raise RuntimeError("JavaFX menu item has no owner-scoped rendered bounds")
+        token = response.get("click_token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("JavaFX agent did not register menu action confirmation; rebuild the JavaFX agent")
+        from automation_harness.core.pointer_actions import click_bounds
+        pointer = None
+        try:
+            pointer = click_bounds(bounds)
+        finally:
+            confirmation = endpoint.request(
+                "finish_menu_click", timeout=35.0, click_token=token,
+                clicked=pointer is not None,
+            )
+            if pointer is not None and confirmation.get("dispatch_token"):
+                self._await_menu_dispatch(endpoint, confirmation["dispatch_token"])
         return {
             "action": "select_menu_item",
             "bridge_pid": endpoint.pid,
             "path": response.get("path", []),
+            "pointer": pointer,
+            "execution": "visible_pointer_click",
+            "pointer_action_observed": confirmation.get("pointer_action_observed"),
+            "fallback_fired": confirmation.get("fallback_fired"),
         }
+
+    def select_popup_path(self, selectors, *, identification=None, **_kwargs):
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request("select_popup_path", timeout=5.0, identification=dict(identification or {}), selectors=[dict(item) for item in selectors])
+        return {"action": "select_item", "bridge_pid": endpoint.pid, "path": response.get("path", [])}
+
+    @staticmethod
+    def _await_menu_dispatch(endpoint, token: Any) -> None:
+        if not isinstance(token, str) or not token:
+            raise JavaFxBridgeProtocolError("JavaFX agent omitted the menu dispatch receipt")
+        deadline = time.monotonic() + 5.0
+        while True:
+            status = endpoint.request("menu_dispatch_status", timeout=5.0, dispatch_token=token)
+            if status.get("observed"):
+                return
+            if status.get("error") or status.get("finished"):
+                raise JavaFxBridgeProtocolError(
+                    "JavaFX menu item did not dispatch an action event: %s" % status.get("error")
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("JavaFX menu action event was not observed within 5s")
+            time.sleep(0.05)
+
+    def select_child(self, index: int, *, identification=None, **_kwargs) -> dict[str, Any]:
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "select_child", timeout=5.0,
+            identification=dict(identification or {}), index=index,
+        )
+        return {"action": "select_item", "bridge_pid": endpoint.pid,
+                "index": response.get("index"), "node": response.get("node")}
 
     def count_matches(
         self,
@@ -500,6 +589,21 @@ def _default_discovery_dir() -> Path:
 
 
 def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> CapturedComponent:
+    selection = node.get("combo_selection")
+    if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
+        owner = _captured(endpoint, selection["owner"])
+        return replace(owner, backend_properties={
+            **dict(owner.backend_properties),
+            "combo_selection": {
+                "index": selection.get("index"),
+                # ListCell#getText is presentation-only (and can be empty for
+                # graphic cells).  The agent supplies the selected item value
+                # explicitly so a recording never falls back to the ComboBox
+                # owner's label.
+                "text": selection.get("text") or node.get("text") or node.get("name"),
+            },
+        })
+    node = _normalize_javafx_menu_node(node)
     node_id = _optional_str(node.get("id"))
     role = _role(node.get("accessible_role"))
     text = _optional_str(node.get("text"))
@@ -521,6 +625,7 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         properties={
             "managed": node.get("managed"),
             "focus_traversable": node.get("focus_traversable"),
+            **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {}),
         },
     )
     node_properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
@@ -545,6 +650,12 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "sibling_index": node.get("sibling_index"),
         "sibling_count": node.get("sibling_count"),
     }
+    physical_native_class = (
+        dict(node.get("backend_properties") or {}).get("physical_native_class")
+        if isinstance(node.get("backend_properties"), Mapping) else None
+    )
+    if physical_native_class:
+        properties["physical_native_class"] = physical_native_class
     if isinstance(logical_menu, Mapping):
         properties["logical_menu"] = dict(logical_menu)
     return CapturedComponent(
@@ -766,12 +877,24 @@ def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) ->
 
 
 def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
+    selection = node.get("combo_selection")
+    if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
+        owner = _captured_recording_node(selection["owner"])
+        return replace(owner, backend_properties={
+            **dict(owner.backend_properties),
+            "combo_selection": {
+                "index": selection.get("index"),
+                "text": selection.get("text") or node.get("text") or node.get("name"),
+            },
+        })
+    node = _normalize_javafx_menu_node(node)
+    legacy_fx_node = "id" in node and "class" in node and "backend_properties" not in node
     state_value = node.get("state", {})
     state = state_value if isinstance(state_value, Mapping) else {}
     bounds_value = node.get("bounds")
     bounds = tuple(int(value) for value in bounds_value) if isinstance(bounds_value, (list, tuple)) and len(bounds_value) == 4 else None
     native_class = _optional_str(node.get("native_class") or node.get("class"))
-    role = _optional_str(node.get("role"))
+    role = _optional_str(node.get("role")) or _role(node.get("accessible_role"))
     object_type_value = node.get("object_type")
     try:
         object_type = ObjectType(str(object_type_value)) if object_type_value else (
@@ -833,19 +956,22 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             "mandatory": mandatory or {"native_class": native_class or "java.awt.Component"},
             **({"assistive": assistive} if assistive else {}),
         }})
+    elif framework == "javafx" and legacy_fx_node:
+        strategy = ComponentStrategy("javafx", {"identification": _candidate_identification(node)})
     else:
         strategy = None
     logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
-        name=_optional_str(node.get("name") or node.get("text")), role=role,
-        description=_optional_str(node.get("description")), accessible_id=_optional_str(node.get("accessible_id")),
-        application=_optional_str(node.get("application")), window=_optional_str(node.get("window")),
+        name=_optional_str(node.get("name") or node.get("accessible_text") or node.get("text") or node.get("id")), role=role,
+        description=_optional_str(node.get("description") or node.get("accessible_help")), accessible_id=_optional_str(node.get("accessible_id") or node.get("id")),
+        application=_optional_str(node.get("application") or node.get("window")), window=_optional_str(node.get("window")),
         hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
         actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
-        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible"), showing=state.get("showing"), enabled=state.get("enabled"), focused=state.get("focused"), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties=dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}),
+        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible", node.get("visible")), showing=state.get("showing", node.get("visible")), enabled=state.get("enabled", None if node.get("disabled") is None else not bool(node.get("disabled"))), focused=state.get("focused", node.get("focused")), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties={**(dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}), **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {})}),
         backend_properties={
             **dict(properties),
+            **({"javafx_id": node.get("id"), "accessible_role": node.get("accessible_role"), "text": node.get("text"), "style_classes": node.get("style_classes", []), "stable_ancestors": node.get("stable_ancestors", [])} if legacy_fx_node else {}),
             **({"component_path": node["component_path"]} if node.get("component_path") else {}),
             **({"sibling_index": node["sibling_index"]} if node.get("sibling_index") is not None else {}),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
@@ -860,6 +986,7 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
 
 
 def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
+    """Normalize JavaFX menu models into backend-neutral persisted metadata."""
     if not isinstance(raw, (list, tuple)):
         return {}
     result = {}
@@ -871,28 +998,75 @@ def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
         count = counts.get(base, 0)
         counts[base] = count + 1
         key = base if count == 0 else "%s_%d" % (base, count + 1)
-        selector = {
-            "criteria": {
-                candidate_key: candidate_value
-                for candidate_key, candidate_value in (
-                    ("id", item.get("id")),
-                    ("text", item.get("text")),
-                    ("class", item.get("class")),
-                )
-                if candidate_value not in (None, "") and not (
-                    candidate_key == "class" and _is_internal_javafx_class(str(candidate_value))
-                )
-            },
-            "ordinal": index,
+
+        native_id = item.get("id")
+        if native_id in (None, ""):
+            native_id = item.get("accessible_id")
+        text = item.get("text")
+        if text in (None, ""):
+            text = item.get("name")
+        kind = str(item.get("role") or "menu_item").replace(" ", "_").casefold()
+        criteria = {}
+        if native_id not in (None, ""):
+            criteria["id"] = native_id
+        if text not in (None, ""):
+            criteria["text"] = text
+        native_class = item.get("class") or item.get("native_class")
+        if (
+            not criteria
+            and native_class not in (None, "")
+            and not _is_internal_javafx_class(str(native_class))
+        ):
+            criteria["class"] = native_class
+
+        entry = {
+            "kind": kind,
+            "display_name": str(text or native_id or key.replace("_", " ").title()),
+            "criteria": criteria,
+            "ordinal": int(item.get("ordinal")) if isinstance(item.get("ordinal"), int) else index,
+            "selectable": kind != "separator",
         }
+        if item.get("disabled") is not None:
+            entry["enabled"] = not bool(item.get("disabled"))
+        if item.get("visible") is not None:
+            entry["visible"] = bool(item.get("visible"))
         if isinstance(item.get("relative_offset"), Mapping):
-            selector["relative_offset"] = dict(item["relative_offset"])
+            entry["relative_offset"] = dict(item["relative_offset"])
         nested = _javafx_menu_subobjects(item.get("menu_children"))
-        result[key] = {
-            "kind": str(item.get("role") or "menu_item"),
-            "selector": selector,
-            **({"subobjects": nested} if nested else {}),
-        }
+        if nested:
+            entry["subobjects"] = nested
+        result[key] = entry
+    return result
+
+
+def _normalize_javafx_menu_node(node: Mapping[str, Any]) -> dict[str, Any]:
+    """Promote JavaFX's MenuBarButton skin snapshot to its logical Menu.
+
+    Some bridge/agent versions return the physical ``MenuBarButton`` even
+    though the pointer event belongs to the backing ``javafx.scene.control.Menu``.
+    The skin is not a durable repository object and, critically, it does not
+    expose the logical item inventory unless this promotion happens first.
+    Keep the physical class as diagnostics while making the serialized target
+    semantically consistent with the Object Workbench and recorder.
+    """
+    result = dict(node)
+    native_class = str(result.get("native_class") or result.get("class") or "")
+    simple_class = native_class.rsplit(".", 1)[-1].casefold()
+    role = str(result.get("role") or result.get("accessible_role") or "").replace("_", " ").casefold()
+    if simple_class != "menubarbutton" and not (
+        simple_class == "menubutton" and native_class.startswith("com.sun.javafx.")
+    ):
+        return result
+
+    result.setdefault("backend_properties", {})
+    backend_properties = dict(result.get("backend_properties") or {})
+    backend_properties.setdefault("physical_native_class", native_class)
+    result["backend_properties"] = backend_properties
+    result["native_class"] = "javafx.scene.control.Menu"
+    result["class"] = "javafx.scene.control.Menu"
+    result["simple_class"] = "Menu"
+    result["role"] = "menu"
+    result["accessible_role"] = "MENU"
     return result
 
 

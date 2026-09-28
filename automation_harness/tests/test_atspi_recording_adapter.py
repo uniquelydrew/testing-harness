@@ -1,4 +1,5 @@
 from dataclasses import replace
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -53,6 +54,21 @@ def _target():
     )
 
 
+def test_stop_recording_press_skips_accessibility_resolution_for_own_process():
+    class UnreachableBridge:
+        def capture_at_point(self, *args, **kwargs):
+            raise AssertionError("own process must not be resolved")
+
+    driver = _Driver(_target())
+    adapter = AtspiRecordingAdapter(
+        driver, javafx_driver=UnreachableBridge(),
+        java_agent_driver=UnreachableBridge(),
+    )
+
+    assert adapter._resolve_physical_pointer_target((25, 30), owner_pid=os.getpid()) is None
+    assert driver.point_snapshots == []
+
+
 def test_javafx_point_capture_queries_only_the_x11_owner_process():
     class Endpoint:
         def __init__(self, pid):
@@ -80,7 +96,7 @@ def test_javafx_point_capture_queries_only_the_x11_owner_process():
     assert owner.calls[0][0] == "hit_test"
 
 
-def test_x11_pointer_uses_mixed_java_agent_before_javafx_and_atspi():
+def test_x11_pointer_uses_popup_aware_javafx_before_mixed_java_agent_and_atspi():
     target = replace(_target(), backend_properties={"process_id": 7804})
 
     class Mixed:
@@ -97,20 +113,26 @@ def test_x11_pointer_uses_mixed_java_agent_before_javafx_and_atspi():
     class JavaFx:
         available = True
 
-        def capture_at_point(self, *_args, **_kwargs):
-            raise AssertionError("JavaFX must not run after mixed-agent resolution")
+        def __init__(self):
+            self.calls = []
+
+        def capture_at_point(self, x, y, *, process_id=None):
+            self.calls.append((x, y, process_id))
+            return target
 
     mixed = Mixed()
+    javafx = JavaFx()
     driver = _Driver(None)
     adapter = AtspiRecordingAdapter(
-        driver, java_agent_driver=mixed, javafx_driver=JavaFx(),
+        driver, java_agent_driver=mixed, javafx_driver=javafx,
         acknowledgement_seconds=0,
     )
 
     captured = adapter._resolve_physical_pointer_target((945, 331), owner_pid=7804)
 
     assert captured is target
-    assert mixed.calls == [(945, 331, 7804)]
+    assert javafx.calls == [(945, 331, 7804)]
+    assert mixed.calls == []
     assert driver.point_snapshots == []
 
 

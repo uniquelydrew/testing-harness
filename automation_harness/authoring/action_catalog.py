@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from automation_harness.models.component import ComponentDefinition
+from automation_harness.core.component_catalog import canonical_action_types
 from automation_harness.models.gui import ActionType
 from automation_harness.models.plan import StepCall
 
@@ -21,6 +22,7 @@ class ActionInput:
     required: bool = True
     default: Any = None
     description: str = ""
+    choices: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,12 @@ def _interaction(action: ActionType, name: str, description: str, *inputs: Actio
     return ActionDefinition(action.value, name, description, "gui.object.action", action, tuple(inputs))
 
 
-_VALUE = ActionInput("value", "any", description="Value supplied to the object action.")
+_TEXT_VALUE = ActionInput(
+    "value", "string", description="Text value supplied to the object action.",
+)
+_NUMERIC_VALUE = ActionInput(
+    "value", "number", description="Numeric value supplied to the object action.",
+)
 _SELECTOR = ActionInput("selector", "object", description="Logical child/item selector.")
 _MENU_PATH = ActionInput(
     "path", "menu_path",
@@ -69,18 +76,19 @@ _MENU_PATH = ActionInput(
 INTERACTIONS: dict[ActionType, ActionDefinition] = {
     ActionType.CLICK: _interaction(ActionType.CLICK, "Click", "Click the selected object."),
     ActionType.ACTIVATE: _interaction(ActionType.ACTIVATE, "Activate", "Invoke the selected object's default accessible action."),
-    ActionType.SET_TEXT: _interaction(ActionType.SET_TEXT, "Set Text", "Replace the selected object's text.", _VALUE),
+    ActionType.FOCUS: _interaction(ActionType.FOCUS, "Focus", "Move keyboard focus to the selected object."),
+    ActionType.SET_TEXT: _interaction(ActionType.SET_TEXT, "Set Text", "Replace the selected object's text.", _TEXT_VALUE),
     ActionType.CLEAR_TEXT: _interaction(ActionType.CLEAR_TEXT, "Clear Text", "Clear the selected object's text."),
-    ActionType.APPEND_TEXT: _interaction(ActionType.APPEND_TEXT, "Append Text", "Append text to the selected object.", _VALUE),
+    ActionType.APPEND_TEXT: _interaction(ActionType.APPEND_TEXT, "Append Text", "Append text to the selected object.", _TEXT_VALUE),
     ActionType.SELECT: _interaction(ActionType.SELECT, "Select", "Select one logical child item.", _SELECTOR),
     ActionType.SELECT_ITEM: _interaction(ActionType.SELECT_ITEM, "Select Item", "Select one logical child item.", _SELECTOR),
     ActionType.SELECT_ROW: _interaction(ActionType.SELECT_ROW, "Select Row", "Select a table row.", _SELECTOR),
     ActionType.SELECT_CELL: _interaction(ActionType.SELECT_CELL, "Select Cell", "Select a table cell.", _SELECTOR),
     ActionType.SELECT_MENU_ITEM: _interaction(
-        ActionType.SELECT_MENU_ITEM, "Select Menu Item",
-        "Open a nested menu path and activate its terminal item as one uninterrupted operation.", _MENU_PATH,
+        ActionType.SELECT_MENU_ITEM, "Select Menu Option",
+        "Navigate the captured menu hierarchy and activate the terminal option as one uninterrupted operation.", _MENU_PATH,
     ),
-    ActionType.SET_VALUE: _interaction(ActionType.SET_VALUE, "Set Value", "Set the selected object's numeric value.", _VALUE),
+    ActionType.SET_VALUE: _interaction(ActionType.SET_VALUE, "Set Value", "Set the selected object's numeric value.", _NUMERIC_VALUE),
 }
 
 
@@ -114,8 +122,14 @@ OBSERVATIONS = (
 
 
 def actions_for(definition: ComponentDefinition) -> tuple[ActionDefinition, ...]:
-    """Return stable, deterministic actions applicable to one captured object."""
-    interactions = [INTERACTIONS[action] for action in sorted(definition.semantic_actions, key=lambda item: item.value) if action in INTERACTIONS]
+    """Return canonical user-facing actions applicable to one repository object."""
+    allowed = canonical_action_types(definition.object_type)
+    available = definition.semantic_actions
+    interactions = [
+        INTERACTIONS[action]
+        for action in sorted(allowed & available, key=lambda item: item.value)
+        if action in INTERACTIONS
+    ]
     return tuple(interactions) + OBSERVATIONS
 
 

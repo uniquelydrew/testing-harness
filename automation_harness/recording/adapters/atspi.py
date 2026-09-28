@@ -1,6 +1,7 @@
 """AT-SPI event adapter for recording native GTK and Swing interactions."""
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -480,7 +481,31 @@ class AtspiRecordingAdapter:
         # X11 owns z-order arbitration. Query only a bridge belonging to the
         # topmost client process; a bridge for a covered JavaFX window must
         # never participate merely because its bounds contain the pointer.
+        # A press on our own Stop Recording window must not enter AT-SPI
+        # traversal while that same press is shutting down the adapter.
+        if owner_pid == os.getpid():
+            return None
         if owner_pid is not None:
+            try:
+                # The dedicated JavaFX bridge enumerates PopupWindow scenes.
+                # A generic mixed Java agent can resolve the Stage beneath a
+                # ComboBox popup, which turns the selection press into a click
+                # on the covered control.  Prefer the popup-aware bridge and
+                # retain the mixed agent as the fallback for non-JavaFX
+                # rendered surfaces.
+                captured = self._javafx_driver.capture_at_point(
+                    *coordinates, process_id=owner_pid,
+                )
+                if (
+                    _is_recordable_target(captured)
+                    and _captured_process_id(captured) == owner_pid
+                ):
+                    return captured
+            except Exception as exc:
+                self._diagnostic(
+                    "javafx_owner_resolution_failed", coordinates=coordinates,
+                    owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
+                )
             try:
                 captured = self._java_agent_driver.capture_at_point(
                     *coordinates, process_id=owner_pid,
@@ -493,20 +518,6 @@ class AtspiRecordingAdapter:
             except Exception as exc:
                 self._diagnostic(
                     "java_agent_owner_resolution_failed", coordinates=coordinates,
-                    owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
-                )
-            try:
-                captured = self._javafx_driver.capture_at_point(
-                    *coordinates, process_id=owner_pid,
-                )
-                if (
-                    _is_recordable_target(captured)
-                    and _captured_process_id(captured) == owner_pid
-                ):
-                    return captured
-            except Exception as exc:
-                self._diagnostic(
-                    "javafx_owner_resolution_failed", coordinates=coordinates,
                     owner_pid=owner_pid, error_type=type(exc).__name__, error=str(exc),
                 )
 
