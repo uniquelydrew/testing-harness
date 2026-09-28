@@ -439,7 +439,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
 
         if assigned_repository is not None and assigned_path is not None:
             assigned_repository.save(assigned_path)
-            self.repository = repository_from_plan(self.plan).overlay(assigned_repository)
+            self.repository = assigned_repository
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
 
