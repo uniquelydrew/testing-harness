@@ -37,7 +37,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
         if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
             assigned = load_repository_set(self.plan, self.path).compose()
-            self.repository = repository_from_plan(self.plan).overlay(assigned)
+            self.repository = assigned
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
         self.objects_button = self.button("Objects", self.show_objects_menu)
@@ -79,7 +79,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = repository_from_plan(self.plan).overlay(assigned)
+            self.repository = assigned
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
             if self.project_context:
@@ -137,7 +137,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = repository_from_plan(self.plan).overlay(central)
+            self.repository = central
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
 

@@ -129,7 +129,11 @@ class TestPlanWindow(ArtifactWindow):
         if token == self._assigned_repository_token:
             return False
         assigned, _path = load_authoring_repository(self.plan, self.path)
-        self.repository = repository_from_plan(self.plan).overlay(assigned)
+        # An assigned authoring repository is the live source of truth. The
+        # repository embedded in the plan is a portable snapshot of those same
+        # objects and must not be overlaid back onto its source: doing so turns
+        # an ordinary saved plan into a duplicate-name collision on reopen.
+        self.repository = assigned
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
         self._assigned_repository_token = token
