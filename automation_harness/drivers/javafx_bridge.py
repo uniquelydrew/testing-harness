@@ -589,18 +589,20 @@ def _default_discovery_dir() -> Path:
 
 
 def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> CapturedComponent:
-    selection = node.get("combo_selection")
+    selection = node.get("popup_selection", node.get("combo_selection"))
     if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
         owner = _captured(endpoint, selection["owner"])
         return replace(owner, backend_properties={
             **dict(owner.backend_properties),
-            "combo_selection": {
+            "popup_selection": {
                 "index": selection.get("index"),
                 # ListCell#getText is presentation-only (and can be empty for
                 # graphic cells).  The agent supplies the selected item value
                 # explicitly so a recording never falls back to the ComboBox
                 # owner's label.
-                "text": selection.get("text") or node.get("text") or node.get("name"),
+                "text": selection.get("value") or selection.get("text") or node.get("text") or node.get("name"),
+                "value": selection.get("value") or selection.get("text") or node.get("text") or node.get("name"),
+                "family": selection.get("family") or "popup_selector",
             },
         })
     node = _normalize_javafx_menu_node(node)
@@ -877,14 +879,16 @@ def _require_mapping(response: Mapping[str, Any], key: str, *, fallback: str) ->
 
 
 def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
-    selection = node.get("combo_selection")
+    selection = node.get("popup_selection", node.get("combo_selection"))
     if isinstance(selection, Mapping) and isinstance(selection.get("owner"), Mapping):
         owner = _captured_recording_node(selection["owner"])
         return replace(owner, backend_properties={
             **dict(owner.backend_properties),
-            "combo_selection": {
+            "popup_selection": {
                 "index": selection.get("index"),
-                "text": selection.get("text") or node.get("text") or node.get("name"),
+                "text": selection.get("value") or selection.get("text") or node.get("text") or node.get("name"),
+                "value": selection.get("value") or selection.get("text") or node.get("text") or node.get("name"),
+                "family": selection.get("family") or "popup_selector",
             },
         })
     node = _normalize_javafx_menu_node(node)

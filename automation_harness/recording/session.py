@@ -7,6 +7,7 @@ import threading
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.interaction_family import InteractionFamily, interaction_family
 from automation_harness.core.logical_menu import find_logical_menu_targets, is_javafx_menu_skin_capture
 from automation_harness.core.locator_matching import _javafx_node_matches
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
@@ -65,10 +66,10 @@ class MenuRecordingContext:
 
 
 @dataclass
-class ComboBoxRecordingContext:
-    """One pending ComboBox popup selection.
+class PopupSelectionContext:
+    """One pending popup-selector selection.
 
-    A ComboBox uses two physical clicks, but only the list-cell click is an
+    A popup selector uses two physical clicks, but only the selection is an
     authorable interaction.  The popup is a transient JavaFX window and some
     desktop capture paths can briefly resolve the covered control on the
     second press.  Keep that press inside this context rather than allowing it
@@ -113,7 +114,7 @@ class RecordingSession:
         self._interactions: list[RecordedInteraction] = []
         self._pending: RecordedInteraction | None = None
         self._menu_context: MenuRecordingContext | None = None
-        self._combo_context: ComboBoxRecordingContext | None = None
+        self._popup_selection_context: PopupSelectionContext | None = None
         self._captured_menu_owners: list[CapturedComponent] = []
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
@@ -194,8 +195,8 @@ class RecordingSession:
                     self._active = False
                     if self._menu_context is not None:
                         self._finish_menu_context("recording_stopped", cancelled=True)
-                    if self._combo_context is not None:
-                        self._finish_combo_context("recording_stopped", cancelled=True)
+                    if self._popup_selection_context is not None:
+                        self._finish_popup_selection_context("recording_stopped", cancelled=True)
                     self._flush()
                     result = tuple(self._interactions)
                     self.diagnostic("session_stopped", interactions=result)
@@ -237,20 +238,24 @@ class RecordingSession:
 
                 target = observation.target
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
-                combo_selection = dict(target.backend_properties or {}).get("combo_selection")
-                if isinstance(combo_selection, Mapping) and target.semantic_type() == ObjectType.COMBO_BOX:
-                    value = combo_selection.get("text") or target.name
+                popup_selection = dict(target.backend_properties or {}).get("popup_selection")
+                if not isinstance(popup_selection, Mapping):
+                    # Compatibility for an in-flight older JavaFX agent; the
+                    # canonical transport field is popup_selection.
+                    popup_selection = dict(target.backend_properties or {}).get("combo_selection")
+                if isinstance(popup_selection, Mapping) and _family(target) is InteractionFamily.POPUP_SELECTOR:
+                    value = popup_selection.get("value") or popup_selection.get("text") or target.name
                     if isinstance(value, str) and value:
-                        if self._combo_context is not None:
-                            self._finish_combo_context("selection_recorded")
+                        if self._popup_selection_context is not None:
+                            self._finish_popup_selection_context("selection_recorded", value=value)
                         self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
                         return
-                if self._combo_context is not None:
-                    # The next release belongs to the armed ComboBox even if
+                if self._popup_selection_context is not None:
+                    # The next release belongs to the armed popup selector even if
                     # a transient popup is missed and capture resolves the
                     # covered object below it.  Never author that false
                     # target as a second independent click.
-                    self._finish_combo_context(
+                    self._finish_popup_selection_context(
                         "selection_target_not_resolved",
                         cancelled=True,
                         suppressed_target=target,
@@ -276,8 +281,8 @@ class RecordingSession:
                     self._start_menu_context(target, observation.timestamp, "menu_pointer_open")
                     return
 
-                if target.semantic_type() == ObjectType.COMBO_BOX and action == ActionType.CLICK:
-                    self._start_combo_context(target, observation.timestamp, "combo_pointer_open")
+                if _family(target) is InteractionFamily.POPUP_SELECTOR and action == ActionType.CLICK:
+                    self._start_popup_selection_context(target, observation.timestamp, "popup_selector_pointer_open")
                     return
 
                 self._begin(action, observation, self._pointer_parameters(observation))
@@ -292,16 +297,16 @@ class RecordingSession:
                 if observation.target is None:
                     return
                 target = observation.target
-                if self._combo_context is not None:
-                    if _same_logical_target(self._combo_context.owner, target):
+                if self._popup_selection_context is not None:
+                    if _same_logical_target(self._popup_selection_context.owner, target):
                         self.diagnostic(
-                            "combo_popup_action_suppressed",
+                            "popup_selector_action_suppressed",
                             observation=observation,
-                            owner=self._combo_context.owner,
+                            owner=self._popup_selection_context.owner,
                         )
                         return
                 if (
-                    target.semantic_type() == ObjectType.COMBO_BOX
+                    _family(target) is InteractionFamily.POPUP_SELECTOR
                     and self._pending is not None
                     and self._pending.action == ActionType.SELECT_ITEM
                     and _same_logical_target(self._pending.target, target)
@@ -332,6 +337,17 @@ class RecordingSession:
             if isinstance(observation, StateChanged):
                 target = observation.target
                 if (
+                    self._popup_selection_context is not None
+                    and target is not None
+                    and _same_logical_target(self._popup_selection_context.owner, target)
+                    and observation.property in {"value", "selected_value", "selected_item"}
+                    and observation.after not in (None, "")
+                ):
+                    value = str(observation.after)
+                    self._finish_popup_selection_context("owner_value_changed", value=value)
+                    self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
+                    return
+                if (
                     target is not None
                     and observation.property in {"visible", "showing", "expanded", "active"}
                     and observation.before != observation.after
@@ -352,11 +368,11 @@ class RecordingSession:
 
             if isinstance(observation, KeyboardInput):
                 if (
-                    self._combo_context is not None
+                    self._popup_selection_context is not None
                     and observation.phase == "pressed"
                     and str(observation.key).casefold() in {"escape", "esc"}
                 ):
-                    self._finish_combo_context("escape", cancelled=True)
+                    self._finish_popup_selection_context("escape", cancelled=True)
                     return
                 if (
                     self._menu_context is not None
@@ -447,35 +463,39 @@ class RecordingSession:
             pending=self._pending,
         )
 
-    def _start_combo_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
-        if self._combo_context is not None:
-            if _same_logical_target(self._combo_context.owner, owner):
+    def _start_popup_selection_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if self._popup_selection_context is not None:
+            if _same_logical_target(self._popup_selection_context.owner, owner):
                 return
-            self._finish_combo_context("combo_owner_changed", cancelled=True)
-        self._combo_context = ComboBoxRecordingContext(
+            self._finish_popup_selection_context("popup_owner_changed", cancelled=True)
+        self._popup_selection_context = PopupSelectionContext(
             owner=owner,
             started_at=timestamp,
             window=owner.window or owner.application,
         )
-        self.diagnostic("combo_popup_transaction_started", reason=reason, owner=owner)
+        self.diagnostic("popup_selection_transaction_started", reason=reason, owner=owner,
+                        interaction_family=_family(owner).value if _family(owner) else None)
 
-    def _finish_combo_context(
+    def _finish_popup_selection_context(
         self,
         reason: str,
         *,
         cancelled: bool = False,
         suppressed_target: CapturedComponent | None = None,
+        value: Any = None,
     ) -> None:
-        context = self._combo_context
+        context = self._popup_selection_context
         if context is None:
             return
-        self._combo_context = None
+        self._popup_selection_context = None
         self.diagnostic(
-            "combo_popup_transaction_finished",
+            "popup_selection_transaction_finished",
             reason=reason,
             cancelled=cancelled,
             owner=context.owner,
             suppressed_target=suppressed_target,
+            interaction_family=InteractionFamily.POPUP_SELECTOR.value,
+            semantic_value=value,
         )
 
     def _begin(self, action: ActionType, observation: Observation, parameters: Mapping[str, Any]) -> None:
@@ -590,9 +610,16 @@ class RecordingSession:
         matches = []
         for component_id, definition in self.repository.components.items():
             matched, details = _matches_capture_details(definition, target)
-            evaluations.append({"component_id": component_id, "matched": matched, "details": details})
+            evaluations.append({
+                "component_id": component_id,
+                "object_id": definition.object_id,
+                "matched": matched,
+                "details": details,
+            })
             if matched:
-                matches.append(component_id)
+                # Recorded steps address repository objects by immutable UUID;
+                # display names remain diagnostic material only.
+                matches.append(definition.object_id)
         if len(matches) == 1:
             result = RepositoryMatch("known_unique", tuple(matches))
             self.diagnostic("repository_match", target=target, result=result, evaluations=evaluations)
@@ -624,13 +651,13 @@ _MENU_TERMINAL_TYPES = frozenset({
 
 
 def _is_menu_owner_capture(target: CapturedComponent | None) -> bool:
-    return target is not None and target.semantic_type() in _MENU_OWNER_TYPES
+    return _family(target) is InteractionFamily.MENU_OWNER
 
 
 def _is_menu_related_capture(target: CapturedComponent | None) -> bool:
     if target is None:
         return False
-    if target.semantic_type() in (_MENU_OWNER_TYPES | _MENU_TERMINAL_TYPES):
+    if _family(target) is InteractionFamily.MENU_OWNER or target.semantic_type() in _MENU_TERMINAL_TYPES:
         return True
     if is_javafx_menu_skin_capture(target):
         return True
@@ -994,3 +1021,9 @@ def _adapter_details(adapter):
         "repr": repr(adapter),
         "available": getattr(adapter, "available", None),
     }
+
+
+def _family(capture: CapturedComponent | None) -> InteractionFamily | None:
+    if capture is None:
+        return None
+    return interaction_family(capture.semantic_type(), capture.native_class)

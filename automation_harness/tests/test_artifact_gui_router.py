@@ -27,6 +27,13 @@ def test_detects_generic_yaml_by_document_schema(tmp_path):
     assert detect_artifact(path) is ArtifactType.TEST_PLAN
 
 
+def test_broken_repository_still_routes_to_recovery_workbench(tmp_path):
+    path = tmp_path / "broken.ahobjects"
+    path.write_text("version: 3\ncomponents: [not a mapping\n", encoding="utf-8")
+
+    assert detect_artifact(path) is ArtifactType.OBJECT_REPOSITORY
+
+
 def test_rejects_suffix_schema_mismatch(tmp_path):
     path = tmp_path / "not-a-plan.ahplan"
     path.write_text("version: 3\ncomponents: {}\n", encoding="utf-8")

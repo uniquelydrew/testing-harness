@@ -22,6 +22,16 @@ def test_rejects_transient_javafx_skin_and_empty_identity():
     assert {item.code for item in report.errors} == {"transient_javafx_class", "empty_mandatory_locator"}
 
 
+def test_rejects_popup_implementation_cell_as_durable_repository_object():
+    definition = ComponentDefinition(
+        component_id="site.popup.cell", object_id="10000000-0000-0000-0000-000000000001",
+        framework="javafx", native_class="javafx.scene.control.ListCell",
+        strategies=(ComponentStrategy("javafx", {"identification": {"mandatory": {"text": "North"}}}),),
+    )
+    report = validate_repository(ComponentRepository({definition.component_id: definition}))
+    assert "transient_javafx_class" in {item.code for item in report.errors}
+
+
 def test_plan_uuid_reference_is_valid_and_name_reference_is_rejected():
     definition = _definition()
     repository = ComponentRepository({definition.component_id: definition})

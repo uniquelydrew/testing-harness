@@ -21,7 +21,11 @@ public final class JavaFxSemanticTargetResolverSmoke {
     static class Hyperlink extends Node { Hyperlink(Node parent) { super(parent); } }
     static class TextField extends Node { TextField(Node parent) { super(parent); } }
     static class ComboBox extends Node { ComboBox(Node parent) { super(parent); } }
+    static class ChoiceBox extends Node { ChoiceBox(Node parent) { super(parent); } }
+    static class DatePicker extends Node { DatePicker(Node parent) { super(parent); } }
+    static class ColorPicker extends Node { ColorPicker(Node parent) { super(parent); } }
     static class MenuButton extends Node { MenuButton(Node parent) { super(parent); } }
+    static class SplitMenuButton extends Node { SplitMenuButton(Node parent) { super(parent); } }
     static class Tab extends Node { Tab(Node parent) { super(parent); } }
     static class Control extends Node { Control(Node parent) { super(parent); } }
     static class CustomControl extends Control { CustomControl(Node parent) { super(parent); } }
@@ -45,9 +49,23 @@ public final class JavaFxSemanticTargetResolverSmoke {
         TextField textField = new TextField(null);
         assertTarget(new Text(new Skin(textField)), textField, 2);
         ComboBox comboBox = new ComboBox(null);
+        assertFamily(comboBox, JavaFxInteractionFamily.POPUP_SELECTOR);
         assertTarget(new Text(new Skin(comboBox)), comboBox, 2);
+        ChoiceBox choiceBox = new ChoiceBox(null);
+        assertFamily(choiceBox, JavaFxInteractionFamily.POPUP_SELECTOR);
+        assertTarget(new Text(new Skin(choiceBox)), choiceBox, 2);
+        DatePicker datePicker = new DatePicker(null);
+        assertFamily(datePicker, JavaFxInteractionFamily.POPUP_SELECTOR);
+        assertTarget(new Text(new Skin(datePicker)), datePicker, 2);
+        ColorPicker colorPicker = new ColorPicker(null);
+        assertFamily(colorPicker, JavaFxInteractionFamily.POPUP_SELECTOR);
+        assertTarget(new Text(new Skin(colorPicker)), colorPicker, 2);
         MenuButton menu = new MenuButton(null);
+        assertFamily(menu, JavaFxInteractionFamily.MENU_OWNER);
         assertTarget(new Label(menu), menu, 1);
+        SplitMenuButton splitMenu = new SplitMenuButton(null);
+        assertFamily(splitMenu, JavaFxInteractionFamily.MENU_OWNER);
+        assertTarget(new Label(splitMenu), splitMenu, 1);
         Tab tab = new Tab(null);
         assertTarget(new Text(tab), tab, 1);
         Text standalone = new Text(null);
@@ -66,6 +84,12 @@ public final class JavaFxSemanticTargetResolverSmoke {
         JavaFxSemanticTargetResolver.Resolution result = JavaFxSemanticTargetResolver.resolveSemanticTarget(physical);
         if (result.semanticTarget() != semantic || result.descendantDepth() != depth) {
             throw new AssertionError("unexpected target resolution: " + result);
+        }
+    }
+
+    private static void assertFamily(Node node, JavaFxInteractionFamily expected) {
+        if (JavaFxInteractionFamily.forNode(node) != expected) {
+            throw new AssertionError("unexpected interaction family for " + node.getClass().getSimpleName());
         }
     }
 }

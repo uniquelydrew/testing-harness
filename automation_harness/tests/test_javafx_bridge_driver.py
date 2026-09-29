@@ -284,8 +284,11 @@ def test_internal_javafx_menu_skin_class_is_not_persisted(tmp_path):
         _write_discovery(tmp_path, server)
         captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
         identity = captured.candidate_strategy().options["identification"]
-        assert identity["mandatory"] == {"accessible_role": "MENU"}
-        assert "class" not in identity["assistive"]
+        # The bridge promotes the transient MenuBarButton skin to its public
+        # logical Menu. The physical class stays diagnostic-only and never
+        # becomes repository identity.
+        assert identity["mandatory"] == {"class": "javafx.scene.control.Menu"}
+        assert captured.backend_properties["physical_native_class"].endswith("MenuBarButton")
         assert "hierarchy" not in identity["assistive"]
         assert identity["assistive"]["lineage"][1]["id"] == "topMenuBar"
         assert identity["assistive"]["sibling_index"] == 5

@@ -352,13 +352,9 @@ public final class AutomationHarnessJavaFxAgent {
         private static final AtomicBoolean NEXT_CLICK_CAPTURE_ACTIVE = new AtomicBoolean(false);
         private static final Map<String, PendingMenuClick> PENDING_MENU_CLICKS = new ConcurrentHashMap<String, PendingMenuClick>();
         private static final Map<String, PendingMenuClick> MENU_DISPATCHES = new ConcurrentHashMap<String, PendingMenuClick>();
-        private static final Set<String> INTERACTION_BOUNDARIES = Collections.unmodifiableSet(
-                new java.util.HashSet<String>(java.util.Arrays.asList(
-                        "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
-                        "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
-                        "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
-                        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab",
-                        "TitledPane", "Accordion")));
+        private enum InteractionFamily {
+            POPUP_SELECTOR, MENU_OWNER, SELECTABLE, TEXT_INPUT, VALUE_CONTROL, COLLECTION_SELECTOR
+        }
 
         private FxRuntime() {
         }
@@ -849,13 +845,13 @@ public final class AutomationHarnessJavaFxAgent {
                 final Map<String, Object> identification, final int index) throws Exception {
             return onFx(() -> {
                 NodeMatch root = unique(resolve(identification, true), identification);
-                if (!isInstance("javafx.scene.control.ComboBox", root.node)) {
-                    throw new IllegalArgumentException("select_child requires a ComboBox owner");
+                if (interactionFamily(root.node) != InteractionFamily.POPUP_SELECTOR) {
+                    throw new IllegalArgumentException("select_child requires a popup-selector owner");
                 }
                 Object items = call(root.node, "getItems");
                 int count = listValue(items).size();
                 if (index < 0 || index >= count) {
-                    throw new IllegalArgumentException("combo selection index " + index + " outside " + count + " items");
+                    throw new IllegalArgumentException("popup selection index " + index + " outside " + count + " items");
                 }
                 Object model = call(root.node, "getSelectionModel");
                 Class.forName("javafx.scene.control.SelectionModel")
@@ -1084,7 +1080,8 @@ public final class AutomationHarnessJavaFxAgent {
             String simple = item.getClass().getSimpleName();
             return "MenuBar".equals(simple) ? "menu bar"
                     : "ContextMenu".equals(simple) ? "context menu"
-                    : "Menu".equals(simple) ? "menu"
+                    : "Menu".equals(simple) || "MenuButton".equals(simple)
+                    || "SplitMenuButton".equals(simple) ? "menu"
                     : "CheckMenuItem".equals(simple) ? "check menu item"
                     : "RadioMenuItem".equals(simple) ? "radio menu item" : "menu item";
         }
@@ -1147,10 +1144,10 @@ public final class AutomationHarnessJavaFxAgent {
 
         private static Object logicalMenuObject(Object candidate) throws Exception {
             if (candidate == null) return null;
-            if (isInstance("javafx.scene.control.MenuBar", candidate)
+            if (isMenuOwner(candidate)
                     || isInstance("javafx.scene.control.Menu", candidate)
                     || isInstance("javafx.scene.control.MenuItem", candidate)
-                    || isInstance("javafx.scene.control.ContextMenu", candidate)) {
+                    ) {
                 return candidate;
             }
             Object current = candidate;
@@ -1301,9 +1298,9 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static List<Object> menuChildrenIfPresent(Object parent) throws Exception {
-            if (!isInstance("javafx.scene.control.MenuBar", parent)
+            if (!isMenuOwner(parent)
                     && !isInstance("javafx.scene.control.Menu", parent)
-                    && !isInstance("javafx.scene.control.ContextMenu", parent)) {
+                    ) {
                 return Collections.emptyList();
             }
             Method method = findMethod(parent.getClass(), "getMenus");
@@ -1522,7 +1519,7 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 for (Object node : flatten(root)) {
                     result.add(new NodeMatch(node, window));
-                    if (isInstance("javafx.scene.control.MenuBar", node)) {
+                    if (isMenuOwner(node)) {
                         addLogicalMenuMatches(node, window, result);
                     }
                 }
@@ -1578,9 +1575,11 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("focused", boolCall(node, "isFocused", false));
             payload.put("managed", boolCall(node, "isManaged", true));
             payload.put("focus_traversable", boolCall(node, "isFocusTraversable", false));
-            if (isInstance("javafx.scene.control.ComboBox", node)) {
+            if (interactionFamily(node) == InteractionFamily.POPUP_SELECTOR) {
                 Object model = callQuiet(node, "getSelectionModel");
                 payload.put("selected_index", callQuiet(model, "getSelectedIndex"));
+                Object value = callQuiet(node, "getValue");
+                if (value != null) payload.put("value", String.valueOf(value));
             }
             payload.put("style_classes", listValue(call(node, "getStyleClass")));
             double[] bounds = boundsOnScreen(node);
@@ -1624,39 +1623,52 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 payload.put("menu_children", snapshots);
             }
-            Object cell = node;
-            for (int depth = 0; cell != null && depth < 16; depth++, cell = callQuiet(cell, "getParent")) {
-                if (!isInstance("javafx.scene.control.ListCell", cell)) continue;
-                Object index = callQuiet(cell, "getIndex");
-                Object owner = callQuiet(window, "getOwnerNode");
-                for (int ownerDepth = 0; owner != null
-                        && !isInstance("javafx.scene.control.ComboBox", owner)
-                        && ownerDepth < 16; ownerDepth++) {
-                    owner = callQuiet(owner, "getParent");
-                }
-                if (!(index instanceof Number) || ((Number) index).intValue() < 0
-                        || owner == null || !isInstance("javafx.scene.control.ComboBox", owner)) break;
-                Object scene = callQuiet(owner, "getScene");
-                Object ownerWindow = callQuiet(scene, "getWindow");
-                if (ownerWindow != null && owner != node) {
-                    Map<String, Object> selection = new LinkedHashMap<String, Object>();
-                    selection.put("index", ((Number) index).intValue());
-                    // ListCell#getItem is the selected domain value.  Do not
-                    // infer it from the skin's text node: custom cells often
-                    // have no text of their own, and recording must preserve
-                    // the value passed to select_item.
-                    Object item = callQuiet(cell, "getItem");
-                    String selectedText = item == null ? optionalNoArgStringQuiet(cell, "getText")
-                            : String.valueOf(item);
-                    if (selectedText != null && !selectedText.isEmpty()) {
-                        selection.put("text", selectedText);
-                    }
-                    selection.put("owner", nodePayload(owner, ownerWindow));
-                    payload.put("combo_selection", selection);
-                }
-                break;
-            }
+            Map<String, Object> popupSelection = popupSelectionPayload(node, window);
+            if (popupSelection != null) payload.put("popup_selection", popupSelection);
             return payload;
+        }
+
+        /**
+         * Promote a transient popup cell/menu item to its durable selector.
+         * ChoiceBox uses ContextMenu/MenuItem topology rather than ComboBox's
+         * ListCell topology, so owner value/model state is authoritative.
+         */
+        private static Map<String, Object> popupSelectionPayload(Object node, Object window) throws Exception {
+            Object owner = callQuiet(window, "getOwnerNode");
+            for (int depth = 0; owner != null && depth < 16; depth++) {
+                if (interactionFamily(owner) == InteractionFamily.POPUP_SELECTOR) break;
+                owner = callQuiet(owner, "getParent");
+            }
+            if (owner == null || interactionFamily(owner) != InteractionFamily.POPUP_SELECTOR) return null;
+            if (owner == node) return null;
+            Object scene = callQuiet(owner, "getScene");
+            Object ownerWindow = callQuiet(scene, "getWindow");
+            if (ownerWindow == null) return null;
+
+            Object itemNode = node;
+            Object listCell = null;
+            for (int depth = 0; itemNode != null && depth < 16; itemNode = callQuiet(itemNode, "getParent"), depth++) {
+                if (isInstance("javafx.scene.control.ListCell", itemNode)) {
+                    listCell = itemNode;
+                    break;
+                }
+            }
+            Object model = callQuiet(owner, "getSelectionModel");
+            Object index = callQuiet(model, "getSelectedIndex");
+            if (!(index instanceof Number) && listCell != null) index = callQuiet(listCell, "getIndex");
+            Object value = callQuiet(owner, "getValue");
+            if (value == null && listCell != null) value = callQuiet(listCell, "getItem");
+            if (value == null) value = optionalNoArgStringQuiet(node, "getText");
+            Map<String, Object> selection = new LinkedHashMap<String, Object>();
+            selection.put("family", "popup_selector");
+            if (index instanceof Number && ((Number) index).intValue() >= 0) {
+                selection.put("index", ((Number) index).intValue());
+            }
+            if (value != null && !String.valueOf(value).isEmpty()) {
+                selection.put("value", String.valueOf(value));
+            }
+            selection.put("owner", nodePayload(owner, ownerWindow));
+            return selection;
         }
 
         private static Map<String, Object> briefPayload(Object node) throws Exception {
@@ -1910,10 +1922,16 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static boolean isInteractionBoundary(Object node) {
+            if (interactionFamily(node) != null) return true;
             Class<?> type = node.getClass();
             boolean controlSubclass = false;
             while (type != null) {
-                if (INTERACTION_BOUNDARIES.contains(type.getSimpleName())) return true;
+                String simple = type.getSimpleName();
+                if ("Button".equals(simple) || "Hyperlink".equals(simple)
+                        || "ListCell".equals(simple) || "TableCell".equals(simple)
+                        || "TreeCell".equals(simple) || "MenuItem".equals(simple)
+                        || "MenuItemContainer".equals(simple) || "Tab".equals(simple)
+                        || "TitledPane".equals(simple) || "Accordion".equals(simple)) return true;
                 if ("Control".equals(type.getSimpleName())) controlSubclass = true;
                 type = type.getSuperclass();
             }
@@ -1927,6 +1945,32 @@ public final class AutomationHarnessJavaFxAgent {
                 }
             }
             return false;
+        }
+
+        private static InteractionFamily interactionFamily(Object node) {
+            if (node == null) return null;
+            if (isInstance("javafx.scene.control.ComboBox", node)
+                    || isInstance("javafx.scene.control.ChoiceBox", node)
+                    || isInstance("javafx.scene.control.DatePicker", node)
+                    || isInstance("javafx.scene.control.ColorPicker", node)) return InteractionFamily.POPUP_SELECTOR;
+            if (isInstance("javafx.scene.control.MenuBar", node)
+                    || isInstance("javafx.scene.control.MenuButton", node)
+                    || isInstance("javafx.scene.control.SplitMenuButton", node)
+                    || isInstance("javafx.scene.control.Menu", node)
+                    || isInstance("javafx.scene.control.ContextMenu", node)) return InteractionFamily.MENU_OWNER;
+            if (isInstance("javafx.scene.control.ToggleButton", node)
+                    || isInstance("javafx.scene.control.CheckBox", node)
+                    || isInstance("javafx.scene.control.RadioButton", node)) return InteractionFamily.SELECTABLE;
+            if (isInstance("javafx.scene.control.TextInputControl", node)) return InteractionFamily.TEXT_INPUT;
+            if (isInstance("javafx.scene.control.Slider", node) || isInstance("javafx.scene.control.Spinner", node)) return InteractionFamily.VALUE_CONTROL;
+            if (isInstance("javafx.scene.control.ListView", node) || isInstance("javafx.scene.control.TreeView", node)
+                    || isInstance("javafx.scene.control.TableView", node) || isInstance("javafx.scene.control.TreeTableView", node)
+                    || isInstance("javafx.scene.control.TabPane", node)) return InteractionFamily.COLLECTION_SELECTOR;
+            return null;
+        }
+
+        private static boolean isMenuOwner(Object node) {
+            return interactionFamily(node) == InteractionFamily.MENU_OWNER;
         }
 
         private static List<Object> windows() throws Exception {

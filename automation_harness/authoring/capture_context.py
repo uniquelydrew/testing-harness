@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from automation_harness.core.interaction_family import interaction_family
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver, JavaFxBridgeEndpoint, _captured
+from automation_harness.models.gui import classify_accessibility
 
 
 @dataclass
@@ -487,11 +489,15 @@ def is_semantic_node(node):
             return True
         if properties.get("automation.actions") not in (None, "", [], ()):
             return True
+    if not _is_internal_class(class_name) and interaction_family(
+        classify_accessibility(role, class_name), class_name,
+    ) is not None:
+        return True
     boundaries = {
-        "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
-        "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
-        "Spinner", "DatePicker", "Slider", "ProgressBar", "ListCell", "TableCell",
-        "TreeCell", "MenuBar", "MenuButton", "Menu", "MenuItem", "MenuItemContainer", "Tab",
+        # Family members above use interaction_family(). These are remaining
+        # non-family boundaries and transient logical-menu representations.
+        "Button", "Hyperlink", "ProgressBar", "ListCell", "TableCell",
+        "TreeCell", "MenuItem", "MenuItemContainer", "Tab",
     }
     if simple_name in boundaries:
         return True

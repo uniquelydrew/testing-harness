@@ -11,10 +11,8 @@ import java.util.Set;
  */
 public final class JavaFxSemanticTargetResolver {
     private static final Set<String> BOUNDARY_NAMES = Set.of(
-        "Button", "ToggleButton", "CheckBox", "RadioButton", "Hyperlink",
-        "TextField", "PasswordField", "TextArea", "ComboBox", "ChoiceBox",
-        "Spinner", "DatePicker", "Slider", "ListCell", "TableCell",
-        "TreeCell", "MenuBar", "MenuButton", "MenuItem", "MenuItemContainer", "Tab"
+        "Button", "Hyperlink", "ListCell", "TableCell", "TreeCell",
+        "MenuItem", "MenuItemContainer", "Tab"
     );
     private static final Set<String> LOGICAL_MENU_NAMES = Set.of(
         "Menu", "MenuItem", "CustomMenuItem", "CheckMenuItem", "RadioMenuItem"
@@ -75,7 +73,7 @@ public final class JavaFxSemanticTargetResolver {
     }
 
     static boolean isInteractionBoundary(Object node) {
-        if (isLogicalMenuObject(node)) return true;
+        if (isLogicalMenuObject(node) || JavaFxInteractionFamily.forNode(node) != null) return true;
         Class<?> type = node.getClass();
         boolean controlSubclass = false;
         while (type != null) {

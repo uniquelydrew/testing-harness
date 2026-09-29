@@ -16,6 +16,10 @@ OVERRIDE_PROPERTY = "repository_override_of"
 class RepositoryScope(str, Enum):
     LOCAL = "local"
     SHARED = "shared"
+    # A plan-owned scratch repository used only to retain raw recording
+    # evidence until the user assigns a real repository.  It deliberately
+    # does not participate in executable name resolution.
+    RECORDING = "recording"
 
 
 @dataclass(frozen=True)
@@ -61,8 +65,15 @@ class RepositorySet:
         by_id: dict[str, ComponentDefinition] = {}
         names: dict[str, str] = {}
 
+        # Recording fallback data is intentionally invisible to composition:
+        # a failed or provisional capture must never shadow an assigned object
+        # or make otherwise-valid steps impossible to resolve.
+        executable = tuple(
+            item for item in zip(self.associations, self.repositories)
+            if item[0].scope is not RepositoryScope.RECORDING
+        )
         ordered = sorted(
-            zip(self.associations, self.repositories),
+            executable,
             key=lambda item: item[0].scope is RepositoryScope.LOCAL,
         )
         for association, repository in ordered:

@@ -38,8 +38,18 @@ class _RepositoryWorkbenchHost:
         self.recovery_issues = ()
         try:
             self.repository = ComponentRepository.load((self.path,))
-        except Exception:
-            self.repository, self.recovery_issues = ComponentRepository.load_recoverable((self.path,))
+        except Exception as load_error:
+            try:
+                self.repository, self.recovery_issues = ComponentRepository.load_recoverable((self.path,))
+            except Exception as recovery_error:
+                # Even a syntax-level failure gets a correction path.  Saving
+                # the empty recovered view is explicit, backed up, and never
+                # happens until the user chooses Repair Repository.
+                self.repository = ComponentRepository({})
+                self.recovery_issues = ((
+                    "repository document",
+                    "%s; recovery could not parse it: %s" % (load_error, recovery_error),
+                ),)
         self.migration_report = repository_migration_report(self.repository)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
@@ -94,7 +104,7 @@ class _RepositoryWorkbenchHost:
             modal=True,
             message_type=Gtk.MessageType.WARNING,
             buttons=Gtk.ButtonsType.YES_NO,
-            text="Delete Invalid Objects",
+            text="Repair Repository",
         )
         dialog.format_secondary_text(
             "The original repository will be backed up and the invalid entries "
@@ -105,7 +115,7 @@ class _RepositoryWorkbenchHost:
 
     def repair_invalid_objects(self):
         if not self.recovery_issues:
-            return self._info("Delete Invalid Objects", "No invalid repository objects were found.")
+            return self._info("Repair Repository", "No invalid repository objects were found.")
         if not self.confirm_repair():
             return
         backup = self.path.with_name(self.path.name + ".before-repair")
@@ -118,8 +128,8 @@ class _RepositoryWorkbenchHost:
             self._mark_repository_dirty(False)
             self.rebuild_context()
         except Exception as exc:
-            return self._error("Delete Invalid Objects", "%s: %s" % (type(exc).__name__, exc))
-        self._set_status("Deleted %d invalid object(s); backup: %s" % (removed, backup.name))
+            return self._error("Repair Repository", "%s: %s" % (type(exc).__name__, exc))
+        self._set_status("Repaired %d invalid object(s); backup: %s" % (removed, backup.name))
 
     def _set_status(self, _value):
         return None
@@ -214,7 +224,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         self._button(self.toolbar, "Recapture Selected", self.recapture_selected)
         self._button(self.toolbar, "Delete Object", self.delete_selected)
         if self._repository_host.recovery_issues:
-            self._button(self.toolbar, "Delete Invalid Objects", self._repository_host.repair_invalid_objects)
+            self._button(self.toolbar, "Repair Repository", self._repository_host.repair_invalid_objects)
         hide = {
             "Check Siblings", "Check Branch", "Clear Checks",
             "Save Selected", "Save Checked",

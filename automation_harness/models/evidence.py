@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 
@@ -36,7 +36,8 @@ class EvidenceItem:
             raise ValueError("evidence type must be a non-empty string")
         if self.path is not None:
             candidate = Path(self.path)
-            if candidate.is_absolute() or ".." in candidate.parts:
+            portable = PurePosixPath(str(self.path).replace("\\", "/"))
+            if candidate.is_absolute() or portable.is_absolute() or ":" in str(self.path) or ".." in portable.parts:
                 raise ValueError("evidence artifact paths must be relative to the run directory")
 
     @classmethod

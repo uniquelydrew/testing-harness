@@ -328,7 +328,7 @@ final class JavaFxRecorder {
         int guard = 0;
         while (current != null && guard++ < 64) {
             String name = current.getClass().getSimpleName();
-            if (name.equals("MenuBar") || name.equals("MenuButton")) return current;
+            if (JavaFxInteractionFamily.forNode(current) == JavaFxInteractionFamily.MENU_OWNER) return current;
             current = invoke(current, "getParent");
         }
         return null;
@@ -464,7 +464,10 @@ final class JavaFxRecorder {
             case "PasswordField" -> "password field";
             case "TextArea" -> "text area";
             case "ComboBox", "ChoiceBox" -> "combo box";
+            case "DatePicker" -> "date picker";
+            case "ColorPicker" -> "color picker";
             case "MenuBar" -> "menu bar";
+            case "MenuButton", "SplitMenuButton" -> "menu";
             case "Menu" -> "menu";
             case "MenuItem", "CustomMenuItem" -> "menu item";
             case "CheckMenuItem" -> "check menu item";

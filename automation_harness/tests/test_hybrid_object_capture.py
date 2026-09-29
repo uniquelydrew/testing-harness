@@ -379,6 +379,19 @@ def test_transient_menubutton_skin_capture_cannot_be_persisted():
         service.definition_from_capture("Actions", captured, validate_live=False)
 
 
+def test_transient_popup_cell_capture_cannot_be_persisted():
+    service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
+    captured = CapturedComponent(
+        name="North", role="list item", description=None, accessible_id=None,
+        application="Demo", window="Popup", hierarchy=(), actions=("activate",), bounds=(0, 0, 100, 30),
+        state=ComponentState(present=True),
+        authored_strategy=ComponentStrategy("javafx", {"identification": {"mandatory": {"text": "North"}}}),
+        framework="javafx", native_class="javafx.scene.control.ListCell",
+    )
+    with pytest.raises(ValueError, match="transient"):
+        service.definition_from_capture("Site Popup Cell", captured, validate_live=False)
+
+
 def test_javafx_definition_validation_is_scoped_to_captured_process():
     class ProcessAware(_JavaFxSuccess):
         process_ids = []
