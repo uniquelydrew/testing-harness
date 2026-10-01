@@ -369,33 +369,26 @@ class AtspiRecordingAdapter:
         if self._using_x11_pointer:
             self._pointer_monitor.stop()
             self._using_x11_pointer = False
-        deferred_release = False
+        # Deregister first, then wait for in-flight native callbacks before
+        # releasing the registry lease or clearing callback-owned state.
+        # A detached release thread could close the native registry after a
+        # subsequent recording session had already started.
         try:
             if self._pyatspi is not None:
                 for callback, event_type in self._listeners:
                     self._pyatspi.Registry.deregisterEventListener(callback, event_type)
-            with self._callback_condition:
-                deferred_release = bool(self._active_callbacks)
         finally:
+            with self._callback_condition:
+                while self._active_callbacks:
+                    self._callback_condition.wait()
             self._pointer_worker.stop_and_drain()
-            if deferred_release and lease is not None:
-                threading.Thread(
-                    target=self._release_after_callbacks,
-                    args=(lease,),
-                    name="atspi-recording-release",
-                    daemon=True,
-                ).start()
-            elif lease is not None:
-                lease.close()
-            self._listeners = []
-            self._emit = None
-            self._pyatspi = None
-
-    def _release_after_callbacks(self, lease) -> None:
-        with self._callback_condition:
-            while self._active_callbacks:
-                self._callback_condition.wait()
-        lease.close()
+            try:
+                if lease is not None:
+                    lease.close()
+            finally:
+                self._listeners = []
+                self._emit = None
+                self._pyatspi = None
 
     def _target(self, event: Any, coordinates=None, *, prefer_coordinates=False):
         source = getattr(event, "source", None)
@@ -501,6 +494,20 @@ class AtspiRecordingAdapter:
                     and _captured_process_id(captured) == owner_pid
                 ):
                     return captured
+                self._diagnostic(
+                    "java_agent_owner_resolution_miss", coordinates=coordinates,
+                    owner_pid=owner_pid,
+                    captured_pid=_captured_process_id(captured),
+                    captured_role=getattr(captured, "role", None),
+                    captured_name=getattr(captured, "name", None),
+                )
+                self._diagnostic(
+                    "javafx_owner_resolution_miss", coordinates=coordinates,
+                    owner_pid=owner_pid,
+                    captured_pid=_captured_process_id(captured),
+                    captured_role=getattr(captured, "role", None),
+                    captured_name=getattr(captured, "name", None),
+                )
             except Exception as exc:
                 self._diagnostic(
                     "javafx_owner_resolution_failed", coordinates=coordinates,
@@ -533,6 +540,10 @@ class AtspiRecordingAdapter:
                     return None
                 atspi_pid = _captured_process_id(atspi_candidate)
                 if owner_pid is not None and atspi_pid != owner_pid:
+                    self._diagnostic(
+                        "atspi_owner_pid_mismatch", coordinates=coordinates,
+                        owner_pid=owner_pid, captured_pid=atspi_pid,
+                    )
                     return None
         except Exception as exc:
             self._diagnostic(
@@ -556,6 +567,11 @@ class AtspiRecordingAdapter:
         if atspi_candidate is not None and _is_recordable_target(atspi_candidate):
             return atspi_candidate
         if owner_pid is not None:
+            self._diagnostic(
+                "physical_pointer_target_unresolved", coordinates=coordinates,
+                owner_pid=owner_pid,
+                atspi_candidate_present=atspi_candidate is not None,
+            )
             # Never discard known X11 ownership and retry through an
             # unconstrained accessibility lookup.
             return None

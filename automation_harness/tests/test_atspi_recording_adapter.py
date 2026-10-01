@@ -697,7 +697,7 @@ def test_highlight_duration_does_not_block_rapid_transient_menu_targets():
     assert highlighted == ["Save", "Open"]
 
 
-def test_stop_returns_while_deferring_lease_release_until_active_resolution_finishes():
+def test_stop_waits_for_active_resolution_before_releasing_native_lease():
     entered = threading.Event()
     release = threading.Event()
 
@@ -731,17 +731,15 @@ def test_stop_returns_while_deferring_lease_release_until_active_resolution_fini
 
     stopping = threading.Thread(target=adapter.stop)
     stopping.start()
-    stopping.join(1)
-    assert not stopping.is_alive()
+    # The native registry must remain leased until the callback has finished.
     assert not lease.closed
+    assert stopping.is_alive()
 
     release.set()
     callback.join(1)
+    stopping.join(1)
     assert not callback.is_alive()
-    for _unused in range(100):
-        if lease.closed:
-            break
-        time.sleep(0.001)
+    assert not stopping.is_alive()
     assert lease.closed
 
 

@@ -78,6 +78,8 @@ class PopupSelectionContext:
     owner: CapturedComponent
     started_at: float
     window: str | None
+    selected_value: str | None = None
+    committed_at: float | None = None
 
 
 class RecordingAdapter(Protocol):
@@ -246,10 +248,15 @@ class RecordingSession:
                 if isinstance(popup_selection, Mapping) and _family(target) is InteractionFamily.POPUP_SELECTOR:
                     value = popup_selection.get("value") or popup_selection.get("text") or target.name
                     if isinstance(value, str) and value:
-                        if self._popup_selection_context is not None:
-                            self._finish_popup_selection_context("selection_recorded", value=value)
-                        self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
+                        self._commit_popup_selection(target, value, observation)
                         return
+                if self._popup_selection_context is not None and self._popup_selection_context.committed_at is not None:
+                    context = self._popup_selection_context
+                    if _same_logical_target(context.owner, target) and observation.timestamp - context.committed_at <= 3.0:
+                        self.diagnostic("popup_selector_duplicate_suppressed", owner=context.owner,
+                                        value=context.selected_value, observation=observation)
+                        return
+                    self._finish_popup_selection_context("post_commit_pointer")
                 if self._popup_selection_context is not None:
                     # The next release belongs to the armed popup selector even if
                     # a transient popup is missed and capture resolves the
@@ -344,8 +351,7 @@ class RecordingSession:
                     and observation.after not in (None, "")
                 ):
                     value = str(observation.after)
-                    self._finish_popup_selection_context("owner_value_changed", value=value)
-                    self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
+                    self._commit_popup_selection(target, value, observation)
                     return
                 if (
                     target is not None
@@ -463,11 +469,38 @@ class RecordingSession:
             pending=self._pending,
         )
 
+    def _commit_popup_selection(self, owner: CapturedComponent, value: str, observation: Observation) -> None:
+        """Commit once; retain the owner transaction to consume trailing adapter events."""
+        context = self._popup_selection_context
+        if context is not None and context.committed_at is not None:
+            if (_same_logical_target(context.owner, owner)
+                    and context.selected_value == value
+                    and observation.timestamp - context.committed_at <= 3.0):
+                self.diagnostic("popup_selector_duplicate_suppressed", owner=owner,
+                                value=value, observation=observation)
+                return
+            self._finish_popup_selection_context("new_selection_after_commit")
+            context = None
+        if context is not None and not _same_logical_target(context.owner, owner):
+            self._finish_popup_selection_context("selection_owner_changed", cancelled=True)
+            context = None
+        if context is None:
+            self._start_popup_selection_context(owner, observation.timestamp, "selection_without_open")
+            context = self._popup_selection_context
+        context.selected_value = value
+        context.committed_at = observation.timestamp
+        self.diagnostic("popup_selector_committed", owner=owner, value=value,
+                        started_at=context.started_at, observation=observation)
+        self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
+
     def _start_popup_selection_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
         if self._popup_selection_context is not None:
             if _same_logical_target(self._popup_selection_context.owner, owner):
-                return
-            self._finish_popup_selection_context("popup_owner_changed", cancelled=True)
+                if self._popup_selection_context.committed_at is None:
+                    return
+                self._finish_popup_selection_context("new_popup_open")
+            else:
+                self._finish_popup_selection_context("popup_owner_changed", cancelled=True)
         self._popup_selection_context = PopupSelectionContext(
             owner=owner,
             started_at=timestamp,
