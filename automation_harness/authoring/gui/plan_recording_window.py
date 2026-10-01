@@ -71,6 +71,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self.recording_stop_window = None
         self._recording_stop_pending = False
         self._recording_highlights = []
+        self._recording_highlight_timeout = None
+        self._recording_highlight_generation = 0
         self._recording_diagnostic_session = None
         self.recording_toggle_button = self.button("Start Recording", self.toggle_recording)
         self.recording_toggle_button.set_tooltip_text(
@@ -100,7 +102,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         """Acknowledge semantic resolution while the physical button is still held."""
         if target is None or not target.bounds:
             return
-        GLib.idle_add(self._show_recording_highlight, tuple(target.bounds))
+        if self.recording_session is not None and not self._recording_stop_pending:
+            GLib.idle_add(self._show_recording_highlight, tuple(target.bounds))
 
     def _recording_observation(self, observation):
         # JavaFX agents may expose pointer-down directly. Highlight at press,
@@ -109,9 +112,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             return
         if observation.phase != "pressed" or observation.target is None or not observation.target.bounds:
             return
-        GLib.idle_add(self._show_recording_highlight, tuple(observation.target.bounds))
+        if self.recording_session is not None and not self._recording_stop_pending:
+            GLib.idle_add(self._show_recording_highlight, tuple(observation.target.bounds))
 
     def _show_recording_highlight(self, bounds):
+        # Queued callbacks can outlive the adapter or arrive after Stop.
+        if self.recording_session is None or self._recording_stop_pending:
+            return False
         self._clear_recording_highlights()
         x, y, width, height = (int(value) for value in bounds)
         thickness = 4
@@ -128,10 +135,24 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             edge.set_opacity(0.88); edge.move(rx, ry); edge.resize(max(1, rw), max(1, rh))
             edge.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             edge.show_all(); self._recording_highlights.append(edge)
-        GLib.timeout_add(550, self._clear_recording_highlights)
+        generation = self._recording_highlight_generation
+        self._recording_highlight_timeout = GLib.timeout_add(
+            550, self._expire_recording_highlight, generation,
+        )
+        return False
+
+    def _expire_recording_highlight(self, generation):
+        if generation == self._recording_highlight_generation:
+            self._recording_highlight_timeout = None
+            self._clear_recording_highlights()
         return False
 
     def _clear_recording_highlights(self):
+        self._recording_highlight_generation += 1
+        timeout = self._recording_highlight_timeout
+        self._recording_highlight_timeout = None
+        if timeout is not None:
+            GLib.source_remove(timeout)
         for window in tuple(self._recording_highlights):
             try: window.destroy()
             except Exception: pass

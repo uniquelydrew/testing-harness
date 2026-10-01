@@ -130,6 +130,42 @@ class MenuComboRegression(unittest.TestCase):
                     (ActionType.SELECT_ITEM, owner_id, {"value": "North"}),
                 ])
 
+    def test_choicebox_duplicate_selection_events_commit_once(self):
+        owner = _captured_recording_node(_popup_owner(
+            "Site", "javafx.scene.control.ChoiceBox", "siteSelector_"))
+        selected = replace(owner, backend_properties={
+            **owner.backend_properties,
+            "popup_selection": {"family": "popup_selector", "value": "VC-A_elrti", "index": 1},
+        })
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(0.5, "javafx", owner, {}, "primary", "released", (20, 20)))
+        session.observe(PointerInteraction(1.0, "javafx", selected, {}, "primary", "released", (20, 45)))
+        session.observe(StateChanged(1.1, "javafx", owner, {}, "selected_item", None, "VC-A_elrti"))
+        # AT-SPI may deliver a delayed release after JavaFX already committed.
+        session.observe(PointerInteraction(3.1, "javafx", selected, {}, "primary", "released", (20, 45)))
+        interactions = session.stop()
+        self.assertEqual([(item.action, item.target.accessible_id, item.parameters)
+                          for item in interactions], [
+            (ActionType.SELECT_ITEM, "siteSelector_", {"value": "VC-A_elrti"}),
+        ])
+
+    def test_choicebox_state_change_before_popup_pointer_commits_once(self):
+        owner = _captured_recording_node(_popup_owner(
+            "Site", "javafx.scene.control.ChoiceBox", "siteSelector_"))
+        selected = replace(owner, backend_properties={
+            **owner.backend_properties,
+            "popup_selection": {"family": "popup_selector", "value": "North", "index": 1},
+        })
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(0.5, "javafx", owner, {}, "primary", "released", (20, 20)))
+        session.observe(StateChanged(0.8, "javafx", owner, {}, "value", None, "North"))
+        session.observe(PointerInteraction(1.0, "javafx", selected, {}, "primary", "released", (20, 45)))
+        self.assertEqual([(item.action, item.parameters) for item in session.stop()], [
+            (ActionType.SELECT_ITEM, {"value": "North"}),
+        ])
+
     def test_combo_popup_miss_consumes_the_second_click(self):
         owner = _captured_recording_node(_popup_owner("Camera", "javafx.scene.control.ComboBox", "camera"))
         covered_button = _captured_recording_node({
