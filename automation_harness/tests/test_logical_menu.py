@@ -363,6 +363,36 @@ def test_menu_opener_and_terminal_item_record_as_one_semantic_interaction():
     assert step.inputs["action"]["value"] == "openrecordingmenuitem"
 
 
+def test_javafx_transient_pointer_miss_does_not_cancel_open_menu_transaction():
+    owner = _file_owner()
+    session = RecordingSession(repository=ComponentRepository({owner.component_id: owner}))
+    session.start()
+
+    session.observe(PointerInteraction(
+        1.0, "javafx", _file_menu_capture(), {},
+        "primary", "released", (20, 15),
+    ))
+    # The popup has already collapsed by the time this physical release is
+    # resolved, so the bridge sees the covered JavaFX control instead.
+    covered = CapturedComponent(**{
+        **_plain_button_capture("Covered").__dict__,
+        "framework": "javafx",
+        "native_class": "javafx.scene.control.Button",
+    })
+    session.observe(PointerInteraction(
+        1.1, "javafx", covered, {},
+        "primary", "released", (40, 80),
+    ))
+    session.observe(ActionFired(
+        1.15, "javafx", _new_file_menu_item_capture(), {}, "activate",
+    ))
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].repository_match.status == "known_subobject"
+    assert interactions[0].repository_match.subobject_path == ("openrecordingmenuitem",)
+
+
 def test_click_outside_open_menu_discards_menu_opener_and_records_outside_click():
     owner = _file_owner()
     session = RecordingSession(repository=ComponentRepository({owner.component_id: owner}))

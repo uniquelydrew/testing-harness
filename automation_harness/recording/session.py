@@ -282,6 +282,19 @@ class RecordingSession:
                                 owner=self._menu_context.owner,
                             )
                         return
+                    # JavaFX popup windows can disappear between physical press
+                    # and semantic release resolution. Do not cancel a live menu
+                    # transaction merely because one trailing pointer resolves
+                    # to the covered Stage/control. Keep the durable owner until
+                    # a terminal menu action, explicit Escape, owner transition,
+                    # or top-level window transition closes the transaction.
+                    if target.framework == "javafx":
+                        self.diagnostic(
+                            "menu_transient_pointer_miss_suppressed",
+                            observation=observation,
+                            owner=self._menu_context.owner,
+                        )
+                        return
                     self._finish_menu_context("pointer_left_menu_scope", cancelled=True)
 
                 if _is_menu_owner_capture(target):

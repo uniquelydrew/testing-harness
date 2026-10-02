@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import faulthandler
+import os
 import threading
+import time
 from dataclasses import replace
+from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.gui.plan_authoring_window import TestPlanAuthoringWindow
 from automation_harness.authoring.gui.preferences import recording_highlights_enabled
@@ -68,8 +72,10 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.recording_session = None
-        self.recording_stop_window = None
         self._recording_stop_pending = False
+        self._recording_generation = 0
+        self._recording_completion_source = None
+        self._recording_completion_read_fd = None
         self._recording_highlights = []
         self._recording_highlight_timeout = None
         self._recording_highlight_generation = 0
@@ -78,7 +84,9 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self.recording_toggle_button.set_tooltip_text(
             "Start or stop the single active recording session"
         )
+        self.window.connect("delete-event", self._recording_delete_event)
         self.window.connect("destroy", lambda *_args: self._release_recording_owner())
+        self.window.connect("destroy", lambda *_args: self._cancel_recording_completion_watch())
         self.window.show_all()
 
     def _recording_adapters(self):
@@ -167,6 +175,17 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             self.recording_toggle_button.set_label("Stop Recording" if active else "Start Recording")
             self.recording_toggle_button.set_sensitive(True)
 
+    def _recording_delete_event(self, *_args):
+        """Do not destroy GTK surfaces while native recording teardown is active."""
+        if self.recording_session is not None:
+            self.stop_recording()
+            self.set_status("Stopping recording before closing…")
+            return True
+        if self._recording_stop_pending:
+            self.set_status("Waiting for recording shutdown before closing…")
+            return True
+        return False
+
     def _release_recording_owner(self):
         global _ACTIVE_RECORDING_WINDOW
         with _ACTIVE_RECORDING_LOCK:
@@ -189,13 +208,25 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             return self.error("Recording", "No AT-SPI desktop session or configured JavaFX recording agent is available.")
         preferences = AuthoringPreferences.load()
         debug_log = None
-        if preferences.recording_verbose_debug:
+        runtime_session = os.environ.get("AUTOMATION_HARNESS_CODEX_SESSION_DIR")
+        if runtime_session:
+            debug_log = RecordingDebugLog(Path(runtime_session) / "recording-debug")
+        elif preferences.recording_verbose_debug:
             debug_log = RecordingDebugLog(
                 preferences.resolved_runs_dir(getattr(self, "project", None)) / "recording-debug"
             )
         recording_repository = self.repository
         existing_path = recording_repository_path(self.plan, self.path)
-        if existing_path is not None and existing_path.exists():
+        assigned_path = assigned_repository_path(self.plan, self.path)
+        if (
+            existing_path is not None
+            and existing_path.exists()
+            and (assigned_path is None or existing_path.resolve() != assigned_path.resolve())
+        ):
+            # self.repository is already refreshed from an assigned repository.
+            # Only compose a distinct recording repository; reloading and
+            # overlaying the assigned file onto itself adds duplicate identity
+            # work at the beginning of every subsequent recording generation.
             recording_repository = recording_repository.overlay(
                 ComponentRepository.load((existing_path,))
             )
@@ -217,51 +248,12 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                 _ACTIVE_RECORDING_WINDOW = self
         except Exception as exc:
             return self.error("Recording", "%s: %s" % (type(exc).__name__, exc))
+        self._recording_generation += 1
         self._set_recording_toggle_state(active=True)
-        self._show_recording_stop_window()
+        # Keep recording control inside the persistent Test Plan toplevel. A
+        # second native GTK toplevel previously crossed recording generations
+        # and was implicated in repeat-cycle SIGSEGVs.
         self.set_status("Recording — hold targets until semantic resolution completes, then release")
-
-    def _show_recording_stop_window(self):
-        self.window.hide()
-        stop = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        stop.set_title("Automation Harness Recording")
-        stop.set_keep_above(True)
-        stop.set_decorated(False)
-        stop.set_border_width(8)
-        stop.set_resizable(False)
-        stop.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-
-        # The overlay is intentionally undecorated so it does not compete with
-        # the application under test. Give it an explicit drag handle instead
-        # of forcing the user to sacrifice screen real estate or hunt for a
-        # window-manager border.
-        surface = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        surface.set_border_width(4)
-        handle = Gtk.EventBox()
-        handle.set_visible_window(False)
-        handle.set_tooltip_text("Drag to move the recording control")
-        handle_label = Gtk.Label(label="● Recording")
-        handle_label.set_xalign(0.0)
-        handle.add(handle_label)
-        handle.connect(
-            "button-press-event",
-            lambda _widget, event: (
-                stop.begin_move_drag(1, int(event.x_root), int(event.y_root), event.time),
-                True,
-            )[1] if event.button == 1 else False,
-        )
-        surface.pack_start(handle, True, True, 0)
-
-        button = Gtk.Button(label="Stop Recording")
-        button.set_size_request(190, 54)
-        button.set_tooltip_text("Stop recording and return to the Test Plan")
-        button.connect("clicked", lambda *_args: self.toggle_recording())
-        surface.pack_start(button, False, False, 0)
-        stop.add(surface)
-        stop.connect("delete-event", lambda *_args: (self.stop_recording(), True)[1])
-        stop.set_position(Gtk.WindowPosition.CENTER)
-        stop.show_all()
-        self.recording_stop_window = stop
 
     def stop_recording(self):
         global _ACTIVE_RECORDING_WINDOW
@@ -275,16 +267,138 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             # Retain the global owner until session.stop() completes so another
             # Test Plan cannot begin recording during adapter shutdown.
         self._set_recording_toggle_state(stopping=True)
-        self._clear_recording_highlights()
-        if self.recording_stop_window is not None:
-            self.recording_stop_window.destroy(); self.recording_stop_window = None
-        self.window.show_all(); self.window.present(); self.set_status("Stopping recording…")
+        # Keep GTK work on the main loop and native adapter shutdown on the
+        # worker. Completion is signalled through a one-shot pipe watch below.
+        self.set_status("Stopping recording…")
+        GLib.idle_add(self._prepare_recording_stop_ui)
+
+        completion = {}
+        generation = self._recording_generation
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(read_fd, False)
+        self._recording_completion_read_fd = read_fd
+        self._recording_completion_source = GLib.io_add_watch(
+            read_fd,
+            GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+            self._recording_stop_completion_ready,
+            generation,
+            completion,
+        )
+        session.diagnostic(
+            "recording_stop_completion_watch_armed",
+            generation=generation,
+            source_id=self._recording_completion_source,
+        )
 
         def worker():
-            try: interactions = tuple(session.stop())
-            except Exception as exc: GLib.idle_add(self._recording_finished, None, exc); return
-            GLib.idle_add(self._recording_finished, interactions, None)
+            watchdog_handle = None
+            watchdog_path = None
+            try:
+                diagnostic_root = os.environ.get("AUTOMATION_HARNESS_DIAGNOSTIC_DIR")
+                if diagnostic_root:
+                    Path(diagnostic_root).mkdir(parents=True, exist_ok=True)
+                    watchdog_path = Path(diagnostic_root) / (
+                        "recording-stop-hang-%d-%d.log" % (os.getpid(), int(time.time()))
+                    )
+                    watchdog_handle = open(str(watchdog_path), "w")
+                    faulthandler.dump_traceback_later(
+                        7.0, repeat=False, file=watchdog_handle,
+                    )
+                    session.diagnostic(
+                        "recording_stop_watchdog_armed",
+                        path=str(watchdog_path),
+                        timeout_seconds=7.0,
+                    )
+                completion["interactions"] = tuple(session.stop())
+                completion["error"] = None
+            except Exception as exc:
+                completion["interactions"] = None
+                completion["error"] = exc
+            finally:
+                if watchdog_handle is not None:
+                    try:
+                        faulthandler.cancel_dump_traceback_later()
+                    finally:
+                        watchdog_handle.flush()
+                        watchdog_handle.close()
+                session.diagnostic(
+                    "recording_stop_worker_completed",
+                    generation=generation,
+                    error=str(completion.get("error")) if completion.get("error") is not None else None,
+                )
+                try:
+                    os.write(write_fd, b"1")
+                except OSError:
+                    pass
+                finally:
+                    try:
+                        os.close(write_fd)
+                    except OSError:
+                        pass
         threading.Thread(target=worker, name="automation-plan-recording-stop", daemon=True).start()
+
+    def _cancel_recording_completion_watch(self):
+        source_id = self._recording_completion_source
+        self._recording_completion_source = None
+        if source_id is not None:
+            try:
+                GLib.source_remove(source_id)
+            except Exception:
+                pass
+        read_fd = self._recording_completion_read_fd
+        self._recording_completion_read_fd = None
+        if read_fd is not None:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+
+    def _recording_stop_completion_ready(self, source, condition, generation, completion):
+        read_fd = self._recording_completion_read_fd
+        self._recording_completion_source = None
+        self._recording_completion_read_fd = None
+        if read_fd is not None:
+            try:
+                os.read(read_fd, 64)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(read_fd)
+                except OSError:
+                    pass
+        session = self._recording_diagnostic_session
+        if generation != self._recording_generation:
+            if session is not None:
+                session.diagnostic(
+                    "recording_stop_completion_stale",
+                    generation=generation,
+                    current_generation=self._recording_generation,
+                )
+            return False
+        if session is not None:
+            session.diagnostic(
+                "recording_stop_completion_observed_on_main_thread",
+                generation=generation,
+                condition=int(condition),
+                error=str(completion.get("error")) if completion.get("error") is not None else None,
+            )
+        self._recording_finished(
+            completion.get("interactions"),
+            completion.get("error"),
+        )
+        return False
+
+    def _prepare_recording_stop_ui(self):
+        session = self._recording_diagnostic_session
+        if session is not None:
+            session.diagnostic("recording_stop_ui_cleanup_started")
+        self._clear_recording_highlights()
+        # The recording control now lives in the persistent Test Plan window;
+        # stop no longer hides, shows, destroys, or recreates a GTK toplevel.
+        if session is not None:
+            session.diagnostic("recording_stop_ui_cleanup_finished")
+        return False
 
     def _ensure_review_repository(self, repository, path):
         """Create/load the assigned repository only when review needs to mutate it."""
@@ -341,18 +455,27 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
 
     def _recording_finished(self, interactions, error):
         global _ACTIVE_RECORDING_WINDOW
+        diagnostic_session = self._recording_diagnostic_session
+        if diagnostic_session is not None:
+            diagnostic_session.diagnostic(
+                "recording_finished_entered",
+                interaction_count=len(interactions or ()),
+                error=str(error) if error is not None else None,
+            )
         with _ACTIVE_RECORDING_LOCK:
             self._recording_stop_pending = False
             if _ACTIVE_RECORDING_WINDOW is self:
                 _ACTIVE_RECORDING_WINDOW = None
         self._set_recording_toggle_state(active=False)
-        diagnostic_session = self._recording_diagnostic_session
         diagnostic_path = getattr(diagnostic_session, "diagnostic_path", None)
         if error is not None:
             if diagnostic_session is not None:
                 diagnostic_session.diagnostic_exception("recording_finish_failed", error)
             self.set_status("Recording failed")
             self.error("Recording", "%s: %s" % (type(error).__name__, error))
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_finished_exited", outcome="error")
+            self._recording_diagnostic_session = None
             return False
 
         resolved = []
@@ -466,25 +589,83 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         if assigned_repository is not None and assigned_path is not None:
             assigned_repository.save(assigned_path)
 
-        if resolved:
-            resolved = self._review_recorded_step_details(resolved)
+        # Recording completion must not enter a nested GTK main loop.  The
+        # previous synchronous Recorded Step Details dialog used Gtk.Dialog.run()
+        # here, inside the GLib completion callback, and could leave the authoring
+        # UI apparently frozen at "Stopping recording…" when the modal was
+        # obscured or failed to map.  Keep recorded step metadata as generated;
+        # optional editing belongs in the normal Step Builder after completion.
+        if diagnostic_session is not None:
+            diagnostic_session.diagnostic(
+                "recording_review_steps_ready",
+                resolved_count=len(resolved),
+            )
+        refresh_needed = False
         if resolved or captured_ids:
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_plan_update_started")
             if resolved:
                 self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic(
+                        "recording_plan_steps_appended",
+                        added_count=len(resolved),
+                        total_count=len(self.plan.steps),
+                    )
             if assigned_repository is not None:
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic(
+                        "recording_repository_apply_started",
+                        assigned_count=len(assigned_repository.components),
+                        has_assigned_path=assigned_for_resolution is not None,
+                    )
                 if assigned_for_resolution is None:
-                    # The plan-side fallback is recording evidence only.  Copy
-                    # references used by the new steps into the portable plan
-                    # instead of placing that fallback in the resolution set.
-                    portable = repository_from_plan(self.plan).overlay(assigned_repository)
-                    self.plan = embed_plan_repository(self.plan, portable)
-                    self.repository = repository_from_plan(self.plan)
+                    # No external repository was assigned when recording began.
+                    # Preserve the recorded repository as a portable plan snapshot.
+                    # Do not compose it with the plan snapshot again: the captured
+                    # repository already contains the objects resolved for this
+                    # recording session.
+                    self.plan = embed_plan_repository(self.plan, assigned_repository)
+                    self.repository = assigned_repository
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic(
+                            "recording_embedded_repository_applied",
+                            repository_count=len(self.repository.components),
+                        )
                 else:
-                    self.repository = repository_from_plan(self.plan).overlay(assigned_repository)
+                    # An assigned repository is the live authoring source of truth.
+                    # Re-overlaying repository_from_plan(self.plan) here composes a
+                    # stale portable snapshot back onto its source and can trigger
+                    # duplicate/conflicting identity work during recording finish.
+                    self.repository = assigned_repository
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic(
+                            "recording_assigned_repository_applied",
+                            repository_count=len(self.repository.components),
+                        )
                 if self.registry_resources:
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic(
+                            "recording_registry_overlay_started",
+                            base_count=len(self.repository.components),
+                            registry_count=len(self.registry_resources.repository.components),
+                        )
                     self.repository = self.repository.overlay(self.registry_resources.repository)
+                    if diagnostic_session is not None:
+                        diagnostic_session.diagnostic(
+                            "recording_registry_overlay_finished",
+                            repository_count=len(self.repository.components),
+                        )
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic("recording_repository_apply_finished")
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_mark_dirty_started")
             self.mark_dirty()
-            self.refresh_all()
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_mark_dirty_finished")
+            refresh_needed = True
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_plan_update_finished")
         self.set_status(
             "Recording complete: %d actions added, %d new objects captured, %d provisional, %d unresolved"
             % (len(resolved), len(captured_ids), len(provisional_ids), len(unresolved))
@@ -512,7 +693,41 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                 "Recording complete: %d actions added — diagnostics: %s"
                 % (len(resolved), diagnostic_path)
             )
+        if diagnostic_session is not None:
+            diagnostic_session.diagnostic("recording_finished_exited", outcome="complete")
         self._recording_diagnostic_session = None
+        if refresh_needed:
+            # Let the recording-completion callback unwind before mutating GTK
+            # list/tree models.  refresh_all() clears models whose selection
+            # signals can synchronously run additional authoring callbacks.
+            GLib.idle_add(self._refresh_after_recording, diagnostic_session)
+        return False
+
+    def _refresh_after_recording(self, diagnostic_session):
+        try:
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_refresh_started")
+                diagnostic_session.diagnostic("recording_refresh_library_started")
+            self.refresh_library()
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_refresh_library_finished")
+                diagnostic_session.diagnostic("recording_refresh_objects_started")
+            self.refresh_objects()
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_refresh_objects_finished")
+                diagnostic_session.diagnostic("recording_refresh_flow_started")
+            self.refresh_flow()
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_refresh_flow_finished")
+                diagnostic_session.diagnostic("recording_refresh_variables_started")
+            self.refresh_variables()
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic("recording_refresh_variables_finished")
+                diagnostic_session.diagnostic("recording_refresh_finished")
+        except Exception as exc:
+            if diagnostic_session is not None:
+                diagnostic_session.diagnostic_exception("recording_refresh_failed", exc)
+            self.error("Recording Refresh", "%s: %s" % (type(exc).__name__, exc))
         return False
 
     def _review_recorded_step_details(self, calls):
