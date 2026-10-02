@@ -10,7 +10,7 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.plan_authoring_window import TestPlanAuthoringWindow
 from automation_harness.authoring.gui.preferences import recording_highlights_enabled
@@ -80,6 +80,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self._recording_highlight_timeout = None
         self._recording_highlight_generation = 0
         self._recording_diagnostic_session = None
+        self.recording_stop_window = None
+        self._recording_stop_window_generation = None
         self.recording_toggle_button = self.button("Start Recording", self.toggle_recording)
         self.recording_toggle_button.set_tooltip_text(
             "Start or stop the single active recording session"
@@ -87,6 +89,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self.window.connect("delete-event", self._recording_delete_event)
         self.window.connect("destroy", lambda *_args: self._release_recording_owner())
         self.window.connect("destroy", lambda *_args: self._cancel_recording_completion_watch())
+        self.window.connect("destroy", lambda *_args: self._destroy_recording_stop_window())
         self.window.show_all()
 
     def _recording_adapters(self):
@@ -250,10 +253,69 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             return self.error("Recording", "%s: %s" % (type(exc).__name__, exc))
         self._recording_generation += 1
         self._set_recording_toggle_state(active=True)
-        # Keep recording control inside the persistent Test Plan toplevel. A
-        # second native GTK toplevel previously crossed recording generations
-        # and was implicated in repeat-cycle SIGSEGVs.
+        self._show_recording_stop_window(self._recording_generation)
         self.set_status("Recording — hold targets until semantic resolution completes, then release")
+
+    def _show_recording_stop_window(self, generation):
+        # Every recording generation owns a fresh native toplevel. Never reuse
+        # a Gtk.Window across recording generations.
+        stop = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        stop.set_title("Automation Harness Recording")
+        stop.set_keep_above(True)
+        stop.set_decorated(False)
+        stop.set_border_width(8)
+        stop.set_resizable(False)
+        stop.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+
+        surface = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        surface.set_border_width(4)
+        handle = Gtk.EventBox()
+        handle.set_visible_window(False)
+        handle.set_tooltip_text("Drag to move the recording control")
+        label = Gtk.Label(label="● Recording")
+        label.set_xalign(0.0)
+        handle.add(label)
+        handle.connect(
+            "button-press-event",
+            lambda _widget, event: (
+                stop.begin_move_drag(1, int(event.x_root), int(event.y_root), event.time),
+                True,
+            )[1] if event.button == 1 else False,
+        )
+        surface.pack_start(handle, True, True, 0)
+
+        button = Gtk.Button(label="Stop Recording")
+        button.set_size_request(190, 54)
+        button.set_tooltip_text("Stop recording and return to the Test Plan")
+        button.connect("clicked", lambda *_args: self.stop_recording())
+        surface.pack_start(button, False, False, 0)
+        stop.add(surface)
+        stop.connect("delete-event", lambda *_args: (self.stop_recording(), True)[1])
+        stop.set_position(Gtk.WindowPosition.CENTER)
+        self.recording_stop_window = stop
+        self._recording_stop_window_generation = generation
+        stop.show_all()
+        session = self.recording_session
+        if session is not None:
+            session.diagnostic(
+                "recording_stop_window_created",
+                generation=generation,
+            )
+
+    def _destroy_recording_stop_window(self, generation=None):
+        stop = self.recording_stop_window
+        if stop is None:
+            return False
+        owned_generation = self._recording_stop_window_generation
+        if generation is not None and owned_generation != generation:
+            return False
+        self.recording_stop_window = None
+        self._recording_stop_window_generation = None
+        try:
+            stop.destroy()
+        except Exception:
+            pass
+        return False
 
     def stop_recording(self):
         global _ACTIVE_RECORDING_WINDOW
@@ -394,8 +456,17 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         if session is not None:
             session.diagnostic("recording_stop_ui_cleanup_started")
         self._clear_recording_highlights()
-        # The recording control now lives in the persistent Test Plan window;
-        # stop no longer hides, shows, destroys, or recreates a GTK toplevel.
+        stop = self.recording_stop_window
+        generation = self._recording_stop_window_generation
+        if stop is not None:
+            # Hide immediately, but retain native ownership until recording
+            # completion has unwound on the GTK main loop.
+            stop.hide()
+            if session is not None:
+                session.diagnostic(
+                    "recording_stop_window_hidden",
+                    generation=generation,
+                )
         if session is not None:
             session.diagnostic("recording_stop_ui_cleanup_finished")
         return False
@@ -696,6 +767,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         if diagnostic_session is not None:
             diagnostic_session.diagnostic("recording_finished_exited", outcome="complete")
         self._recording_diagnostic_session = None
+        # Destroy this generation's hidden control only after the completion
+        # callback returns to the GTK main loop. A later recording generation
+        # cannot be affected because destruction is generation-checked.
+        GLib.idle_add(
+            self._destroy_recording_stop_window,
+            self._recording_stop_window_generation,
+        )
         if refresh_needed:
             # Let the recording-completion callback unwind before mutating GTK
             # list/tree models.  refresh_all() clears models whose selection
