@@ -547,6 +547,10 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             if diagnostic_session is not None:
                 diagnostic_session.diagnostic("recording_finished_exited", outcome="error")
             self._recording_diagnostic_session = None
+            GLib.idle_add(
+                self._destroy_recording_stop_window,
+                self._recording_stop_window_generation,
+            )
             return False
 
         resolved = []
