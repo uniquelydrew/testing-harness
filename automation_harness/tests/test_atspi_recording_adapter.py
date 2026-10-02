@@ -13,6 +13,7 @@ from automation_harness.drivers.atspi_driver import (
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
+    _PointerRecordingWorker,
     _event_coordinates,
     _is_recordable_target,
 )
@@ -835,3 +836,33 @@ def test_source_events_use_driver_canonical_click_resolver():
     source = object()
     assert adapter._target(SimpleNamespace(source=source)) is target
     assert driver.sources == [(source, 0.0)]
+
+
+def test_pointer_worker_drain_is_bounded_and_recoverable():
+    release = threading.Event()
+    entered = threading.Event()
+
+    def acknowledge(_target, _duration):
+        entered.set()
+        release.wait()
+
+    worker = _PointerRecordingWorker(
+        lambda _value: None,
+        acknowledge=acknowledge,
+        acknowledgement_seconds=0,
+    )
+    worker.start()
+    assert worker.accept_pointer(
+        "mouse:button:1p", (10, 20), 1.0, _target()
+    )
+    assert entered.wait(1.0)
+
+    assert worker.stop_and_drain(timeout=0.01) is False
+    snapshot = worker.snapshot()
+    assert snapshot["state"] == worker.DRAINING
+    assert snapshot["worker_alive"] is True
+
+    release.set()
+    assert worker.stop_and_drain(timeout=1.0) is True
+    assert worker.snapshot()["worker_alive"] is False
+    assert worker.state == worker.STOPPED

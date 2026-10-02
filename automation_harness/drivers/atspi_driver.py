@@ -327,21 +327,21 @@ class AtspiDriver:
                 finish(None, exc)
 
         event_types = ("mouse:button:1p", "object:state-changed:focused")
-        for event_type in event_types:
-            pyatspi.Registry.registerEventListener(on_target_event, event_type)
+        lease = acquire_atspi_registry(pyatspi)
         try:
-            lease = acquire_atspi_registry(pyatspi)
-            try:
-                if not completed.wait(timeout):
-                    finish(None, TimeoutError("no object was clicked before capture timed out"))
-            finally:
-                lease.close()
+            for event_type in event_types:
+                pyatspi.Registry.registerEventListener(on_target_event, event_type)
+            if not completed.wait(timeout):
+                finish(None, TimeoutError("no object was clicked before capture timed out"))
         finally:
+            # Listener teardown must happen while the registry lease is still
+            # alive.  Releasing the final lease first can stop the process-global
+            # native dispatch loop while deregistration is still touching it.
             try:
                 for event_type in event_types:
                     pyatspi.Registry.deregisterEventListener(on_target_event, event_type)
-            except Exception:
-                pass
+            finally:
+                lease.close()
         try:
             captured, error = outcome.get_nowait()
         except queue.Empty as exc:
