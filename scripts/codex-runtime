@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/automation-harness/bootstrap-env"
+
+if [[ -r "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+elif [[ -r "$ROOT_DIR/.automation-harness-env" ]]; then
+    # Compatibility with older bootstrapped checkouts.
+    # shellcheck disable=SC1091
+    source "$ROOT_DIR/.automation-harness-env"
+fi
+
+VENV="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
+ENTRY="$VENV/bin/automation-codex-runtime"
+
+if [[ -x "$ENTRY" ]]; then
+    exec "$ENTRY" "$@"
+fi
+
+PYTHON="$VENV/bin/python"
+if [[ -x "$PYTHON" ]]; then
+    export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+    exec "$PYTHON" -m automation_harness.codex_runtime "$@"
+fi
+
+printf 'codex-runtime: bootstrap the repository first (bash bootstrap.sh)\n' >&2
+exit 127
