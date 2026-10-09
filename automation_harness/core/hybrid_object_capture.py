@@ -314,8 +314,20 @@ class HybridObjectCaptureService(ObjectCaptureService):
         action_names = {str(value).casefold() for value in captured.actions}
         if action_names & {"click", "press", "activate"}:
             actions.add("activate")
+        if "focus" in action_names:
+            actions.add("focus")
         if "set_text" in action_names:
             actions.update({"set_text", "clear_text", "append_text"})
+        for action_name in (
+            "select_item",
+            "select_row",
+            "select_cell",
+            "set_value",
+            "toggle",
+            "select",
+        ):
+            if action_name in action_names:
+                actions.add(action_name)
         if captured.semantic_type() in {
             ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU,
         }:

@@ -275,13 +275,30 @@ class JavaFxBridgeDriver:
 
     def activate_window(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
-        response = endpoint.request("activate_window", timeout=5.0, identification=dict(identification or {}))
-        return {
-            "operation": "activate_window",
-            "bridge_pid": endpoint.pid,
-            "window": response.get("window"),
-            "focused": response.get("focused"),
-        }
+        import time
+        deadline = time.monotonic() + 2.0
+        attempts = 0
+        response = {}
+        while True:
+            attempts += 1
+            response = endpoint.request(
+                "activate_window", timeout=5.0, identification=dict(identification or {}),
+            )
+            if response.get("focused") is True:
+                return {
+                    "operation": "activate_window",
+                    "bridge_pid": endpoint.pid,
+                    "window": response.get("window"),
+                    "focused": True,
+                    "activation_attempts": attempts,
+                }
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "JavaFX owning window did not confirm foreground focus "
+                    "within 2 seconds (attempts=%d, bridge_pid=%s, window=%r, "
+                    "last_response=%r)" % (attempts, endpoint.pid, response.get("window"), response)
+                )
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
     def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)

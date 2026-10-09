@@ -29,6 +29,12 @@ final class JavaFxRecorder {
 
     static void stop() { buffer = null; }
 
+    static void refreshOpenScenes() {
+        if (buffer != null && buffer.active()) {
+            runOnFxThread(JavaFxRecorder::attachOpenScenes);
+        }
+    }
+
     static Map<String, Object> captureNextClick(long timeoutMillis) throws Exception {
         CompletableFuture<Map<String, Object>> future = beginCapture();
         try { return future.get(timeoutMillis, TimeUnit.MILLISECONDS); }
@@ -108,6 +114,7 @@ final class JavaFxRecorder {
         result.put("phase", "released");
         offer(result);
         observe(JavaFxSemanticTargetResolver.resolveSemanticTarget(physical).semanticTarget());
+        refreshOpenScenes();
     }
 
     private static void action(Object event) {
@@ -116,6 +123,7 @@ final class JavaFxRecorder {
         Map<String, Object> result = event("action", target);
         result.put("action", "activate");
         offer(result);
+        refreshOpenScenes();
     }
 
     private static void focus(Object scene) {
@@ -123,6 +131,7 @@ final class JavaFxRecorder {
         if (target != null) {
             offer(event("focus", target));
             observe(JavaFxSemanticTargetResolver.resolveSemanticTarget(target).semanticTarget());
+            refreshOpenScenes();
         }
     }
 
@@ -171,9 +180,17 @@ final class JavaFxRecorder {
         target.put("physical_node", snapshot(resolution.physicalTarget()));
         Map<String, Object> semantic = snapshot(resolution.semanticTarget());
         Map<String, Object> logicalMenu = logicalMenuMetadata(resolution.semanticTarget(), resolution.physicalTarget());
+        Map<String, Object> properties = new LinkedHashMap<>();
         if (!logicalMenu.isEmpty()) {
-            Map<String, Object> properties = new LinkedHashMap<>();
             properties.put("logical_menu", logicalMenu);
+        }
+        Map<String, Object> popupSelection = popupSelectionPayload(
+            resolution.physicalTarget(), resolution.semanticTarget()
+        );
+        if (popupSelection != null) {
+            properties.put("popup_selection", popupSelection);
+        }
+        if (!properties.isEmpty()) {
             semantic.put("properties", properties);
         }
         target.put("semantic_node", semantic);
@@ -183,6 +200,96 @@ final class JavaFxRecorder {
             "reason", resolution.reason()
         ));
         return target;
+    }
+
+    private static Map<String, Object> popupSelectionPayload(Object physical, Object semantic) {
+        Object window = sceneWindow(physical);
+        Object owner = popupSelectorOwner(window);
+        if (owner == null || owner == semantic) return null;
+
+        Object listCell = nearestAncestor(physical, "ListCell");
+        Object menuContainer = nearestAncestor(physical, "MenuItemContainer");
+        boolean popupItem = listCell != null || menuContainer != null
+            || isPopupItemClass(physical) || isPopupItemClass(semantic);
+        if (!popupItem) return null;
+
+        Object model = invoke(owner, "getSelectionModel");
+        Object selectedItem = invoke(model, "getSelectedItem");
+        Object ownerValue = invoke(owner, "getValue");
+        Object cellItem = listCell == null ? null : invoke(listCell, "getItem");
+
+        Object menuItem = menuContainer == null ? null : invoke(menuContainer, "getItem");
+        Object popupItemValue = menuItem == null ? null : invoke(menuItem, "getText");
+        Object popupText = invoke(physical, "getText");
+        if (popupText == null) popupText = invoke(semantic, "getText");
+
+        Object value = choosePopupSelectionValue(
+            cellItem, popupItemValue, popupText, selectedItem, ownerValue
+        );
+        if (value == null || String.valueOf(value).isBlank()) return null;
+
+        Object index = listCell == null ? null : invoke(listCell, "getIndex");
+        if (!(index instanceof Number)) index = invoke(model, "getSelectedIndex");
+
+        Map<String, Object> selection = new LinkedHashMap<>();
+        selection.put("family", "popup_selector");
+        selection.put("value", String.valueOf(value));
+        if (index instanceof Number number && number.intValue() >= 0) {
+            selection.put("index", number.intValue());
+        }
+        selection.put("owner", snapshot(owner));
+        return selection;
+    }
+
+    static Object choosePopupSelectionValue(
+        Object cellItem,
+        Object popupItemValue,
+        Object popupText,
+        Object selectedItem,
+        Object ownerValue
+    ) {
+        if (hasPopupValue(cellItem)) return cellItem;
+        if (hasPopupValue(popupItemValue)) return popupItemValue;
+        if (hasPopupValue(popupText)) return popupText;
+        if (hasPopupValue(selectedItem)) return selectedItem;
+        if (hasPopupValue(ownerValue)) return ownerValue;
+        return null;
+    }
+
+    private static boolean hasPopupValue(Object value) {
+        return value != null && !String.valueOf(value).isBlank();
+    }
+
+    private static Object sceneWindow(Object node) {
+        Object scene = invoke(node, "getScene");
+        return invoke(scene, "getWindow");
+    }
+
+    private static Object popupSelectorOwner(Object window) {
+        Object owner = invoke(window, "getOwnerNode");
+        for (int depth = 0; owner != null && depth < 16; depth++) {
+            if (JavaFxInteractionFamily.forNode(owner) == JavaFxInteractionFamily.POPUP_SELECTOR) {
+                return owner;
+            }
+            owner = invoke(owner, "getParent");
+        }
+        return null;
+    }
+
+    private static Object nearestAncestor(Object node, String simpleClassName) {
+        Object current = node;
+        for (int depth = 0; current != null && depth < 16; depth++) {
+            if (simpleClassName.equals(current.getClass().getSimpleName())) return current;
+            current = invoke(current, "getParent");
+        }
+        return null;
+    }
+
+    private static boolean isPopupItemClass(Object node) {
+        if (node == null) return false;
+        String name = node.getClass().getSimpleName();
+        return "MenuItem".equals(name) || "CustomMenuItem".equals(name)
+            || "ListCell".equals(name) || "Text".equals(name) || "LabeledText".equals(name);
     }
 
     private static Map<String, Object> logicalMenuMetadata(Object semantic, Object physical) {

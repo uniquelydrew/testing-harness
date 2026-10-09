@@ -83,3 +83,32 @@ def test_agent_server_uses_valid_java_character_escapes_for_json_strings():
     assert "case '\\\\': result.append('\\\\');" in source
     assert "case 'n': result.append('\\n');" in source
     assert "case 't': result.append('\\t');" in source
+
+
+def test_javafx_recorder_refreshes_new_popup_scenes_while_recording():
+    recorder = (
+        ROOT
+        / "java-agent"
+        / "src"
+        / "main"
+        / "java"
+        / "automation"
+        / "harness"
+        / "agent"
+        / "JavaFxRecorder.java"
+    ).read_text(encoding="utf-8")
+    server = (
+        ROOT
+        / "java-agent"
+        / "src"
+        / "main"
+        / "java"
+        / "automation"
+        / "harness"
+        / "agent"
+        / "AgentServer.java"
+    ).read_text(encoding="utf-8")
+
+    assert "static void refreshOpenScenes()" in recorder
+    assert "refreshOpenScenes();" in recorder
+    assert "JavaFxRecorder.refreshOpenScenes();" in server

@@ -9,7 +9,7 @@ from automation_harness.core.hybrid_object_capture import HybridObjectCaptureSer
 from automation_harness.core.runtime_observation import Framework
 from automation_harness.core.technology_router import TargetContext
 from automation_harness.models.component import CapturedComponent, ComponentState, ComponentStrategy
-from automation_harness.models.gui import ObjectType
+from automation_harness.models.gui import ActionType, ObjectType
 
 
 def _capture(strategy="atspi"):
@@ -330,6 +330,32 @@ def test_javafx_definition_preserves_native_identity_and_framework():
     assert identity["mandatory"] == {"id": "cameraSelectorButton"}
     assert identity["assistive"]["window"] == "ERSA Main Video Display"
     assert "activate" in definition.actions
+
+def test_javafx_combo_capture_preserves_select_item_capability():
+    service = HybridObjectCaptureService(
+        driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess(),
+    )
+    base = _capture("javafx")
+    capture = CapturedComponent(**{
+        **base.__dict__,
+        "name": "Site Selector",
+        "role": "combo box",
+        "accessible_id": "siteSelector_",
+        "actions": ("click", "focus", "select_item"),
+        "object_type": ObjectType.COMBO_BOX,
+        "native_class": "javafx.scene.control.ChoiceBox",
+        "authored_strategy": ComponentStrategy("javafx", {
+            "identification": {"mandatory": {"id": "siteSelector_"}},
+        }),
+    })
+
+    definition = service.definition_from_capture(
+        "Site Selector Combo Box", capture, validate_live=False,
+    )
+
+    assert "select_item" in definition.actions
+    assert definition.supports(ActionType.SELECT_ITEM)
+
 
 
 def test_menubutton_capture_is_materialized_as_logical_menu_owner():

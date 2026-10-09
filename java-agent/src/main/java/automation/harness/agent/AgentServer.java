@@ -104,6 +104,7 @@ final class AgentServer {
             SwingRecorder.start(recording);
             result.put("observations", recording.drain());
         } else if (path.equals("/record_read")) {
+            JavaFxRecorder.refreshOpenScenes();
             result.put("observations", recording.awaitAndDrain(
                 (long) (number(request, "timeout", 0.25) * 1000)
             ));

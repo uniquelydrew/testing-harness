@@ -182,7 +182,7 @@ class ComponentHandle:
                     raise ValueError(f"{semantic.type.value} currently requires selector.criteria.index")
                 payload = self.select_child(index)
             elif semantic.type == ActionType.SELECT_MENU_ITEM:
-                navigation = semantic.options.get("path")
+                navigation = semantic.options.get("path", semantic.value)
                 path = resolve_navigation(self.definition.subobjects, navigation)
                 selectors = self._menu_path_selectors(path)
                 payload = self._accessibility_operation(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -8,7 +10,7 @@ from typing import Any, Mapping
 import yaml
 
 from automation_harness.core.step_registry import StepRegistry
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.models.plan import ExecutionState, PlanVariableRef, StepCall, StepStatus, TestPlan
 
 
@@ -83,7 +85,24 @@ def load_plan(path: Path) -> TestPlan:
 
 def save_plan(plan: TestPlan, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+    # Verify the exact portable snapshot before replacing the existing plan.
+    repository_from_plan(plan)
+    document = yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".%s." % path.name, suffix=".tmp", dir=str(path.parent), text=True,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(document)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, str(path))
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
 
 
 def repository_from_plan(plan: TestPlan) -> ComponentRepository:
@@ -103,11 +122,23 @@ def embed_plan_repository(plan: TestPlan, repository: ComponentRepository) -> Te
     }
     objects = repository.to_document().get("components", {})
     embedded: dict[str, Any] = {}
-    for reference in sorted(referenced):
+    visited: set[str] = set()
+
+    def include_with_owners(reference: str) -> None:
         if not repository.contains(reference):
-            continue
+            raise ComponentRepositoryError("cannot embed unresolved plan component %r" % reference)
         definition = repository.get(reference)
+        if definition.object_id in visited:
+            return
+        visited.add(definition.object_id)
+        if definition.owner_object_id is not None:
+            include_with_owners(definition.owner_object_id)
         embedded[definition.component_id] = objects[definition.component_id]
+
+    for reference in sorted(referenced):
+        include_with_owners(reference)
+    # Verify that ownership closure survives the serialized schema boundary.
+    ComponentRepository.from_document({"version": 3, "components": embedded})
     return replace(plan, objects=embedded)
 
 
@@ -232,6 +263,14 @@ def validate_plan_components(plan: TestPlan, repository: ComponentRepository) ->
             try:
                 from automation_harness.models.gui import GuiAction
                 action = GuiAction.from_value(call.inputs.get("action"))
+                from automation_harness.models.gui import ActionType
+                if action.type is ActionType.SELECT_MENU_ITEM:
+                    from automation_harness.core.menu_navigation import resolve_navigation
+                    navigation = action.options.get("path", action.value)
+                    try:
+                        resolve_navigation(definition.subobjects, navigation)
+                    except ValueError as exc:
+                        issues.append(f"{call.node_id}: invalid menu navigation: {exc}")
                 if not definition.supports(action.type):
                     supported = ", ".join(sorted(item.value for item in definition.semantic_actions)) or "none"
                     issues.append(f"{call.node_id}: component {component_id!r} does not support {action.type.value}; supported actions: {supported}")

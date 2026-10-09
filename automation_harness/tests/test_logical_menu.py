@@ -128,6 +128,25 @@ def _plain_button_capture(name="Apply"):
     )
 
 
+def _choice_box_capture(name):
+    return CapturedComponent(
+        name=name,
+        role="combo box",
+        description=None,
+        accessible_id=name.casefold(),
+        application="MVD",
+        window="MVD",
+        hierarchy=(),
+        actions=("click", "select_item"),
+        bounds=(100, 100, 120, 25),
+        state=ComponentState(present=True, visible=True, showing=True, enabled=True),
+        backend_properties={},
+        object_type=ObjectType.COMBO_BOX,
+        framework="javafx",
+        native_class="javafx.scene.control.ChoiceBox",
+    )
+
+
 def _new_file_menu_item_capture():
     base = _live_camera_selector_capture("javafx.scene.control.MenuItem")
     return CapturedComponent(**{
@@ -291,8 +310,8 @@ def test_recorded_menu_subobject_becomes_select_menu_item_action():
     assert step.inputs == {
         "component_id": owner.component_id,
         "action": {
-            "type": "select_item",
-            "value": "camera > camera_selector",
+            "type": "select_menu_item",
+            "path": ["camera", "camera_selector"],
         },
     }
 
@@ -316,7 +335,7 @@ def test_recorded_menu_uses_readable_navigation_when_review_supplies_it():
 
     step = interactions_to_steps((interaction,))[0]
 
-    assert step.inputs["action"]["value"] == "Camera > Camera Selector"
+    assert step.inputs["action"]["path"] == ["camera", "camera_selector"]
     assert "Camera > Camera Selector" in step.description
 
 
@@ -359,8 +378,38 @@ def test_menu_opener_and_terminal_item_record_as_one_semantic_interaction():
     assert interactions[0].repository_match.status == "known_subobject"
     step = interactions_to_steps(interactions)[0]
     assert step.inputs["component_id"] == owner.component_id
-    assert step.inputs["action"]["type"] == "select_item"
-    assert step.inputs["action"]["value"] == "openrecordingmenuitem"
+    assert step.inputs["action"]["type"] == "select_menu_item"
+    assert step.inputs["action"]["path"] == list(interactions[0].repository_match.subobject_path)
+
+
+def test_javafx_transient_pointer_miss_does_not_cancel_open_menu_transaction():
+    owner = _file_owner()
+    session = RecordingSession(repository=ComponentRepository({owner.component_id: owner}))
+    session.start()
+
+    session.observe(PointerInteraction(
+        1.0, "javafx", _file_menu_capture(), {},
+        "primary", "released", (20, 15),
+    ))
+    # The popup has already collapsed by the time this physical release is
+    # resolved, so the bridge sees the covered JavaFX control instead.
+    covered = CapturedComponent(**{
+        **_plain_button_capture("Covered").__dict__,
+        "framework": "javafx",
+        "native_class": "javafx.scene.control.Button",
+    })
+    session.observe(PointerInteraction(
+        1.1, "javafx", covered, {},
+        "primary", "released", (40, 80),
+    ))
+    session.observe(ActionFired(
+        1.15, "javafx", _new_file_menu_item_capture(), {}, "activate",
+    ))
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].repository_match.status == "known_subobject"
+    assert interactions[0].repository_match.subobject_path == ("openrecordingmenuitem",)
 
 
 def test_click_outside_open_menu_discards_menu_opener_and_records_outside_click():
@@ -381,6 +430,65 @@ def test_click_outside_open_menu_discards_menu_opener_and_records_outside_click(
     assert len(interactions) == 1
     assert interactions[0].target.name == "Apply"
     assert interactions[0].action == ActionType.CLICK
+
+
+def test_stale_javafx_menu_context_closes_and_reprocesses_unrelated_control():
+    owner = _file_owner()
+    session = RecordingSession(repository=ComponentRepository({owner.component_id: owner}))
+    session.start()
+
+    session.observe(PointerInteraction(
+        1.0, "javafx", _file_menu_capture(), {},
+        "primary", "released", (20, 15),
+    ))
+    unrelated = CapturedComponent(**{
+        **_plain_button_capture("Apply").__dict__,
+        "framework": "javafx",
+        "native_class": "javafx.scene.control.Button",
+    })
+    session.observe(PointerInteraction(
+        2.0, "javafx", unrelated, {},
+        "primary", "released", (120, 110),
+    ))
+    interactions = session.stop()
+
+    assert len(interactions) == 1
+    assert interactions[0].target.name == "Apply"
+    assert interactions[0].action == ActionType.CLICK
+    assert session._menu_context is None
+
+
+def test_committed_popup_context_does_not_consume_next_selector():
+    first = _choice_box_capture("Site Selector")
+    second = _choice_box_capture("Device Selector")
+    session = RecordingSession()
+    session.start()
+
+    session.observe(PointerInteraction(
+        1.0, "javafx", first, {},
+        "primary", "released", (120, 110),
+    ))
+    session.observe(StateChanged(
+        1.1, "javafx", first, {},
+        property="selected_item", before=None, after="Site A",
+    ))
+    session.observe(PointerInteraction(
+        1.3, "javafx", second, {},
+        "primary", "released", (120, 150),
+    ))
+
+    assert session._popup_selection_context is not None
+    assert session._popup_selection_context.owner.name == "Device Selector"
+
+    session.observe(StateChanged(
+        1.4, "javafx", second, {},
+        property="selected_item", before=None, after="Device B",
+    ))
+    interactions = session.stop()
+
+    assert len(interactions) == 2
+    assert [item.action for item in interactions] == [ActionType.SELECT_ITEM, ActionType.SELECT_ITEM]
+    assert [item.parameters["value"] for item in interactions] == ["Site A", "Device B"]
 
 
 def test_context_menu_activation_absorbs_right_click_when_menu_is_cancelled():

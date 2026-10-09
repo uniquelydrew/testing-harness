@@ -13,6 +13,7 @@ from automation_harness.drivers.atspi_driver import (
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.recording.adapters.atspi import (
     AtspiRecordingAdapter,
+    _PointerRecordingWorker,
     _event_coordinates,
     _is_recordable_target,
 )
@@ -743,12 +744,63 @@ def test_stop_waits_for_active_resolution_before_releasing_native_lease():
     assert lease.closed
 
 
+def test_stop_deregisters_native_listeners_through_main_thread_runner():
+    calls = []
+
+    class Registry:
+        def deregisterEventListener(self, callback, event_type):
+            calls.append(("deregister", callback, event_type))
+
+    def main_thread_runner(operation):
+        calls.append(("runner", threading.current_thread().name))
+        return operation()
+
+    adapter = AtspiRecordingAdapter(
+        _Driver(_target()),
+        acknowledgement_seconds=0,
+        main_thread_runner=main_thread_runner,
+    )
+    adapter._pyatspi = SimpleNamespace(Registry=Registry())
+    adapter._lease = SimpleNamespace(close=lambda: calls.append(("lease_closed",)))
+    adapter._listeners = [
+        (adapter._pointer, "mouse:button:1p"),
+        (adapter._action, "object:state-changed:selected"),
+    ]
+    adapter._active = True
+
+    adapter.stop()
+
+    assert calls[:3] == [
+        ("runner", threading.current_thread().name),
+        ("deregister", adapter._pointer, "mouse:button:1p"),
+        ("deregister", adapter._action, "object:state-changed:selected"),
+    ]
+    assert calls[-1] == ("lease_closed",)
+
+
+def test_action_and_text_callbacks_are_ignored_after_admission_closes():
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    adapter._pointer_worker.start()
+
+    adapter._action(SimpleNamespace(
+        type="object:state-changed:checked", detail1=True, source=object(),
+    ))
+    adapter._text(SimpleNamespace(
+        type="object:text-changed:insert", any_data="updated", source=object(),
+    ))
+
+    assert adapter._pointer_worker.snapshot()["queue_depth"] == 0
+    adapter._pointer_worker.stop_and_drain()
+
+
 def test_action_and_text_events_drain_against_last_resolved_target():
     driver = _Driver(_target())
     adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
     emitted = []
     adapter._emit = emitted.append
     adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
     adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
@@ -778,6 +830,8 @@ def test_text_events_are_retained_for_editable_targets():
     emitted = []
     adapter._emit = emitted.append
     adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
     adapter._handle_pointer(SimpleNamespace(
         type="mouse:button:1p", detail1=10, detail2=20, source=object(),
     ))
@@ -835,3 +889,33 @@ def test_source_events_use_driver_canonical_click_resolver():
     source = object()
     assert adapter._target(SimpleNamespace(source=source)) is target
     assert driver.sources == [(source, 0.0)]
+
+
+def test_pointer_worker_drain_is_bounded_and_recoverable():
+    release = threading.Event()
+    entered = threading.Event()
+
+    def acknowledge(_target, _duration):
+        entered.set()
+        release.wait()
+
+    worker = _PointerRecordingWorker(
+        lambda _value: None,
+        acknowledge=acknowledge,
+        acknowledgement_seconds=0,
+    )
+    worker.start()
+    assert worker.accept_pointer(
+        "mouse:button:1p", (10, 20), 1.0, _target()
+    )
+    assert entered.wait(1.0)
+
+    assert worker.stop_and_drain(timeout=0.01) is False
+    snapshot = worker.snapshot()
+    assert snapshot["state"] == worker.DRAINING
+    assert snapshot["worker_alive"] is True
+
+    release.set()
+    assert worker.stop_and_drain(timeout=1.0) is True
+    assert worker.snapshot()["worker_alive"] is False
+    assert worker.state == worker.STOPPED

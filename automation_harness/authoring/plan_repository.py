@@ -19,6 +19,7 @@ from automation_harness.core.repository_scope import (
 )
 from automation_harness.core.solipsys_identity import locator_is_complete, strategy_parts
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
+from automation_harness.models.gui import ActionType, default_actions
 
 
 _METADATA_KEY = "__authoring_object_repository__"
@@ -145,6 +146,10 @@ def _resolve_repository_path(value: str, plan_path: Path) -> Path:
 def materialize_captured_target(repository: ComponentRepository, capture: CapturedComponent) -> tuple[ComponentRepository, str, bool]:
     matches = matching_component_ids(repository, capture)
     if len(matches) == 1:
+        definition = repository.get(matches[0])
+        promoted = _promote_canonical_capabilities(definition, capture)
+        if promoted != definition:
+            repository = repository.with_component(promoted)
         return repository, matches[0], False
     if len(matches) > 1:
         raise ValueError("captured target matches multiple repository objects: %s" % ", ".join(matches))
@@ -157,6 +162,26 @@ def materialize_captured_target(repository: ComponentRepository, capture: Captur
         validate_live=False,
     )
     return repository, definition.object_id, True
+
+
+def _promote_canonical_capabilities(
+    definition: ComponentDefinition, capture: CapturedComponent,
+) -> ComponentDefinition:
+    """Promote only observed actions that are canonical for the durable object type."""
+    canonical = default_actions(definition.object_type)
+    observed = set()
+    for raw_action in tuple(capture.actions or ()):
+        try:
+            observed.add(ActionType(raw_action))
+        except ValueError:
+            continue
+    additions = {action.value for action in observed if action in canonical}
+    if not additions:
+        return definition
+    actions = frozenset(set(definition.actions) | additions)
+    if actions == definition.actions:
+        return definition
+    return replace(definition, actions=actions)
 
 
 def persist_recorded_menu_owner(

@@ -164,11 +164,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
     def save(self):
         """Persist direct objects first, then add transitive Registry dependencies."""
         try:
-            portable = embed_plan_repository(self.plan, self.repository)
-            if self.reusable:
-                portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
-            save_plan(portable, self.path)
-            self.plan = portable
+            portable = self._save_portable_plan()
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
                 repository_path = assigned_repository_path(self.plan, self.path)

@@ -493,3 +493,46 @@ def test_repository_matching_rejects_same_track_identity_in_different_explicit_s
     ))
 
     assert session.stop()[0].repository_match.status == "new_candidate"
+
+
+def test_materialize_existing_combo_promotes_observed_canonical_select_item():
+    from automation_harness.authoring.plan_repository import materialize_captured_target
+
+    persisted = _capture("Site Selector", kind=ObjectType.COMBO_BOX)
+    definition = ComponentDefinition(
+        component_id="Site Selector Combo Box",
+        object_id="combo-1",
+        strategies=(persisted.candidate_strategy(),),
+        object_type=ObjectType.COMBO_BOX,
+        actions=frozenset({"click"}),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    observed = replace(persisted, actions=("select_item",))
+
+    updated, matched_id, created = materialize_captured_target(repository, observed)
+
+    assert created is False
+    assert matched_id == definition.object_id
+    assert updated.get(matched_id).object_id == definition.object_id
+    assert updated.get(matched_id).actions == frozenset({"click", "select_item"})
+
+
+def test_materialize_existing_combo_does_not_promote_noncanonical_action():
+    from automation_harness.authoring.plan_repository import materialize_captured_target
+
+    persisted = _capture("Site Selector", kind=ObjectType.COMBO_BOX)
+    definition = ComponentDefinition(
+        component_id="Site Selector Combo Box",
+        object_id="combo-1",
+        strategies=(persisted.candidate_strategy(),),
+        object_type=ObjectType.COMBO_BOX,
+        actions=frozenset({"click"}),
+    )
+    repository = ComponentRepository({definition.component_id: definition})
+    observed = replace(persisted, actions=("toggle",))
+
+    updated, matched_id, created = materialize_captured_target(repository, observed)
+
+    assert created is False
+    assert matched_id == definition.object_id
+    assert updated.get(matched_id).actions == frozenset({"click"})

@@ -38,10 +38,18 @@ tasks.register('agentResolverSmoke', JavaExec) {
     jvmArgs '--add-modules', 'jdk.httpserver'
 }
 
+tasks.register('agentPopupSelectionSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Exercises JavaFX popup selection value precedence.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'automation.harness.agent.JavaFxPopupSelectionSmoke'
+    jvmArgs '--add-modules', 'jdk.httpserver'
+}
+
 tasks.register('agentSmoke') {
     group = 'verification'
-    description = 'Exercises the agent loopback transport and semantic target resolver.'
-    dependsOn tasks.named('agentTransportSmoke'), tasks.named('agentResolverSmoke')
+    description = 'Exercises the agent loopback transport, semantic target resolver, and popup selection policy.'
+    dependsOn tasks.named('agentTransportSmoke'), tasks.named('agentResolverSmoke'), tasks.named('agentPopupSelectionSmoke')
 }
 
 tasks.named('check') { dependsOn tasks.named('agentSmoke') }

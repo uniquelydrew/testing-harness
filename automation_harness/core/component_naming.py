@@ -15,7 +15,7 @@ _SPACE = re.compile(r"\s+")
 
 def default_component_name(capture: CapturedComponent) -> str:
     object_type = capture.semantic_type()
-    type_name = display_name(object_type)
+    type_name = _display_name_for_native(object_type, capture.native_class)
     text = _distinguishing_text(capture)
     if not text:
         return type_name
@@ -52,7 +52,10 @@ def default_payload_name(payload: Mapping[str, object]) -> str:
             str(payload.get("role") or payload.get("accessible_role") or ""),
             str(payload.get("native_class") or payload.get("class") or ""),
         )
-    type_name = display_name(object_type)
+    type_name = _display_name_for_native(
+        object_type,
+        str(payload.get("native_class") or payload.get("class") or ""),
+    )
     text = _payload_distinguishing_text(payload, object_type)
     if not text:
         return type_name
@@ -89,7 +92,9 @@ def _distinguishing_text(capture: CapturedComponent):
     native = str(capture.native_class or "")
     native_simple = native.rsplit(".", 1)[-1].casefold()
     role = str(capture.role or "").replace("_", " ").casefold()
-    type_name = display_name(capture.semantic_type()).casefold()
+    type_name = _display_name_for_native(
+        capture.semantic_type(), capture.native_class,
+    ).casefold()
     for value in candidates:
         if value in (None, ""):
             continue
@@ -108,7 +113,7 @@ def _payload_distinguishing_text(payload: Mapping[str, object], object_type: Obj
     native = str(payload.get("native_class") or payload.get("class") or "")
     native_simple = native.rsplit(".", 1)[-1].casefold()
     role = str(payload.get("role") or payload.get("accessible_role") or "").replace("_", " ").casefold()
-    type_name = display_name(object_type).casefold()
+    type_name = _display_name_for_native(object_type, native).casefold()
     candidates = (
         payload.get("accessible_text"),
         payload.get("text"),
@@ -128,6 +133,17 @@ def _payload_distinguishing_text(payload: Mapping[str, object], object_type: Obj
             continue
         return text
     return None
+
+
+def _display_name_for_native(object_type: ObjectType, native_class: str | None) -> str:
+    """Use concrete JavaFX selector labels without changing semantic type."""
+    simple = str(native_class or "").rsplit(".", 1)[-1].casefold()
+    if object_type is ObjectType.COMBO_BOX:
+        if simple == "choicebox":
+            return "Choice Box"
+        if simple == "combobox":
+            return "Combo Box"
+    return display_name(object_type)
 
 def _readable(value: str) -> str:
     value = _CAMEL_BOUNDARY.sub(" ", str(value).strip())

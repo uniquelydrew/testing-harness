@@ -96,19 +96,35 @@ class _PointerRecordingWorker:
     def accept_text(self, after, event_type, timestamp, target):
         return self._accept(("text", after, event_type, timestamp, target))
 
-    def stop_and_drain(self):
+    def snapshot(self):
+        with self._lock:
+            worker = self._thread
+            return {
+                "state": self._state,
+                "accepting": self._accepting,
+                "queue_depth": self._queue.qsize(),
+                "worker_alive": bool(worker and worker.is_alive()),
+                "worker_name": worker.name if worker is not None else None,
+                "errors": tuple(self._errors),
+            }
+
+    def stop_and_drain(self, timeout=5.0):
         with self._lock:
             worker = self._thread
             if worker is None:
-                return
+                return True
             self._accepting = False
             self._state = self.DRAINING
             self._queue.put(self._STOP)
-        # Called by RecordingSession.stop() on its background shutdown thread;
-        # waiting here cannot block GTK or the AT-SPI registry callback.
-        worker.join()
+        # RecordingSession.stop() runs on a background shutdown thread, but an
+        # unbounded join here can leave the authoring UI permanently in
+        # "Stopping recording..." if native resolution never returns.
+        worker.join(max(0.0, float(timeout)))
+        if worker.is_alive():
+            return False
         with self._lock:
             self._thread = None
+        return True
 
     def _set_state(self, state):
         with self._lock:
@@ -216,6 +232,17 @@ def _is_authoring_chrome(captured) -> bool:
     return application.startswith("Automation Harness") or name == "Stop Recording"
 
 
+def _filter_captured_target(captured, excluded_application_prefixes=()):
+    if captured is None:
+        return None
+    application = str(getattr(captured, "application", None) or "")
+    if any(application.startswith(prefix) for prefix in tuple(excluded_application_prefixes or ())):
+        return None
+    if _is_authoring_chrome(captured) or not _is_recordable_target(captured):
+        return None
+    return captured
+
+
 def _captured_process_id(captured):
     properties = dict(getattr(captured, "backend_properties", {}) or {})
     for key in ("bridge_pid", "process_id", "process-id", "pid"):
@@ -242,6 +269,8 @@ class AtspiRecordingAdapter:
         pointer_monitor=None,
         javafx_driver=None,
         java_agent_driver=None,
+        excluded_application_prefixes=(),
+        main_thread_runner=None,
     ) -> None:
         self.driver = driver or AtspiDriver()
         self.on_resolved = on_resolved
@@ -254,6 +283,10 @@ class AtspiRecordingAdapter:
         # not reliably expose its scene graph through Linux AT-SPI.
         self._javafx_driver = javafx_driver or JavaFxBridgeDriver()
         self._java_agent_driver = java_agent_driver or JavaAgentDriver()
+        self._main_thread_runner = main_thread_runner or (lambda operation: operation())
+        self._excluded_application_prefixes = tuple(dict.fromkeys(
+            ("Automation Harness",) + tuple(excluded_application_prefixes or ())
+        ))
         self._using_x11_pointer = False
         self._active = False
         self._emit: Callable[[Observation], None] | None = None
@@ -336,9 +369,12 @@ class AtspiRecordingAdapter:
                     (self._pointer, "mouse:button:3r"),
                 ]
             if atspi_available:
+                # The native registry must be running before listener
+                # registration and remain alive until every listener is
+                # deregistered and in-flight callback has drained.
+                self._lease = acquire_atspi_registry(self._pyatspi)
                 for callback, event_type in self._listeners:
                     self._pyatspi.Registry.registerEventListener(callback, event_type)
-                self._lease = acquire_atspi_registry(self._pyatspi)
             self._active = True
         except Exception:
             with self._callback_condition:
@@ -353,6 +389,9 @@ class AtspiRecordingAdapter:
                 self._pointer_monitor.stop()
                 self._using_x11_pointer = False
             self._pointer_worker.stop_and_drain()
+            if self._lease is not None:
+                self._lease.close()
+                self._lease = None
             self._emit = None
             self._pyatspi = None
             raise
@@ -360,6 +399,13 @@ class AtspiRecordingAdapter:
     def stop(self) -> None:
         if not self._active and self._lease is None:
             return
+        started = time.monotonic()
+        self._diagnostic(
+            "atspi_stop_started",
+            active_callbacks=self._active_callbacks,
+            pointer_worker=self._pointer_worker.snapshot(),
+            using_x11_pointer=self._using_x11_pointer,
+        )
         lease = self._lease
         self._lease = None
         self._active = False
@@ -367,28 +413,109 @@ class AtspiRecordingAdapter:
         with self._callback_condition:
             self._callbacks_accepting = False
         if self._using_x11_pointer:
+            self._diagnostic("atspi_stop_pointer_monitor_stopping")
             self._pointer_monitor.stop()
             self._using_x11_pointer = False
-        # Deregister first, then wait for in-flight native callbacks before
-        # releasing the registry lease or clearing callback-owned state.
-        # A detached release thread could close the native registry after a
-        # subsequent recording session had already started.
+            self._diagnostic("atspi_stop_pointer_monitor_stopped")
+        # Deregister on the GTK/GLib main loop, then wait for in-flight native
+        # callbacks before releasing the registry lease or clearing
+        # callback-owned state.  libatspi dispatches deferred messages on the
+        # main context; cross-thread listener removal can race that native
+        # dispatch and leave stale listener metadata behind.
         try:
-            if self._pyatspi is not None:
-                for callback, event_type in self._listeners:
-                    self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            self._deregister_listeners_on_main_thread()
         finally:
+            shutdown_error = None
+            callback_deadline = time.monotonic() + 5.0
             with self._callback_condition:
+                self._diagnostic(
+                    "atspi_stop_callback_drain_started",
+                    active_callbacks=self._active_callbacks,
+                )
                 while self._active_callbacks:
-                    self._callback_condition.wait()
-            self._pointer_worker.stop_and_drain()
+                    remaining = callback_deadline - time.monotonic()
+                    if remaining <= 0:
+                        shutdown_error = RuntimeError(
+                            "AT-SPI callback drain timed out with %d callback(s) active"
+                            % self._active_callbacks
+                        )
+                        self._diagnostic(
+                            "atspi_stop_callback_drain_timeout",
+                            active_callbacks=self._active_callbacks,
+                        )
+                        break
+                    self._callback_condition.wait(min(0.5, remaining))
+                    self._diagnostic(
+                        "atspi_stop_callback_drain_waiting",
+                        active_callbacks=self._active_callbacks,
+                    )
+                if not self._active_callbacks:
+                    self._diagnostic("atspi_stop_callback_drain_finished")
+
+            self._diagnostic(
+                "atspi_stop_pointer_drain_started",
+                pointer_worker=self._pointer_worker.snapshot(),
+            )
+            if not self._pointer_worker.stop_and_drain(timeout=5.0):
+                pointer_error = RuntimeError(
+                    "AT-SPI pointer worker drain timed out: %r"
+                    % (self._pointer_worker.snapshot(),)
+                )
+                self._diagnostic(
+                    "atspi_stop_pointer_drain_timeout",
+                    pointer_worker=self._pointer_worker.snapshot(),
+                )
+                if shutdown_error is None:
+                    shutdown_error = pointer_error
+            else:
+                self._diagnostic(
+                    "atspi_stop_pointer_drain_finished",
+                    pointer_worker=self._pointer_worker.snapshot(),
+                )
             try:
                 if lease is not None:
+                    self._diagnostic("atspi_stop_lease_closing")
                     lease.close()
+                    self._diagnostic("atspi_stop_lease_closed")
             finally:
                 self._listeners = []
-                self._emit = None
-                self._pyatspi = None
+                # Preserve callback-owned state if a native callback did not
+                # drain; the process-global registry remains alive and the
+                # callback may still unwind against this adapter instance.
+                if self._active_callbacks == 0:
+                    self._emit = None
+                    self._pyatspi = None
+                self._diagnostic(
+                    "atspi_stop_finished",
+                    elapsed_seconds=round(time.monotonic() - started, 6),
+                    active_callbacks=self._active_callbacks,
+                    pointer_worker=self._pointer_worker.snapshot(),
+                    error=str(shutdown_error) if shutdown_error else None,
+                )
+            if shutdown_error is not None:
+                raise shutdown_error
+
+    def _deregister_listeners_on_main_thread(self):
+        if self._pyatspi is None or not self._listeners:
+            return
+        self._diagnostic(
+            "atspi_main_thread_unregister_requested",
+            listener_count=len(self._listeners),
+        )
+
+        def unregister():
+            self._diagnostic(
+                "atspi_main_thread_unregister_entered",
+                listener_count=len(self._listeners),
+            )
+            for callback, event_type in tuple(self._listeners):
+                self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+            self._diagnostic(
+                "atspi_main_thread_unregister_finished",
+                listener_count=len(self._listeners),
+            )
+
+        return self._main_thread_runner(unregister)
 
     def _target(self, event: Any, coordinates=None, *, prefer_coordinates=False):
         source = getattr(event, "source", None)
@@ -592,14 +719,32 @@ class AtspiRecordingAdapter:
             if not self._active_callbacks:
                 self._callback_condition.notify_all()
 
+    def _capture_scoped_point(self, coordinates):
+        snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
+        if snapshot is not None:
+            return snapshot(
+                *coordinates,
+                excluded_application_prefixes=self._excluded_application_prefixes,
+            )
+        scoped = getattr(self.driver, "capture_scoped_at_point", None)
+        if scoped is None:
+            return None
+        try:
+            return scoped(
+                *coordinates,
+                excluded_application_prefixes=self._excluded_application_prefixes,
+            )
+        except TypeError:
+            return scoped(*coordinates)
+
     def _resolve_pointer_target(self, coordinates):
         if coordinates is None:
             return None
         try:
-            captured = self.driver.capture_scoped_at_point(*coordinates)
+            captured = self._capture_scoped_point(coordinates)
         except Exception:
             return None
-        return captured if _is_recordable_target(captured) else None
+        return _filter_captured_target(captured, self._excluded_application_prefixes)
 
     def _resolve_pointer_event(self, event, coordinates):
         source = getattr(event, "source", None)
@@ -608,10 +753,13 @@ class AtspiRecordingAdapter:
             deadline = time.monotonic() + self.hold_resolution_timeout
             while True:
                 try:
-                    return canonical(
+                    captured = canonical(
                         source,
                         coordinates,
-                        excluded_application_prefixes=("Automation Harness",),
+                        excluded_application_prefixes=self._excluded_application_prefixes,
+                    )
+                    return _filter_captured_target(
+                        captured, self._excluded_application_prefixes,
                     )
                 except AtspiExcludedClickSource:
                     return None
@@ -625,9 +773,10 @@ class AtspiRecordingAdapter:
                 captured = snapshot(source) if snapshot is not None else self.driver.capture_event_source(
                     source, settle_delay=0.0,
                 )
-                if _is_authoring_chrome(captured):
-                    return None
-                if _is_recordable_target(captured):
+                captured = _filter_captured_target(
+                    captured, self._excluded_application_prefixes,
+                )
+                if captured is not None:
                     return captured
             except Exception as exc:
                 self._diagnostic(
@@ -637,31 +786,38 @@ class AtspiRecordingAdapter:
         if coordinates is None:
             return None
         try:
-            snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
-            captured = snapshot(*coordinates) if snapshot is not None else self.driver.capture_scoped_at_point(
-                *coordinates,
-            )
+            captured = self._capture_scoped_point(coordinates)
         except Exception:
             return None
-        return captured if _is_recordable_target(captured) else None
+        return _filter_captured_target(captured, self._excluded_application_prefixes)
 
     def _action(self, event: Any) -> None:
-        event_type = str(getattr(event, "type", ""))
-        property_name = event_type.rsplit(":", 1)[-1]
-        selected = bool(getattr(event, "detail1", True))
-        self._pointer_worker.accept_action(
-            property_name, selected, event_type, time.monotonic(),
-        )
+        if not self._begin_callback():
+            return
+        try:
+            event_type = str(getattr(event, "type", ""))
+            property_name = event_type.rsplit(":", 1)[-1]
+            selected = bool(getattr(event, "detail1", True))
+            self._pointer_worker.accept_action(
+                property_name, selected, event_type, time.monotonic(),
+            )
+        finally:
+            self._end_callback()
 
     def _text(self, event: Any) -> None:
-        # Resolve the thread-bound source here. Only the immutable capture
-        # crosses to the worker; a prior pointer target is never reused.
-        after = getattr(event, "any_data", None)
-        if after is not None:
-            target = self._target(event)
-            self._pointer_worker.accept_text(
-                str(after), str(getattr(event, "type", "")), time.monotonic(), target,
-            )
+        if not self._begin_callback():
+            return
+        try:
+            # Resolve the thread-bound source here. Only the immutable capture
+            # crosses to the worker; a prior pointer target is never reused.
+            after = getattr(event, "any_data", None)
+            if after is not None:
+                target = self._target(event)
+                self._pointer_worker.accept_text(
+                    str(after), str(getattr(event, "type", "")), time.monotonic(), target,
+                )
+        finally:
+            self._end_callback()
 
     def _publish(self, observation: Observation) -> None:
         self._diagnostic("normalized_observation", observation=observation)

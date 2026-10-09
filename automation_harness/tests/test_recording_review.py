@@ -390,3 +390,48 @@ def test_review_rejects_failed_menu_route_instead_of_leaking_opener_click():
     assert "failed menu route" in str(outcome.error)
     assert outcome.repository is original
     assert outcome.created_component_ids == ()
+
+
+def test_review_promotes_canonical_selector_action_supported_by_component_type():
+    component = ComponentDefinition(
+        component_id="Choice",
+        strategies=(ComponentStrategy(
+            "javafx",
+            {"identification": {"mandatory": {"id": "choice"}}},
+        ),),
+        actions=frozenset({"resolve", "activate"}),
+        object_type=ObjectType.COMBO_BOX,
+        framework="javafx",
+        native_class="javafx.scene.control.ChoiceBox",
+    )
+    repository = ComponentRepository({component.component_id: component})
+    target = CapturedComponent(
+        name="Choice", role="combo box", description=None,
+        accessible_id="choice", application="Demo", window="Demo",
+        hierarchy=(), actions=("click", "focus", "select_item"),
+        bounds=(0, 0, 100, 24), state=_state(),
+        authored_strategy=ComponentStrategy(
+            "javafx",
+            {"identification": {"mandatory": {"id": "choice"}}},
+        ),
+        object_type=ObjectType.COMBO_BOX,
+        framework="javafx",
+        native_class="javafx.scene.control.ChoiceBox",
+    )
+    interaction = RecordedInteraction(
+        ActionType.SELECT_ITEM,
+        target,
+        {"value": "A"},
+        1.0,
+        1.0,
+        repository_match=RepositoryMatch("known_unique", (component.object_id,)),
+    )
+
+    outcome = materialize_recorded_interaction(repository, interaction)
+
+    assert outcome.error is None
+    assert outcome.resolved
+    assert outcome.repository.get(component.object_id).actions == frozenset({
+        "resolve", "activate", "select_item",
+    })
+    assert outcome.repository.get(component.object_id).revision == 2
