@@ -82,6 +82,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self._recording_diagnostic_session = None
         self.recording_stop_window = None
         self._recording_stop_window_generation = None
+        self._recording_suspended_windows = []
         self.recording_toggle_button = self.button("Start Recording", self.toggle_recording)
         self.recording_toggle_button.set_tooltip_text(
             "Start or stop the single active recording session"
@@ -281,7 +282,40 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         self._recording_generation += 1
         self._set_recording_toggle_state(active=True)
         self._show_recording_stop_window(self._recording_generation)
+        self._suspend_recording_windows()
         self.set_status("Recording — hold targets until semantic resolution completes, then release")
+
+    def _suspend_recording_windows(self):
+        """Hide visible harness-owned editors while leaving the stop control available."""
+        suspended = []
+        for window in tuple(Gtk.Window.list_toplevels()):
+            if window is self.recording_stop_window:
+                continue
+            try:
+                title = window.get_title() or ""
+                if window is not self.window and not title.startswith("Automation Harness"):
+                    continue
+                if not window.get_visible():
+                    continue
+                window.hide()
+                suspended.append(window)
+            except Exception:
+                continue
+        self._recording_suspended_windows = suspended
+
+    def _restore_recording_windows(self):
+        windows = tuple(self._recording_suspended_windows)
+        self._recording_suspended_windows = []
+        for window in windows:
+            try:
+                window.show()
+            except Exception:
+                pass
+        if self.window in windows:
+            try:
+                self.window.present()
+            except Exception:
+                pass
 
     def _show_recording_stop_window(self, generation):
         # Every recording generation owns a fresh native toplevel. Never reuse
@@ -599,6 +633,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             if _ACTIVE_RECORDING_WINDOW is self:
                 _ACTIVE_RECORDING_WINDOW = None
         self._set_recording_toggle_state(active=False)
+        self._restore_recording_windows()
         diagnostic_path = getattr(diagnostic_session, "diagnostic_path", None)
         if error is not None:
             if diagnostic_session is not None:

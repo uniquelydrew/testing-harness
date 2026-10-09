@@ -155,6 +155,8 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         action_combo = None
         action_input_fields = {}
         component_entry = None
+        action_inputs_modified = [False]
+        action_editor_initializing = [True]
 
         if call.step_id == "gui.object.action":
             component_entry = Gtk.ComboBoxText()
@@ -206,7 +208,23 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                         current = preserve.get("value")
                         if current is None and isinstance(preserve.get("options"), dict):
                             current = preserve["options"].get("path")
+                    if (current is None and item.name == "selector"
+                            and action_id in {"select", "select_item", "select_row", "select_cell"}
+                            and isinstance(preserve, dict)):
+                        current = preserve.get("value")
+                        if current is None and isinstance(preserve.get("options"), dict):
+                            current = preserve["options"].get("selector")
                     widget = create_action_input_widget(item, component, current=current)
+                    if isinstance(widget, Gtk.Entry):
+                        widget.connect("changed", lambda *_args: (
+                            action_inputs_modified.__setitem__(0, True)
+                            if not action_editor_initializing[0] else None
+                        ))
+                    elif isinstance(widget, Gtk.ComboBox):
+                        widget.connect("changed", lambda *_args: (
+                            action_inputs_modified.__setitem__(0, True)
+                            if not action_editor_initializing[0] else None
+                        ))
                     line = Gtk.Box(spacing=6)
                     label = Gtk.Label(label=item.name + (" *" if item.required else ""))
                     label.set_size_request(160, -1); label.set_xalign(0)
@@ -240,6 +258,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             component_entry.connect("changed", rebuild_action_choices)
             action_combo.connect("changed", rebuild_action_inputs)
             rebuild_action_choices()
+            action_editor_initializing[0] = False
         else:
             for name, value in call.inputs.items():
                 entry = Gtk.Entry()
@@ -283,16 +302,20 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                     raise ValueError("A repository Object is required.")
                 if not action_type:
                     raise ValueError("A supported Action is required.")
-                action = {"type": action_type}
-                for name, (item, widget) in action_input_fields.items():
-                    present, value = read_action_input(item, widget)
-                    if not present:
-                        if item.required:
-                            raise ValueError("missing required input %s" % name)
-                        continue
-                    action[name] = value
-                component_reference = self.repository.get(component_id).component_id
-                inputs = {"component_id": component_reference, "action": action}
+                if (component_id == current_component and action_type == current_action_type
+                        and not action_inputs_modified[0]):
+                    inputs = call.inputs
+                else:
+                    action = {"type": action_type}
+                    for name, (item, widget) in action_input_fields.items():
+                        present, value = read_action_input(item, widget)
+                        if not present:
+                            if item.required:
+                                raise ValueError("missing required input %s" % name)
+                            continue
+                        action[name] = value
+                    component_reference = self.repository.get(component_id).component_id
+                    inputs = {"component_id": component_reference, "action": action}
             else:
                 inputs = {
                     name: _parse_editor_value(entry.get_text(), original)
