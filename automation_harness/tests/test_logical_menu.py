@@ -311,7 +311,7 @@ def test_recorded_menu_subobject_becomes_select_menu_item_action():
         "component_id": owner.component_id,
         "action": {
             "type": "select_menu_item",
-            "value": "camera > camera_selector",
+            "path": ["camera", "camera_selector"],
         },
     }
 
@@ -335,7 +335,7 @@ def test_recorded_menu_uses_readable_navigation_when_review_supplies_it():
 
     step = interactions_to_steps((interaction,))[0]
 
-    assert step.inputs["action"]["value"] == "Camera > Camera Selector"
+    assert step.inputs["action"]["path"] == ["camera", "camera_selector"]
     assert "Camera > Camera Selector" in step.description
 
 
@@ -379,7 +379,7 @@ def test_menu_opener_and_terminal_item_record_as_one_semantic_interaction():
     step = interactions_to_steps(interactions)[0]
     assert step.inputs["component_id"] == owner.component_id
     assert step.inputs["action"]["type"] == "select_menu_item"
-    assert step.inputs["action"]["value"] == "openrecordingmenuitem"
+    assert step.inputs["action"]["path"] == list(interactions[0].repository_match.subobject_path)
 
 
 def test_javafx_transient_pointer_miss_does_not_cancel_open_menu_transaction():

@@ -201,6 +201,11 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 preserve = action if action_id == current_action_type else {}
                 for item in definition.inputs:
                     current = preserve.get(item.name) if isinstance(preserve, dict) else None
+                    if (current is None and item.name == "path"
+                            and action_id == "select_menu_item" and isinstance(preserve, dict)):
+                        current = preserve.get("value")
+                        if current is None and isinstance(preserve.get("options"), dict):
+                            current = preserve["options"].get("path")
                     widget = create_action_input_widget(item, component, current=current)
                     line = Gtk.Box(spacing=6)
                     label = Gtk.Label(label=item.name + (" *" if item.required else ""))

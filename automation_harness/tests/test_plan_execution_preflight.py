@@ -158,3 +158,52 @@ def test_execution_returns_validation_error_on_unrecoverable_snapshot(tmp_path: 
     assert result.exit_code == 2
     assert backend.started is False
     assert any("owner_object_id" in issue for issue in result.validation_errors)
+
+
+def _menu_repository():
+    menu = {
+        "object_id": str(uuid4()),
+        "object_type": "menu",
+        "actions": ["select_menu_item"],
+        "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": "File"}}}],
+        "subobjects": {
+            "open": {"kind": "menu_item", "selector": {"criteria": {"text": "Open"}}},
+            "export": {
+                "kind": "menu",
+                "selector": {"criteria": {"text": "Export"}},
+                "subobjects": {
+                    "pdf": {"kind": "menu_item", "selector": {"criteria": {"text": "PDF"}}}
+                },
+            },
+        },
+    }
+    return ComponentRepository.from_document({"version": 3, "components": {"File": menu}})
+
+
+@pytest.mark.parametrize("action", [
+    {"type": "select_menu_item", "path": ["open"]},
+    {"type": "select_menu_item", "path": ["export", "pdf"]},
+    {"type": "select_menu_item", "value": "Open"},
+    {"type": "select_menu_item", "value": "Export > PDF"},
+])
+def test_menu_qualification_accepts_canonical_and_legacy_navigation(action):
+    repo = _menu_repository()
+    plan = TestPlan(name="menu", steps=(StepCall(node_id="choose", step_id="gui.object.action",
+        inputs={"component_id": "File", "action": action}),))
+    _, _, issues = qualify_plan(plan, component_repository=repo)
+    assert issues == []
+
+
+@pytest.mark.parametrize("action", [
+    {"type": "select_menu_item"},
+    {"type": "select_menu_item", "path": []},
+    {"type": "select_menu_item", "path": ["missing"]},
+    {"type": "select_menu_item", "value": ""},
+    {"type": "select_menu_item", "value": "Export > Missing"},
+])
+def test_menu_qualification_rejects_bad_navigation_before_execution(action):
+    repo = _menu_repository()
+    plan = TestPlan(name="menu", steps=(StepCall(node_id="choose", step_id="gui.object.action",
+        inputs={"component_id": "File", "action": action}),))
+    _, _, issues = qualify_plan(plan, component_repository=repo)
+    assert any("invalid menu navigation" in issue for issue in issues)
