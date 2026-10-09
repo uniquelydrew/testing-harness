@@ -403,3 +403,51 @@ def test_javafx_component_focus_requires_verified_state(tmp_path):
         assert result["node"]["ref"] == "n17"
     finally:
         server.close()
+
+
+def test_window_activation_rejects_unconfirmed_foreground(monkeypatch):
+    """A successful bridge request is not evidence of foreground activation."""
+    from automation_harness.drivers import javafx_bridge
+
+    class Endpoint:
+        pid = 1234
+
+        def request(self, operation, **kwargs):
+            assert operation == "activate_window"
+            return {"window": "ERSA Main Video Display", "focused": False}
+
+    driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
+    monkeypatch.setattr(driver, "_find_unique", lambda identification: (Endpoint(), {}, ()))
+    with pytest.raises(RuntimeError, match="foreground focus"):
+        driver.activate_window(identification={"mandatory": {"name": "Select Camera"}})
+
+
+def test_window_activation_waits_for_delayed_focus(monkeypatch):
+    class Endpoint:
+        pid = 1234
+        attempts = 0
+
+        def request(self, operation, **kwargs):
+            assert operation == "activate_window"
+            self.attempts += 1
+            return {"window": "ERSA Main Video Display", "focused": self.attempts >= 3}
+
+    endpoint = Endpoint()
+    driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
+    monkeypatch.setattr(driver, "_find_unique", lambda identification: (endpoint, {}, ()))
+    result = driver.activate_window(identification={"mandatory": {"id": "cameraSelectorButton"}})
+    assert result["focused"] is True
+    assert result["activation_attempts"] == 3
+
+
+def test_window_activation_timeout_reports_last_response(monkeypatch):
+    class Endpoint:
+        pid = 1234
+
+        def request(self, operation, **kwargs):
+            return {"window": "ERSA Main Video Display", "focused": False}
+
+    driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
+    monkeypatch.setattr(driver, "_find_unique", lambda identification: (Endpoint(), {}, ()))
+    with pytest.raises(RuntimeError, match="last_response"):
+        driver.activate_window(identification={"mandatory": {"id": "cameraSelectorButton"}})
