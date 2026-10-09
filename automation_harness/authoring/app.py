@@ -36,7 +36,7 @@ from automation_harness.core.script_steps import ScriptStepDefinition, registere
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import derive_execution_state, embed_plan_repository, load_plan, repository_from_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.core.visual_baselines import approve_visual_candidate, reject_visual_candidate
-from automation_harness.drivers.atspi_driver import AtspiDriver
+from automation_harness.drivers.atspi_driver import AtspiDriver\nfrom automation_harness.drivers.atspi_registry import shutdown_atspi_registries
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
@@ -115,6 +115,12 @@ class AuthoringApp:
         self.window.show_all()
 
     def _on_destroy(self, *_args) -> None:
+        # GTK must be the final subsystem to leave. Native AT-SPI dispatch is
+        # process-global and may still be referenced by a capture worker; only
+        # stop an idle registry here and never force teardown over an owner.
+        self._destroy_click_picker()
+        self._clear_highlight()
+        shutdown_atspi_registries(timeout=2.0)
         Gtk.main_quit()
 
     def _load_repository(self) -> ComponentRepository:
