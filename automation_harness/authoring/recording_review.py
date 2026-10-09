@@ -15,6 +15,7 @@ from automation_harness.core.logical_menu import (
     stage_recorded_menu_capture,
 )
 from automation_harness.core.menu_navigation import navigation_from_path
+from automation_harness.models.gui import default_actions
 from automation_harness.recording.session import RecordedInteraction, RepositoryMatch
 
 
@@ -172,6 +173,27 @@ def materialize_recorded_interaction(
             raise ValueError(
                 "recorded interaction has no unique repository component"
             )
+
+        if reviewed.repository_match.status != "known_subobject":
+            definition = repository.get(reviewed.repository_match.component_id)
+            if not definition.supports(reviewed.action):
+                canonical = default_actions(definition.object_type)
+                if reviewed.action in canonical:
+                    definition = replace(
+                        definition,
+                        actions=frozenset((*definition.actions, reviewed.action.value)),
+                        revision=definition.revision + 1,
+                    )
+                    repository = repository.with_component(definition)
+                else:
+                    raise ValueError(
+                        "recorded action %r is not supported by component %r; supported actions: %s"
+                        % (
+                            reviewed.action.value,
+                            definition.component_id,
+                            ", ".join(sorted(item.value for item in definition.semantic_actions)),
+                        )
+                    )
 
         if (
             menu_invoking_capture is not None

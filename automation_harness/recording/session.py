@@ -258,16 +258,38 @@ class RecordingSession:
                         return
                     self._finish_popup_selection_context("post_commit_pointer")
                 if self._popup_selection_context is not None:
-                    # The next release belongs to the armed popup selector even if
-                    # a transient popup is missed and capture resolves the
-                    # covered object below it.  Never author that false
-                    # target as a second independent click.
+                    context = self._popup_selection_context
+                    # Only consume a release that still resolves to the selector
+                    # which armed this popup. A different resolved owner/control
+                    # terminates the stale popup transaction, then gets processed
+                    # normally by the remaining correlator pipeline.
+                    if _same_logical_target(context.owner, target):
+                        self._finish_popup_selection_context(
+                            "selection_target_not_resolved",
+                            cancelled=True,
+                            suppressed_target=target,
+                        )
+                        return
+                    if _is_popup_selector_transient_miss(
+                        context, target, observation.timestamp, self.correlation_window,
+                    ):
+                        self._finish_popup_selection_context(
+                            "popup_selector_transient_pointer_miss",
+                            cancelled=True,
+                            suppressed_target=target,
+                        )
+                        return
                     self._finish_popup_selection_context(
-                        "selection_target_not_resolved",
+                        "selection_owner_changed_by_pointer",
                         cancelled=True,
                         suppressed_target=target,
                     )
-                    return
+                    self.diagnostic(
+                        "pointer_reprocessed_after_popup_context",
+                        observation=observation,
+                        previous_owner=context.owner,
+                        target=target,
+                    )
                 if self._menu_context is not None:
                     if _is_menu_related_capture(target):
                         self._menu_context.last_target = target
@@ -282,7 +304,32 @@ class RecordingSession:
                                 owner=self._menu_context.owner,
                             )
                         return
+                    # JavaFX popup windows can disappear between physical press
+                    # and semantic release resolution. Do not cancel a live menu
+                    # transaction merely because one trailing pointer resolves
+                    # to the covered Stage/control. Keep the durable owner until
+                    # a terminal menu action, explicit Escape, owner transition,
+                    # or top-level window transition closes the transaction.
+                    if (
+                        target.framework == "javafx"
+                        and observation.timestamp - self._menu_context.started_at <= self.correlation_window
+                    ):
+                        self.diagnostic(
+                            "menu_transient_pointer_miss_suppressed",
+                            observation=observation,
+                            owner=self._menu_context.owner,
+                            context_age=observation.timestamp - self._menu_context.started_at,
+                        )
+                        return
+                    context = self._menu_context
                     self._finish_menu_context("pointer_left_menu_scope", cancelled=True)
+                    self.diagnostic(
+                        "pointer_reprocessed_after_menu_context",
+                        observation=observation,
+                        previous_owner=context.owner,
+                        context_age=observation.timestamp - context.started_at,
+                        target=target,
+                    )
 
                 if _is_menu_owner_capture(target):
                     self._start_menu_context(target, observation.timestamp, "menu_pointer_open")
@@ -761,6 +808,29 @@ def _same_target(left: CapturedComponent | None, right: CapturedComponent | None
     if left.framework == right.framework == "solipsys_rendered":
         return _same_solipsys_target(left, right)
     return (left.framework, left.accessible_id, left.name, left.role, left.window) == (right.framework, right.accessible_id, right.name, right.role, right.window)
+
+
+def _is_popup_selector_transient_miss(
+    context: PopupSelectionContext,
+    target: CapturedComponent | None,
+    timestamp: float,
+    correlation_window: float,
+) -> bool:
+    """Suppress covered-control hits while a JavaFX popup selector is open."""
+    if target is None:
+        return False
+    if timestamp - context.started_at > correlation_window:
+        return False
+    owner = context.owner
+    if owner.framework != "javafx" or target.framework != "javafx":
+        return False
+    owner_window = owner.window or owner.application
+    target_window = target.window or target.application
+    if owner_window and target_window and owner_window != target_window:
+        return False
+    if _is_menu_related_capture(target):
+        return False
+    return True
 
 
 def _same_logical_target(left: CapturedComponent | None, right: CapturedComponent | None) -> bool:

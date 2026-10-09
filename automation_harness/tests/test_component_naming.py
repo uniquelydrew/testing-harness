@@ -79,6 +79,34 @@ def test_capture_payload_name_drops_framework_class_fallback():
     }) == "Text Field"
 
 
+def test_javafx_choicebox_name_preserves_concrete_selector_type():
+    assert default_component_name(
+        _capture(
+            name="Site",
+            object_type=ObjectType.COMBO_BOX,
+            native_class="javafx.scene.control.ChoiceBox",
+        )
+    ) == "Site Choice Box"
+
+
+def test_javafx_combobox_name_preserves_concrete_selector_type():
+    assert default_component_name(
+        _capture(
+            name="Camera",
+            object_type=ObjectType.COMBO_BOX,
+            native_class="javafx.scene.control.ComboBox",
+        )
+    ) == "Camera Combo Box"
+
+
+def test_javafx_choicebox_payload_name_preserves_concrete_selector_type():
+    assert default_payload_name({
+        "object_type": "combo_box",
+        "text": "Site",
+        "class": "javafx.scene.control.ChoiceBox",
+    }) == "Site Choice Box"
+
+
 def test_javafx_capture_name_uses_semantic_leaf_not_hierarchy():
     capture = CapturedComponent(
         name="File",
