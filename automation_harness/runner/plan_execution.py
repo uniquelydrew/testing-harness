@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.completion import await_step_completion
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 from automation_harness.core.reusable_step_expansion import expand_reusable_steps
 from automation_harness.core.reusable_steps import ReusableStepDefinition
 from automation_harness.core.step_registry import default_step_registry
@@ -23,6 +23,54 @@ from automation_harness.models.run import RunResult, utc_now
 from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.reporting.artifacts import RunArtifacts
 from automation_harness.reporting.html_report import render_html_report
+
+
+def compose_execution_repository(
+    plan: TestPlan, live_repository: ComponentRepository | None = None,
+) -> ComponentRepository:
+    """Resolve legacy portable snapshots without hiding immutable-ID conflicts."""
+    if live_repository is None:
+        return repository_from_plan(plan)
+    live = live_repository.to_document()["components"]
+    merged = dict(live)
+    live_ids = {definition.object_id: name for name, definition in live_repository.components.items()}
+    for name, snapshot in plan.objects.items():
+        if not isinstance(snapshot, Mapping):
+            raise ComponentRepositoryError("embedded component %r must be a mapping" % name)
+        object_id = snapshot.get("object_id")
+        if name in live:
+            if object_id != live[name]["object_id"]:
+                raise ComponentRepositoryError(
+                    "embedded component %r has object_id %r but live repository has %r"
+                    % (name, object_id, live[name]["object_id"])
+                )
+            continue  # Live revision is authoritative for the same immutable object.
+        if object_id in live_ids:
+            raise ComponentRepositoryError(
+                "embedded component %r reuses live object_id %r owned by %r"
+                % (name, object_id, live_ids[object_id])
+            )
+        merged[name] = snapshot
+    return ComponentRepository.from_document(
+        {"version": 3, "components": merged}, source="execution repository composition",
+    )
+
+
+def qualify_plan(plan, *, component_repository=None, reusable_steps=None, registry=None,
+                 backend_capabilities=None, allowed_step_risks=None):
+    """Shared authoring/runtime plan and repository qualification contract."""
+    registry = registry or default_step_registry()
+    expanded = expand_reusable_steps(plan, reusable_steps) if reusable_steps else plan
+    components = compose_execution_repository(plan, component_repository)
+    issues = validate_plan(expanded, registry)
+    issues.extend(validate_plan_components(expanded, components))
+    if backend_capabilities is not None and allowed_step_risks is not None:
+        issues.extend(validate_plan_execution(
+            expanded, registry,
+            backend_capabilities=backend_capabilities,
+            allowed_step_risks=allowed_step_risks,
+        ))
+    return expanded, components, issues
 
 
 def execute_plan(
@@ -70,49 +118,40 @@ def execute_plan(
         objects=plan.objects,
         step_definitions=plan.step_definitions,
     )
-    if reusable_steps:
-        try:
-            runtime_plan = expand_reusable_steps(runtime_plan, reusable_steps)
+    try:
+        runtime_plan = expand_reusable_steps(runtime_plan, reusable_steps) if reusable_steps else runtime_plan
+        if reusable_steps:
             recorder.record(
                 "reusable_steps_expanded",
                 authored_step_count=len(plan.steps),
                 executable_step_count=len(runtime_plan.steps),
                 reusable_step_ids=sorted(reusable_steps),
             )
-        except Exception as exc:
-            result.validation_errors = [f"reusable step expansion: {type(exc).__name__}: {exc}"]
-            result.exit_code = 2
-            recorder.record("plan_validation_failed", issues=result.validation_errors)
-            return _finalize(
+        if compiled_artifact is None:
+            _, components, issues = qualify_plan(
                 runtime_plan,
-                backend,
-                result,
-                artifacts,
-                recorder,
-                initial_variables,
+                component_repository=component_repository,
                 registry=registry,
-                compiled_artifact=compiled_artifact,
+                backend_capabilities=backend.capabilities,
+                allowed_step_risks=backend.allowed_step_risks,
             )
+    except Exception as exc:
+        result.validation_errors = ["plan qualification: %s: %s" % (type(exc).__name__, exc)]
+        result.exit_code = 2
+        recorder.record("plan_validation_failed", issues=result.validation_errors)
+        return _finalize(runtime_plan, backend, result, artifacts, recorder,
+                         initial_variables, registry=registry, compiled_artifact=compiled_artifact)
 
     if compiled_artifact is not None:
         components = compiled_artifact.component_repository()
-    else:
-        components = repository_from_plan(plan)
-        if component_repository is not None:
-            components = components.overlay(component_repository)
-
-    issues = validate_plan(runtime_plan, registry)
-    issues.extend(validate_plan_components(runtime_plan, components))
-    if compiled_artifact is not None:
+        issues = validate_plan(runtime_plan, registry)
+        issues.extend(validate_plan_components(runtime_plan, components))
         issues.extend(compiled_artifact.validate_runtime(registry))
-    issues.extend(
-        validate_plan_execution(
-            runtime_plan,
-            registry,
+        issues.extend(validate_plan_execution(
+            runtime_plan, registry,
             backend_capabilities=backend.capabilities,
             allowed_step_risks=backend.allowed_step_risks,
-        )
-    )
+        ))
     preflight = backend.preflight_issues()
     if issues or preflight:
         result.validation_errors = [*issues, *[f"backend preflight: {item}" for item in preflight]]

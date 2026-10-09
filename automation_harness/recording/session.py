@@ -777,8 +777,8 @@ def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_
             navigation = dict(interaction.evidence or {}).get("menu_navigation")
             if not isinstance(navigation, str) or not navigation.strip():
                 navigation = " > ".join(interaction.repository_match.subobject_path)
-            action: dict[str, Any] = {"type": ActionType.SELECT_ITEM.value, "value": navigation}
-            description = "Recorded select_item on %s -> %s" % (
+            action: dict[str, Any] = {"type": "select_menu_item", "value": navigation}
+            description = "Recorded select_menu_item on %s -> %s" % (
                 component_id, navigation,
             )
         else:

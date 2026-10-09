@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
 
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.test_plan import validate_plan_execution
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.models.plan import PlanVariableRef, StepCall, TestPlan
 from automation_harness.models.run import BackendHealth
-from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.runner.plan_execution import execute_plan, compose_execution_repository, qualify_plan
 
 
 class FakeBackend(ExecutionBackend):
@@ -80,3 +85,76 @@ def test_validate_plan_execution_accepts_reference_risk_contract():
         allowed_step_risks={"read_only", "synthetic_control"},
     )
     assert issues == []
+
+
+def _component(name, object_id, owner=None):
+    value = {
+        "object_id": object_id,
+        "object_type": "button",
+        "strategies": [{"type": "atspi", "options": {"identification": {"mandatory": {"name": name}}}}],
+    }
+    if owner is not None:
+        value["owner_object_id"] = owner
+    return value
+
+
+def test_execution_composition_restores_legacy_missing_owner():
+    parent_id, child_id = str(uuid4()), str(uuid4())
+    parent = _component("Parent", parent_id)
+    child = _component("Child", child_id, parent_id)
+    live = ComponentRepository.from_document({"version": 3, "components": {"Parent": parent, "Child": child}})
+    plan = TestPlan(name="legacy", objects={"Child": child})
+    result = compose_execution_repository(plan, live)
+    assert result.get("Child").owner_object_id == parent_id
+    assert result.get("Parent").object_id == parent_id
+
+
+def test_execution_composition_rejects_same_name_different_uuid():
+    live_id, embedded_id = str(uuid4()), str(uuid4())
+    live = ComponentRepository.from_document({"version": 3, "components": {"Child": _component("Child", live_id)}})
+    plan = TestPlan(name="conflict", objects={"Child": _component("Child", embedded_id)})
+    with pytest.raises(ComponentRepositoryError, match="object_id"):
+        compose_execution_repository(plan, live)
+
+
+def test_execution_composition_rejects_uuid_reuse_under_different_name():
+    shared_id = str(uuid4())
+    live = ComponentRepository.from_document({"version": 3, "components": {"Live": _component("Live", shared_id)}})
+    plan = TestPlan(name="conflict", objects={"Embedded": _component("Embedded", shared_id)})
+    with pytest.raises(ComponentRepositoryError, match="reuses live object_id"):
+        compose_execution_repository(plan, live)
+
+
+def test_execution_composition_requires_owner_when_no_live_repository():
+    plan = TestPlan(name="orphan", objects={"Child": _component("Child", str(uuid4()), str(uuid4()))})
+    with pytest.raises(ComponentRepositoryError, match="owner_object_id"):
+        compose_execution_repository(plan)
+
+
+def test_shared_qualifier_rejects_missing_action_reference():
+    plan = TestPlan(name="missing", steps=(StepCall(
+        node_id="click", step_id="gui.object.action",
+        inputs={"component_id": "Not Recorded", "action": {"type": "click"}},
+    ),))
+    _, _, issues = qualify_plan(plan)
+    assert any("unknown component" in issue for issue in issues)
+
+
+def test_shared_qualifier_recovers_legacy_owner_from_live_repository():
+    parent_id, child_id = str(uuid4()), str(uuid4())
+    parent = _component("Parent", parent_id)
+    child = _component("Child", child_id, parent_id)
+    live = ComponentRepository.from_document({"version": 3, "components": {"Parent": parent, "Child": child}})
+    plan = TestPlan(name="legacy", objects={"Child": child})
+    _, effective, issues = qualify_plan(plan, component_repository=live)
+    assert issues == []
+    assert effective.get("Parent").object_id == parent_id
+
+
+def test_execution_returns_validation_error_on_unrecoverable_snapshot(tmp_path: Path):
+    plan = TestPlan(name="orphan", objects={"Child": _component("Child", str(uuid4()), str(uuid4()))})
+    backend = FakeBackend()
+    result = execute_plan(plan, backend, runs_dir=tmp_path)
+    assert result.exit_code == 2
+    assert backend.started is False
+    assert any("owner_object_id" in issue for issue in result.validation_errors)

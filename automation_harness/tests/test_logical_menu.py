@@ -310,7 +310,7 @@ def test_recorded_menu_subobject_becomes_select_menu_item_action():
     assert step.inputs == {
         "component_id": owner.component_id,
         "action": {
-            "type": "select_item",
+            "type": "select_menu_item",
             "value": "camera > camera_selector",
         },
     }
@@ -378,7 +378,7 @@ def test_menu_opener_and_terminal_item_record_as_one_semantic_interaction():
     assert interactions[0].repository_match.status == "known_subobject"
     step = interactions_to_steps(interactions)[0]
     assert step.inputs["component_id"] == owner.component_id
-    assert step.inputs["action"]["type"] == "select_item"
+    assert step.inputs["action"]["type"] == "select_menu_item"
     assert step.inputs["action"]["value"] == "openrecordingmenuitem"
 
 

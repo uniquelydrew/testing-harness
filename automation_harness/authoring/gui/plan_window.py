@@ -24,7 +24,7 @@ from automation_harness.core.reusable_step_snapshot import load_snapshotted_reus
 from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import embed_plan_repository, load_plan, repository_from_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.models.plan import PlanVariableRef, StepCall
-from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.runner.plan_execution import execute_plan, compose_execution_repository, qualify_plan
 
 
 class TestPlanWindow(ArtifactWindow):
@@ -37,7 +37,7 @@ class TestPlanWindow(ArtifactWindow):
         self.project = AuthoringProject.load(self.project_context) if self.project_context else None
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
-        self.repository = repository_from_plan(self.plan)
+        self.repository = self._initial_repository()
         self._assigned_repository_token = None
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -119,6 +119,18 @@ class TestPlanWindow(ArtifactWindow):
                 iterator = self.object_store.iter_next(iterator)
         self.refresh_object_actions()
 
+    def _initial_repository(self):
+        """Load assigned definitions before validating a legacy embedded snapshot."""
+        assigned_path = assigned_repository_path(self.plan, self.path)
+        if assigned_path is not None and assigned_path.is_file():
+            assigned, _ = load_authoring_repository(self.plan, self.path)
+            return compose_execution_repository(self.plan, assigned)
+        return repository_from_plan(self.plan)
+
+    def _qualified_plan(self):
+        return qualify_plan(self.plan, component_repository=self.repository,
+                            reusable_steps=self.reusable, registry=self.runtime_registry)
+
     def _refresh_assigned_repository(self):
         """Reload an externally edited assigned repository when its file changes."""
         path = assigned_repository_path(self.plan, self.path)
@@ -133,7 +145,7 @@ class TestPlanWindow(ArtifactWindow):
         # repository embedded in the plan is a portable snapshot of those same
         # objects and must not be overlaid back onto its source: doing so turns
         # an ordinary saved plan into a duplicate-name collision on reopen.
-        self.repository = assigned
+        self.repository = compose_execution_repository(self.plan, assigned)
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
         self._assigned_repository_token = token
@@ -435,19 +447,37 @@ class TestPlanWindow(ArtifactWindow):
 
     def validate(self):
         try:
-            expanded = self._expanded(); issues = validate_plan(expanded, self.runtime_registry); issues.extend(validate_plan_components(expanded, self.repository))
+            expanded, components, issues = self._qualified_plan()
         except Exception as exc: issues = ["%s: %s" % (type(exc).__name__, exc)]
         if issues: return self.error("Plan Validation", "\n".join(issues))
         self.info("Plan Validation", "Plan is structurally valid after reusable-step expansion.")
 
+    def _save_portable_plan(self):
+        portable = self.plan
+        if self.reusable:
+            portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
+        expanded = expand_reusable_steps(portable, self.reusable) if self.reusable else portable
+        complete_snapshot = embed_plan_repository(expanded, self.repository)
+        portable = replace(portable, objects=complete_snapshot.objects)
+        _, _, issues = qualify_plan(portable, component_repository=self.repository,
+                                     reusable_steps=self.reusable, registry=self.runtime_registry)
+        if issues:
+            raise ValueError('plan qualification failed: ' + '; '.join(issues))
+        save_plan(portable, self.path)
+        self.plan = portable
+        return portable
+
     def save(self):
         try:
-            portable = snapshot_reusable_dependencies(self.plan, self.reusable, self.repository) if self.reusable else self.plan
-            portable = embed_plan_repository(portable, self.repository); save_plan(portable, self.path); self.plan = portable
+            self._save_portable_plan()
             if self.project_context:
-                project = AuthoringProject.load(self.project_context).with_test_plan(self.path); save_authoring_project(self.project_context, project); self.project = project
-        except Exception as exc: return self.error("Save Test Plan", "%s: %s" % (type(exc).__name__, exc))
-        self.mark_dirty(False); self.set_status("Saved test plan")
+                project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
+                save_authoring_project(self.project_context, project)
+                self.project = project
+        except Exception as exc:
+            return self.error('Save Test Plan', '%s: %s' % (type(exc).__name__, exc))
+        self.mark_dirty(False)
+        self.set_status('Saved test plan')
 
     def save_group_to_registry(self):
         if not self.project_context: return self.info("Step Registry", "Open this Test Plan through a Project to save reusable compositions into Project Registries.")
@@ -503,12 +533,12 @@ class TestPlanWindow(ArtifactWindow):
 
     def run_test(self):
         try:
-            expanded = self._expanded(); issues = validate_plan(expanded, self.runtime_registry); issues.extend(validate_plan_components(expanded, self.repository))
+            expanded, components, issues = self._qualified_plan()
             if issues: return self.error("Run Test", "\n".join(issues))
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
         self.run_button.set_sensitive(False); self.set_status("Running test…")
-        plan = self.plan; reusable = dict(self.reusable); repository = self.repository
+        plan = self.plan; reusable = dict(self.reusable); repository = components
         def worker():
             try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable)
             except Exception as exc: GLib.idle_add(self._run_finished, None, exc); return

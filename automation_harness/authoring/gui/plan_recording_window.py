@@ -31,7 +31,7 @@ from automation_harness.core.logical_menu import (
     logical_menu_metadata,
     logical_menu_target_is_persisted,
 )
-from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan
+from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, validate_plan_components
 from automation_harness.drivers.java_agent import configured_java_recording_transports
 from automation_harness.recording import RecordingSession, interactions_to_steps
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
@@ -705,7 +705,14 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     (reviewed,),
                     start_index=len(self.plan.steps) + len(resolved) + 1,
                 )[0]
-                resolved.append(replace(call, group="Recorded session"))
+                candidate = replace(call, group="Recorded session")
+                effective_repository = assigned_repository or recording_repository or self.repository
+                issues = validate_plan_components(
+                    replace(self.plan, steps=(candidate,)), effective_repository,
+                )
+                if issues:
+                    raise ValueError("recorded action failed repository validation: " + "; ".join(issues))
+                resolved.append(candidate)
                 if diagnostic_session is not None:
                     diagnostic_session.diagnostic(
                         "review_step_created", interaction=reviewed,
