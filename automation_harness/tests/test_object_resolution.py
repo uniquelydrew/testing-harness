@@ -75,3 +75,21 @@ def test_runtime_playback_resolves_visual_from_owner_identity(monkeypatch):
 
     assert result.metadata["bounds"] == [300, 500, 80, 120]
     assert result.metadata["owner_object_id"] == visual.owner_object_id
+
+
+def test_resolved_existence_is_independent_of_visibility():
+    from automation_harness.core.object_resolution import ObjectResolution
+    from automation_harness.models.component import ComponentDefinition, CapturedComponent, ComponentState
+    resolved = ObjectResolution(
+        definition=ComponentDefinition(component_id="Main"),
+        bounds=(0, 0, 100, 100),
+        strategy="atspi",
+        captured=CapturedComponent(
+            name="Main", role="frame", description=None, accessible_id=None,
+            application="Demo", hierarchy=(), actions=(), bounds=(0, 0, 100, 100),
+            state=ComponentState(present=True, visible=False, showing=False),
+        ),
+    )
+    assert resolved.observed_state("exists") is True
+    assert resolved.observed_state("visible") is False
+    assert resolved.observed_state("focused") is None

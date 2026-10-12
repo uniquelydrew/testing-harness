@@ -15,6 +15,7 @@ from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
+from automation_harness.models.gui import ObjectType
 
 
 class ObjectResolutionError(LookupError):
@@ -28,6 +29,20 @@ class ObjectResolution:
     strategy: str
     captured: CapturedComponent | None = None
     owner: "ObjectResolution | None" = None
+
+    @property
+    def exists(self) -> bool:
+        """A successful semantic resolution establishes existence, not visibility."""
+        return True
+
+    def observed_state(self, name: str):
+        """Return an observed state, preserving unknown as None."""
+        if name == "exists":
+            return self.exists
+        if self.captured is None:
+            return None
+        state = self.captured.state
+        return getattr(state, name, None)
 
 
 def resolve_repository_object(service, repository: ComponentRepository, definition: ComponentDefinition) -> ObjectResolution:
@@ -48,6 +63,9 @@ def resolve_repository_object(service, repository: ComponentRepository, definiti
             if strategy.type == "anchored_visual":
                 return _resolve_visual(service, repository, definition, strategy.options)
             captured = resolve_live_capture(strategy.type, strategy.options, service=service)
+            if definition.object_type in (ObjectType.WINDOW, ObjectType.DIALOG):
+                if captured.semantic_type() not in (ObjectType.WINDOW, ObjectType.DIALOG):
+                    raise ObjectResolutionError("window locator resolved a non-window object")
             if captured.bounds is None:
                 raise ObjectResolutionError("resolved object has no screen bounds")
             return ObjectResolution(

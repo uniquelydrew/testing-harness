@@ -93,6 +93,15 @@ class TestObjectFactory:
             ) from exc
 
         mandatory, assistive = self._build_identity(observation, profile)
+        if self._object_type(observation) in (ObjectType.WINDOW, ObjectType.DIALOG):
+            # Window existence must remain identifiable even when a backend
+            # supplies no stable control-level accessible ID.
+            if not mandatory.get("accessible_id"):
+                mandatory.pop("accessible_id", None)
+                if observation.name:
+                    mandatory["name"] = observation.name
+                if observation.application:
+                    mandatory["application"] = observation.application
         if not mandatory:
             raise ValueError(
                 "captured object exposes no mandatory identity evidence for %s"
@@ -159,7 +168,6 @@ class TestObjectFactory:
                 for key, value in observation.logical_children.items()
             },
             scope={
-                "process_id": observation.process_id,
                 "window": observation.window_id,
                 "application": observation.application,
             },
