@@ -253,12 +253,17 @@ class ProjectWindow(ArtifactWindow):
         except Exception as exc:
             self._batches = ()
             self.set_status("Unable to load run history: %s" % exc)
+        previous_batch = getattr(getattr(self, "_shown_batch", None), "batch_id", None)
         self.batch_store.clear()
         for batch in self._batches:
             self.batch_store.append((batch.started_at, batch.status.upper(), str(len(batch.plans))))
         self.plan_run_store.clear(); self.failed_store.clear()
         self.failure_detail.get_buffer().set_text("")
         self.open_report_button.set_sensitive(False); self.open_folder_button.set_sensitive(False)
+        if self._batches:
+            index = next((i for i, batch in enumerate(self._batches)
+                          if batch.batch_id == previous_batch), 0)
+            self.batch_tree.get_selection().select_path(index)
 
     def show_batch(self):
         index = self._tree_index(self.batch_tree)
@@ -269,6 +274,8 @@ class ProjectWindow(ArtifactWindow):
             return
         for record in self._shown_batch.plans:
             self.plan_run_store.append((record.plan_name, record.status.upper(), str(record.passed), str(record.failed)))
+        if self._shown_batch.plans:
+            self.plan_run_tree.get_selection().select_path(0)
 
     @staticmethod
     def _tree_index(tree):
