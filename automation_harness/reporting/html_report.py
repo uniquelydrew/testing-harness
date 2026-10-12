@@ -59,11 +59,12 @@ def render_html_report(path: Path, events_path: Path, plan, result) -> None:
             body.append('<details class="step-card %s"%s>' % (html.escape(state), details_attr))
             body.append(
                 '<summary><span class="step-status">%s</span><span class="step-title">%s</span>'
-                '<code>%s</code></summary>'
+                '<code>%s · %s</code></summary>'
                 % (
                     html.escape(state.upper()),
-                    html.escape(call.node_id),
+                    html.escape(_step_display_name(call)),
                     html.escape(call.step_id),
+                    html.escape(call.node_id),
                 )
             )
             body.append('<div class="step-body">')
@@ -134,6 +135,14 @@ def _assertions_by_node(events: Iterable[Mapping[str, Any]]) -> dict[str | None,
         key = node_id if isinstance(node_id, str) else None
         result.setdefault(key, []).append(event)
     return result
+
+
+def _step_display_name(call) -> str:
+    """Use the author-assigned label before internal execution identifiers."""
+    for value in (getattr(call, "name", ""), getattr(call, "description", "")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(call.step_id).replace("_", " ").replace(".", " ").strip() or str(call.node_id)
 
 
 def _group_steps(calls) -> "OrderedDict[str, list[Any]]":

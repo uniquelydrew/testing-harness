@@ -63,28 +63,91 @@ class ProjectWindow(ArtifactWindow):
     def _build_runs_page(self, notebook):
         outer = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         notebook.append_page(outer, Gtk.Label(label="Test Runs"))
-        self.batch_tree, self.batch_store = self.list_tree((("Started", 190), ("Status", 90), ("Plans", 70), ("Passed", 70), ("Failed", 70)))
+        history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        history.set_border_width(8)
+        history.pack_start(Gtk.Label(label="RUN HISTORY", xalign=0), False, False, 0)
+        self.batch_tree, self.batch_store = self.list_tree((
+            ("Started", 170), ("Status", 85), ("Plans", 55)))
         self.batch_tree.get_selection().connect("changed", lambda *_args: self.show_batch())
-        outer.pack1(self.scrolled(self.batch_tree), resize=False, shrink=False)
-        right = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        outer.pack2(right, resize=True, shrink=False)
-        self.plan_run_tree, self.plan_run_store = self.list_tree((("Plan", 250), ("Status", 90), ("Passed", 70), ("Failed", 70), ("Error", 420)))
+        history.pack_start(self.scrolled(self.batch_tree), True, True, 0)
+        history.pack_start(Gtk.Label(label="PLANS IN BATCH", xalign=0), False, False, 0)
+        self.plan_run_tree, self.plan_run_store = self.list_tree((
+            ("Plan", 210), ("Status", 75), ("Passed", 60), ("Failed", 60)))
         self.plan_run_tree.get_selection().connect("changed", lambda *_args: self.show_plan_run())
-        right.pack1(self.scrolled(self.plan_run_tree), resize=True, shrink=False)
-        failure_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        row = Gtk.Box(spacing=6)
-        failure_box.pack_start(row, False, False, 0)
-        row.pack_start(Gtk.Label(label="FAILED STEPS"), False, False, 0)
-        self.open_report_button = self.button("Open HTML Report", self.open_report, parent=row)
-        self.open_folder_button = self.button("Open Run Folder", self.open_run_folder, parent=row)
-        self.failed_tree, self.failed_store = self.list_tree((("Node", 150), ("Step", 270), ("Error", 520)))
+        history.pack_start(self.scrolled(self.plan_run_tree), True, True, 0)
+        outer.pack1(history, resize=False, shrink=False)
+
+        workspace = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        workspace.set_border_width(8)
+        outer.pack2(workspace, resize=True, shrink=False)
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.run_heading = Gtk.Label(label="Select a test run", xalign=0)
+        self.run_heading.set_markup("<b>Select a test run</b>")
+        header.pack_start(self.run_heading, True, True, 0)
+        self.open_report_button = self.button("HTML Report", self.open_report, parent=header)
+        self.open_folder_button = self.button("Run Folder", self.open_run_folder, parent=header)
+        workspace.pack_start(header, False, False, 0)
+        self.run_summary = Gtk.Label(label="Choose a batch and plan to inspect execution.", xalign=0)
+        self.run_summary.set_line_wrap(True)
+        workspace.pack_start(self.run_summary, False, False, 0)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.pack_start(Gtk.Label(label="Execution timeline", xalign=0), True, True, 0)
+        self.step_filter = Gtk.ComboBoxText()
+        for value in ("All steps", "Failed", "Passed", "Running", "Not run"):
+            self.step_filter.append_text(value)
+        self.step_filter.set_active(0)
+        self.step_filter.connect("changed", lambda *_args: self._populate_step_list())
+        controls.pack_start(self.step_filter, False, False, 0)
+        workspace.pack_start(controls, False, False, 0)
+        inspector = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        workspace.pack_start(inspector, True, True, 0)
+        self.failed_tree, self.failed_store = self.list_tree((
+            ("#", 45), ("Result", 95), ("Step name", 280)))
         self.failed_tree.get_selection().connect("changed", lambda *_args: self.show_failed_step())
-        failure_box.pack_start(self.scrolled(self.failed_tree), True, True, 0)
-        self.failure_detail = Gtk.TextView(); self.failure_detail.set_editable(False); self.failure_detail.set_monospace(True)
-        failure_box.pack_start(self.scrolled(self.failure_detail), True, True, 0)
-        right.pack2(failure_box, resize=True, shrink=False)
-        outer.set_position(390); right.set_position(245)
-        self.open_report_button.set_sensitive(False); self.open_folder_button.set_sensitive(False)
+        inspector.pack1(self.scrolled(self.failed_tree), resize=True, shrink=False)
+        detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        detail_box.pack_start(Gtk.Label(label="STEP INSPECTOR", xalign=0), False, False, 0)
+        self.failure_detail = Gtk.TextView()
+        self.failure_detail.set_editable(False)
+        self.failure_detail.set_cursor_visible(False)
+        self.failure_detail.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.failure_detail.set_left_margin(14)
+        self.failure_detail.set_right_margin(14)
+        self.failure_detail.set_top_margin(12)
+        detail_box.pack_start(self.scrolled(self.failure_detail), True, True, 0)
+        inspector.pack2(detail_box, resize=True, shrink=False)
+        outer.set_position(360)
+        inspector.set_position(440)
+        self._visible_steps = []
+        self._inspected_steps = []
+        self.open_report_button.set_sensitive(False)
+        self.open_folder_button.set_sensitive(False)
+
+    def _populate_step_list(self):
+        selected = self._tree_index(self.failed_tree)
+        selected_node = None
+        if selected is not None and selected < len(self._visible_steps):
+            selected_node = self._visible_steps[selected].get("node_id")
+        filter_text = self.step_filter.get_active_text() or "All steps"
+        wanted = {"Failed": "FAILED", "Passed": "PASSED",
+                  "Running": "RUNNING", "Not run": "NOT RUN"}.get(filter_text)
+        self._visible_steps = [
+            item for item in self._inspected_steps
+            if wanted is None or item["status"] == wanted
+        ]
+        self.failed_store.clear()
+        for item in self._visible_steps:
+            number = self._inspected_steps.index(item) + 1
+            self.failed_store.append((str(number), item["status"], str(item["name"])))
+        if selected_node:
+            for index, item in enumerate(self._visible_steps):
+                if item["node_id"] == selected_node:
+                    self.failed_tree.get_selection().select_path(index)
+                    return
+        first_failure = next(
+            (i for i, item in enumerate(self._visible_steps) if item["status"] == "FAILED"), None)
+        if first_failure is not None:
+            self.failed_tree.get_selection().select_path(first_failure)
 
     def refresh(self):
         self.store.clear()
@@ -190,12 +253,17 @@ class ProjectWindow(ArtifactWindow):
         except Exception as exc:
             self._batches = ()
             self.set_status("Unable to load run history: %s" % exc)
+        previous_batch = getattr(getattr(self, "_shown_batch", None), "batch_id", None)
         self.batch_store.clear()
         for batch in self._batches:
-            self.batch_store.append((batch.started_at, batch.status.upper(), str(len(batch.plans)), str(batch.passed), str(batch.failed)))
+            self.batch_store.append((batch.started_at, batch.status.upper(), str(len(batch.plans))))
         self.plan_run_store.clear(); self.failed_store.clear()
         self.failure_detail.get_buffer().set_text("")
         self.open_report_button.set_sensitive(False); self.open_folder_button.set_sensitive(False)
+        if self._batches:
+            index = next((i for i, batch in enumerate(self._batches)
+                          if batch.batch_id == previous_batch), 0)
+            self.batch_tree.get_selection().select_path(index)
 
     def show_batch(self):
         index = self._tree_index(self.batch_tree)
@@ -205,7 +273,9 @@ class ProjectWindow(ArtifactWindow):
         if self._shown_batch is None:
             return
         for record in self._shown_batch.plans:
-            self.plan_run_store.append((record.plan_name, record.status.upper(), str(record.passed), str(record.failed), record.error or ""))
+            self.plan_run_store.append((record.plan_name, record.status.upper(), str(record.passed), str(record.failed)))
+        if self._shown_batch.plans:
+            self.plan_run_tree.get_selection().select_path(0)
 
     @staticmethod
     def _tree_index(tree):
@@ -220,31 +290,119 @@ class ProjectWindow(ArtifactWindow):
             return None
         return self._shown_batch.plans[index]
 
+    def _inspection_steps(self, record):
+        """Merge authored labels and execution events for all steps, not failures only."""
+        if not record or not record.artifact_dir:
+            return []
+        artifact = Path(record.artifact_dir)
+        labels = {}
+        try:
+            plan = load_plan(Path(record.plan_path))
+            labels = {
+                step.node_id: (step.name or step.description or step.step_id)
+                for step in plan.steps
+            }
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        states = {}
+        order = []
+        events_path = artifact / "events.jsonl"
+        if events_path.is_file():
+            try:
+                with events_path.open(encoding="utf-8") as stream:
+                    for line in stream:
+                        try:
+                            event = json.loads(line)
+                        except (ValueError, TypeError):
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        node = event.get("node_id")
+                        if not isinstance(node, str):
+                            continue
+                        if node not in states:
+                            states[node] = {"node_id": node, "status": "NOT RUN", "error": "", "assertions": []}
+                            order.append(node)
+                        item = states[node]
+                        kind = event.get("event")
+                        if kind == "plan_step_started":
+                            item["status"] = "RUNNING"
+                            item["step_id"] = event.get("step_id", item.get("step_id", ""))
+                        elif kind == "plan_step_finished":
+                            item["status"] = "PASSED"
+                        elif kind == "plan_step_failed":
+                            item["status"] = "FAILED"
+                            item["error"] = str(event.get("error") or "")
+                        elif kind == "assertion":
+                            item["assertions"].append(event)
+            except OSError:
+                pass
+        for node in labels:
+            if node not in states:
+                states[node] = {"node_id": node, "status": "NOT RUN", "error": "", "assertions": []}
+                order.append(node)
+        for node in order:
+            item = states[node]
+            item["name"] = labels.get(node) or item.get("step_id") or node
+        return [states[node] for node in order]
+
     def show_plan_run(self):
         record = self._selected_plan_run()
-        self.failed_store.clear(); self.failure_detail.get_buffer().set_text("")
+        self.failed_store.clear()
+        self.failure_detail.get_buffer().set_text("")
         has_artifacts = bool(record and record.artifact_dir and Path(record.artifact_dir).is_dir())
         self.open_report_button.set_sensitive(has_artifacts and (Path(record.artifact_dir) / "report.html").is_file())
         self.open_folder_button.set_sensitive(has_artifacts)
+        self._inspected_steps = self._inspection_steps(record)
+        self._populate_step_list()
         if record is None:
+            self.run_heading.set_markup("<b>Select a test run</b>")
+            self.run_summary.set_text("Choose a batch and plan to inspect execution.")
             return
-        items = failed_steps(record)
-        for item in items:
-            self.failed_store.append((str(item.get("node_id", "")), str(item.get("step", "")), str(item.get("error", ""))))
-        if not items and record.error:
-            self.failure_detail.get_buffer().set_text("RUN DIAGNOSTIC\n\n" + record.error)
+        import html
+        self.run_heading.set_markup("<b>%s</b>" % html.escape(record.plan_name))
+        not_run = sum(1 for item in self._inspected_steps if item["status"] == "NOT RUN")
+        self.run_summary.set_text(
+            "%s    •    %d passed    •    %d failed    •    %d not run\\n"
+            "Started: %s    Finished: %s" %
+            (record.status.upper(), record.passed, record.failed, not_run,
+             record.started_at, record.finished_at or "In progress")
+        )
+        if record.error and not self._inspected_steps:
+            self.failure_detail.get_buffer().set_text("RUN DIAGNOSTIC\\n\\n" + record.error)
 
     def show_failed_step(self):
-        record = self._selected_plan_run()
         index = self._tree_index(self.failed_tree)
-        if record is None or index is None:
-            self.failure_detail.get_buffer().set_text("")
+        if index is None or index >= len(self._visible_steps):
             return
-        items = failed_steps(record)
-        if index >= len(items):
-            return
-        item = dict(items[index])
-        self.failure_detail.get_buffer().set_text(json.dumps(item, indent=2, sort_keys=True, default=str))
+        item = self._visible_steps[index]
+        lines = [
+            str(item["name"]), "─" * 32, "",
+            "RESULT   " + item["status"],
+            "NODE     " + item["node_id"],
+        ]
+        if item.get("step_id"):
+            lines.append("ACTION   " + str(item["step_id"]))
+        if item.get("error"):
+            lines.extend(("", "FAILURE", str(item["error"])))
+        assertions = item.get("assertions") or []
+        if assertions:
+            lines.extend(("", "ASSERTIONS", "─" * 32))
+            for assertion in assertions:
+                outcome = "PASS" if assertion.get("passed") else "FAIL"
+                lines.append("[%s] %s" % (outcome, assertion.get("assertion", "Assertion")))
+                for key in ("message", "expected", "actual", "component_id"):
+                    if key in assertion:
+                        lines.append("  %s: %s" % (key.replace("_", " ").title(), assertion[key]))
+                for evidence in assertion.get("evidence") or ():
+                    if isinstance(evidence, dict):
+                        lines.append("  %s: %s" % (
+                            str(evidence.get("role", "Evidence")).title(),
+                            evidence.get("value", evidence.get("path", evidence.get("type", "")))))
+                lines.append("")
+        else:
+            lines.extend(("", "No assertion evidence recorded for this step."))
+        self.failure_detail.get_buffer().set_text("\\n".join(lines))
 
     def open_report(self):
         record = self._selected_plan_run()
