@@ -317,7 +317,7 @@ def test_routed_observation_materializes_through_canonical_factory():
 
     assert proposal.definition.object_type is ObjectType.BUTTON
     assert proposal.definition.framework == "javafx"
-    assert proposal.definition.scope["process_id"] == 12001
+    assert "process_id" not in proposal.definition.scope
 
 
 def test_javafx_definition_preserves_native_identity_and_framework():
@@ -565,3 +565,34 @@ def test_mixed_java_slider_capture_maps_to_canonical_value_action():
     )
 
     assert "set_value" in definition.actions
+
+
+def test_explicit_window_capture_requires_window_semantics():
+    service = HybridObjectCaptureService(
+        driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(),
+    )
+    with pytest.raises(ValueError, match="window or dialog"):
+        service.capture_window_at_point(25, 35, owner_pid=77)
+
+
+def test_unverified_atspi_ownership_is_not_accepted_as_a_pointer_target():
+    class MissingPid(_AtspiSuccess):
+        def capture_at_point_snapshot(self, x, y):
+            return _capture("atspi")
+
+    service = HybridObjectCaptureService(
+        driver=MissingPid(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(), pointer_monitor_factory=_monitor(77),
+    )
+    with pytest.raises(LookupError, match="ownership unverified"):
+        service.capture_next_click(timeout=1.0)
+
+
+def test_mismatched_atspi_ownership_is_rejected():
+    service = HybridObjectCaptureService(
+        driver=_AtspiSuccess(), javafx_driver=_JavaFxFailure(),
+        java_agent_driver=_UnavailableJavaAgent(), pointer_monitor_factory=_monitor(99),
+    )
+    with pytest.raises(LookupError, match="ownership mismatch"):
+        service.capture_next_click(timeout=1.0)

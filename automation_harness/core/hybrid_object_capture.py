@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any, Mapping
 
+from automation_harness.core.window_identity_capture import identify_captured_window
+from automation_harness.core.object_identity import assess_runtime_ownership
 from automation_harness.core.object_capture import LocatorAssessment, ObjectCaptureService, _criteria_stability
 from automation_harness.core.object_hierarchy import hierarchy_contract
 from automation_harness.core.menu_inventory import with_inventory_metadata
@@ -157,9 +159,35 @@ class HybridObjectCaptureService(ObjectCaptureService):
 
         snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
         captured = snapshot(*coordinates) if snapshot is not None else self.driver.capture_scoped_at_point(*coordinates)
-        if _capture_process_id(captured) != owner_pid:
-            raise LookupError("accessibility returned an object from a covered or unrelated process")
+        captured_pid = _capture_process_id(captured)
+        ownership = assess_runtime_ownership(owner_pid, captured_pid)
+        if ownership != "confirmed":
+            self._log(
+                "capture_ownership_mismatch",
+                x11_owner_pid=owner_pid,
+                accessibility_pid=captured_pid,
+                ownership=ownership,
+                coordinates=coordinates,
+                framework=getattr(captured, "framework", None),
+                name=getattr(captured, "name", None),
+                bounds=getattr(captured, "bounds", None),
+            )
+            raise LookupError(
+                "accessibility ownership %s at %s: X11 PID %s, AT-SPI PID %s; "
+                "capture requires corroborated ownership of the clicked surface"
+                % (ownership, coordinates, owner_pid, captured_pid)
+            )
         return captured, "atspi"
+
+    def capture_window_at_point(self, x: int, y: int, *, owner_pid: int) -> CapturedComponent:
+        """Capture an explicit window target using the existing authoritative adapter.
+
+        A child hit is not silently promoted to its parent: the backend must
+        actually return a window or dialog with durable semantic identity.
+        """
+        captured, backend = self._capture_owned_point((x, y), owner_pid)
+        identify_captured_window(captured)
+        return self._annotated(captured, backend=backend)
 
     def assess(self, captured: CapturedComponent) -> tuple[LocatorAssessment, ...]:
         strategy = captured.candidate_strategy()
