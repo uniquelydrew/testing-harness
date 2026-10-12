@@ -42,7 +42,8 @@ def test_factory_creates_backend_neutral_object_with_diagnostic_evidence():
         },
     }
     assert definition.properties["capture_evidence"]["authoritative"] is True
-    assert definition.scope["process_id"] == 42
+    assert "process_id" not in definition.scope
+    assert definition.scope["application"] == "MSCT"
 
 
 def test_factory_promotes_javafx_menu_button_to_logical_menu_owner():

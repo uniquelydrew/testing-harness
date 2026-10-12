@@ -41,6 +41,7 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
         self._workbench_original_component_id = None
         super().__init__(*args, **kwargs)
         self.button("Capture Next Click", self.capture_next_click)
+        self.button("Capture Window Click", self.capture_window_click)
         self.button("Refresh Menu Inventory", self.refresh_menu_inventory)
         self.button("Normalize Repository", self.normalize_repository)
         self._rename_legacy_edit_button(self.root)
@@ -206,6 +207,25 @@ class WorkbenchObjectRepositoryWindow(ObjectRepositoryWindow):
             "Use Edit in Workbench to inspect or change resolver identity.",
         ))
         self.detail.get_buffer().set_text("\n".join(lines))
+
+    def capture_window_click(self):
+        """Request an explicit top-level window target rather than a child."""
+        if not getattr(self.capture, "available", True):
+            return self.error("Object Capture", "No supported live desktop capture backend is available.")
+        self.set_status("Click the window target (not a child control)…")
+        self.window.hide()
+
+        def worker():
+            try:
+                captured = self.capture.capture_next_click(timeout=30.0)
+                from automation_harness.core.window_identity_capture import identify_captured_window
+                identify_captured_window(captured)
+            except Exception as exc:
+                GLib.idle_add(self._capture_next_click_finished, None, exc)
+            else:
+                GLib.idle_add(self._capture_next_click_finished, captured, None)
+
+        threading.Thread(target=worker, name="repository-window-capture", daemon=True).start()
 
     def capture_next_click(self):
         if not getattr(self.capture, "available", True):
