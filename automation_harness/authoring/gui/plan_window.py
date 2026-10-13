@@ -468,17 +468,16 @@ class TestPlanWindow(ArtifactWindow):
         if self.reusable:
             portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
         expanded = expand_reusable_steps(portable, self.reusable) if self.reusable else portable
-        # Assigned repository objects are authoritative: do not re-embed
-        # them into the plan during Save. Standalone plans remain portable.
         assigned = assigned_repository_path(portable, self.path)
-        if assigned is None:
-            complete_snapshot = embed_plan_repository(expanded, self.repository)
-            portable = replace(portable, objects=complete_snapshot.objects)
-        else:
-            from automation_harness.core.object_reconciliation import object_conflicts
-            conflicts = object_conflicts(portable.objects, self.repository)
-            if conflicts:
-                raise ValueError("object reconciliation required: " + "; ".join(conflicts))
+        if assigned is None or not assigned.is_file():
+            raise ValueError(
+                "Assign an existing Object Repository or create one before saving"
+            )
+        if portable.objects:
+            raise ValueError(
+                "Legacy embedded objects must be migrated into the assigned "
+                "Object Repository before saving"
+            )
         _, _, issues = qualify_plan(portable, component_repository=self.repository,
                                      reusable_steps=self.reusable, registry=self.runtime_registry)
         if issues:
