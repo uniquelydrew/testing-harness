@@ -120,3 +120,19 @@ def test_capture_to_action_to_test_vertical_slice_validates():
     plan = TestPlan("captured-object-test", steps=(click, assertion, exists))
     assert validate_plan(plan, default_step_registry()) == []
     assert validate_plan_components(plan, repository) == []
+
+
+def test_choicebox_selector_action_requires_explicit_value():
+    definition = _component(ObjectType.COMBO_BOX, {ActionType.SELECT_ITEM.value})
+    select = action_by_id(definition, "select_item")
+    assert any(item.name == "selector" and item.required for item in select.inputs)
+    call = select.to_step_call("choice-1", definition.component_id, {"selector": "Camera A"})
+    assert call.inputs["action"]["selector"] == "Camera A"
+
+
+def test_menu_path_serialization_contract():
+    definition = _component(ObjectType.MENU, {ActionType.SELECT_MENU_ITEM.value})
+    call = action_by_id(definition, "select_menu_item").to_step_call(
+        "menu-1", definition.component_id, {"path": "File > Open"}
+    )
+    assert call.inputs["action"]["path"] == "File > Open"
