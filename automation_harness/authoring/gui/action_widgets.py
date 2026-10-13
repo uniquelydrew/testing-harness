@@ -131,10 +131,10 @@ def read_action_input(item: ActionInput, widget):
         return True, json.loads(raw)
 
     if item.value_type == "object" and isinstance(widget, Gtk.ComboBox):
+        child = widget.get_child()
         raw = widget.get_active_id()
         if raw:
             return True, json.loads(raw)
-        child = widget.get_child()
         typed = child.get_text().strip() if isinstance(child, Gtk.Entry) else ""
         if not typed:
             return False, None
@@ -221,8 +221,8 @@ class MenuPathPicker(Gtk.Box):
         scroll.set_size_request(340, 180)
         scroll.add(self._tree)
         self._popover_content.pack_start(scroll, True, True, 0)
-        if not subobjects:
-            message = Gtk.Label(label="No captured menu options. Enter a route manually.")
+        if not menu_path_options(subobjects):
+            message = Gtk.Label(label="No selectable captured menu options. Enter a route manually.")
             message.set_line_wrap(True)
             self._popover_content.pack_start(message, False, False, 0)
         self._popover.add(self._popover_content)
