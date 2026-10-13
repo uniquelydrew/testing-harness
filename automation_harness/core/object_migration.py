@@ -6,6 +6,10 @@ No historical object snapshots are retained in the resulting plan.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+import os
+import tempfile
+import yaml
 from typing import Mapping
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
@@ -97,3 +101,75 @@ def reconcile_object(plan: TestPlan, repository: ComponentRepository, source_nam
         steps.append(call)
     updated_plan = replace(plan, objects=remaining, steps=tuple(steps))
     return updated_plan, updated_repository
+
+
+def persist_migration(plan_path: Path, repository_path: Path, plan: TestPlan,
+                      repository: ComponentRepository) -> None:
+    """Commit a staged migration with rollback on replacement failure.
+
+    Both new documents are validated and written to temporary files before
+    either destination changes. Backups exist only during the transaction and
+    are removed after successful completion; no snapshots enter plan data.
+    """
+    from automation_harness.core.test_plan import repository_from_plan
+    plan_path = Path(plan_path)
+    repository_path = Path(repository_path)
+    if plan_path.resolve() == repository_path.resolve():
+        raise ValueError("plan and repository paths must differ")
+    repository.validate_persistence()
+    repository_from_plan(plan)
+    from automation_harness.core.object_reconciliation import object_conflicts
+    conflicts = object_conflicts(plan.objects, repository)
+    if conflicts:
+        raise ComponentRepositoryError("; ".join(conflicts))
+    payloads = (
+        (repository_path, yaml.safe_dump(repository.to_document(), sort_keys=False, allow_unicode=True)),
+        (plan_path, yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True)),
+    )
+    prepared = []
+    backups = []
+    replaced = []
+    try:
+        for path, payload in payloads:
+            if not path.parent.is_dir():
+                raise FileNotFoundError("migration destination directory does not exist: %s" % path.parent)
+            fd, temp = tempfile.mkstemp(prefix=".%s.migrate." % path.name, dir=str(path.parent))
+            prepared.append((path, temp))
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for path, _temp in prepared:
+            if path.exists():
+                fd, backup = tempfile.mkstemp(prefix=".%s.rollback." % path.name, dir=str(path.parent))
+                os.close(fd)
+                with path.open("rb") as source, open(backup, "wb") as dest:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+                    dest.flush()
+                    os.fsync(dest.fileno())
+                backups.append((path, backup))
+            else:
+                backups.append((path, None))
+        for path, temp in prepared:
+            os.replace(temp, str(path))
+            replaced.append(path)
+    except BaseException:
+        for path, backup in reversed(backups):
+            if path not in replaced:
+                continue
+            if backup is None:
+                path.unlink()
+            else:
+                os.replace(backup, str(path))
+        raise
+    finally:
+        for _path, temp in prepared:
+            if os.path.exists(temp):
+                os.unlink(temp)
+        for _path, backup in backups:
+            if backup is not None and os.path.exists(backup):
+                os.unlink(backup)
