@@ -173,3 +173,54 @@ def persist_migration(plan_path: Path, repository_path: Path, plan: TestPlan,
         for _path, backup in backups:
             if backup is not None and os.path.exists(backup):
                 os.unlink(backup)
+
+
+def detect_legacy_objects(plan: TestPlan, repository: ComponentRepository):
+    """Classify embedded definitions without changing either artifact.
+
+    Safe objects are disjoint by name and UUID. Collisions must be resolved
+    interactively, including identical duplicate definitions.
+    """
+    from automation_harness.core.object_reconciliation import object_conflicts
+    conflicts = object_conflicts(plan.objects, repository)
+    safe = []
+    existing_names = set(repository.components)
+    existing_ids = {item.object_id for item in repository.components.values()}
+    for name, definition in plan.objects.items():
+        if not isinstance(definition, Mapping):
+            continue
+        if name not in existing_names and definition.get("object_id") not in existing_ids:
+            safe.append(name)
+    return tuple(safe), tuple(conflicts)
+
+
+def stage_legacy_migration(plan: TestPlan, repository: ComponentRepository):
+    """Migrate an entire disjoint legacy object graph without partial changes.
+
+    All conflicts block automatic migration; no A/B choice is inferred.
+    Ownership hierarchy remains intact because all embedded definitions move
+    together. Step references by name become durable UUID references.
+    """
+    safe, conflicts = detect_legacy_objects(plan, repository)
+    if conflicts:
+        raise ComponentRepositoryError("explicit reconciliation required: " + "; ".join(conflicts))
+    if len(safe) != len(plan.objects):
+        raise ComponentRepositoryError("legacy plan contains invalid embedded object definitions")
+    if not safe:
+        return plan, repository
+    objects = repository.to_document()["components"]
+    objects.update(dict(plan.objects))
+    merged = ComponentRepository.from_document(
+        {"version": 3, "components": objects}, source="legacy migration"
+    )
+    by_name = {name: definition["object_id"] for name, definition in plan.objects.items()}
+    steps = []
+    for call in plan.steps:
+        inputs = dict(call.inputs)
+        reference = inputs.get("component_id")
+        if reference in by_name:
+            inputs["component_id"] = by_name[reference]
+            call = replace(call, inputs=inputs)
+        steps.append(call)
+    migrated = replace(plan, objects={}, steps=tuple(steps))
+    return migrated, merged
