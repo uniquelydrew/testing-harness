@@ -46,6 +46,48 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
 
+
+    def _detect_and_migrate_legacy_on_open(self):
+        """Detect immediately after loading, before normal editing begins."""
+        if not self.plan.objects:
+            return True
+        if not self.ensure_repository_interactive():
+            self.info("Legacy Plan", "Repository assignment is required before legacy objects can be migrated.")
+            return False
+        try:
+            destination = assigned_repository_path(self.plan, self.path)
+            repository = ComponentRepository.load((destination,))
+            safe, conflicts = detect_legacy_objects(self.plan, repository)
+            if conflicts:
+                self.error(
+                    "Legacy Object Reconciliation Required",
+                    "Legacy definitions conflict with the assigned repository. "
+                    "Use Objects → Migrate Plan Objects to resolve them.\\n\\n"
+                    + "\\n".join(conflicts),
+                )
+                return False
+            if not self.confirm(
+                "Migrate Legacy Objects",
+                "Detected %d legacy object(s) in this plan. Move them into %s "
+                "before editing? Cancel preserves the original files."
+                % (len(safe), destination.name),
+            ):
+                return False
+            migrated, updated_repository = stage_legacy_migration(self.plan, repository)
+            persist_migration(self.path, destination, migrated, updated_repository)
+            self.plan = migrated
+            self.repository = updated_repository
+            self._assigned_repository_token = None
+            if self.registry_resources:
+                self.repository = self.repository.overlay(self.registry_resources.repository)
+            self.refresh_all()
+            self.mark_dirty(False)
+            self.set_status("Migrated %d legacy objects on open" % len(safe))
+            return True
+        except Exception as exc:
+            self.error("Legacy Migration", "%s: %s" % (type(exc).__name__, exc))
+            return False
+
     def show_objects_menu(self):
         self.refresh_objects()
         menu = Gtk.Menu()
@@ -328,33 +370,6 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not self.ensure_repository_interactive():
             return
         try:
-            if self.plan.objects:
-                destination = assigned_repository_path(self.plan, self.path)
-                repository = ComponentRepository.load((destination,))
-                safe, conflicts = detect_legacy_objects(self.plan, repository)
-                if conflicts:
-                    return self.error(
-                        "Legacy Object Reconciliation Required",
-                        "The plan contains conflicting embedded objects. Resolve these "
-                        "using Objects → Migrate Plan Objects before saving.\\n\\n"
-                        + "\\n".join(conflicts),
-                    )
-                if not self.confirm(
-                    "Migrate Legacy Objects",
-                    "Detected %d embedded legacy object(s). Transfer their definitions "
-                    "to %s and replace plan references with persistent object IDs? "
-                    "Both files will be updated. Cancel leaves them unchanged."
-                    % (len(safe), destination.name),
-                ):
-                    return
-                migrated, updated_repository = stage_legacy_migration(self.plan, repository)
-                persist_migration(self.path, destination, migrated, updated_repository)
-                self.plan = migrated
-                self.repository = updated_repository
-                self._assigned_repository_token = None
-                if self.registry_resources:
-                    self.repository = self.repository.overlay(self.registry_resources.repository)
-                self.refresh_all()
             portable = self._save_portable_plan()
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
