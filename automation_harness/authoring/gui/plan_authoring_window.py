@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import gi
 
@@ -59,6 +60,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         add_item("Migrate Plan Objects…", self.migrate_plan_objects, bool(self.plan.objects))
         menu.append(Gtk.SeparatorMenuItem())
         add_item("Assign Repository…", self.assign_object_repository)
+        add_item("Create Repository…", self.create_object_repository)
         add_item("Merge Repository…", self.merge_assign_central_repository)
         add_item(
             "Open Repository",
@@ -158,6 +160,73 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         except Exception as exc:
             return self.error("Migrate Plan Objects", "%s: %s" % (type(exc).__name__, exc))
 
+
+    def create_object_repository(self):
+        """Explicitly create and assign a companion repository."""
+        dialog = Gtk.FileChooserDialog(
+            title="Create Object Repository", transient_for=self.window,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                           "Create", Gtk.ResponseType.OK)
+        dialog.set_current_folder(str(self.path.parent))
+        dialog.set_current_name(self.path.stem + REPOSITORY_SUFFIX)
+        dialog.set_do_overwrite_confirmation(True)
+        response = dialog.run()
+        filename = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        if not filename:
+            return False
+        try:
+            selected = Path(filename).resolve()
+            if selected.suffix != REPOSITORY_SUFFIX:
+                selected = selected.with_suffix(REPOSITORY_SUFFIX)
+            if selected.exists():
+                raise ValueError("repository already exists; use Assign Repository instead")
+            ComponentRepository({}).save(selected)
+            self.plan = assign_repositories(self.plan, self.path, (
+                RepositoryAssociation(selected, RepositoryScope.LOCAL),
+            ))
+            self.assigned_repository_path = selected
+            self._assigned_repository_token = None
+            self.repository = ComponentRepository.load((selected,))
+            if self.registry_resources:
+                self.repository = self.repository.overlay(self.registry_resources.repository)
+            self.mark_dirty()
+            self.refresh_all()
+            self.set_status("Created Object Repository: %s" % selected.name)
+            return True
+        except Exception as exc:
+            self.error("Create Object Repository", "%s: %s" % (type(exc).__name__, exc))
+            return False
+
+    def ensure_repository_interactive(self):
+        """Prompt before saving or recording when no OR is assigned."""
+        path = assigned_repository_path(self.plan, self.path)
+        if path is not None and path.is_file():
+            return True
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window, modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Object Repository Required",
+        )
+        dialog.format_secondary_text(
+            "Select an existing Object Repository or create a new one. "
+            "The test plan will reference repository-owned objects."
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Select Existing…", 1)
+        dialog.add_button("Create New…", 2)
+        response = dialog.run()
+        dialog.destroy()
+        if response == 1:
+            self.assign_object_repository()
+        elif response == 2:
+            self.create_object_repository()
+        path = assigned_repository_path(self.plan, self.path)
+        return path is not None and path.is_file()
+
     def assign_object_repository(self):
         selected = self.choose_file(title="Assign Object Repository", suffix=REPOSITORY_SUFFIX)
         if selected is None:
@@ -256,6 +325,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
     def save(self):
         """Persist direct objects first, then add transitive Registry dependencies."""
+        if not self.ensure_repository_interactive():
+            return
         try:
             portable = self._save_portable_plan()
             if self.project_context:
