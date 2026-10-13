@@ -63,7 +63,7 @@ def create_action_input_widget(
     if item.value_type == "object":
         options = object_selector_options(component.subobjects)
         if options:
-            widget = Gtk.ComboBoxText()
+            widget = Gtk.ComboBoxText.new_with_entry()
             selected = current if current is not None else item.default
             selected_id = None
             for selector, label in options:
@@ -73,8 +73,10 @@ def create_action_input_widget(
                     selected_id = encoded
             if selected_id is not None:
                 _set_combo_active_id(widget, selected_id)
+            elif selected is not None:
+                widget.get_child().set_text(_editable(selected))
             else:
-                widget.set_active(0)
+                widget.set_active(-1)
             return widget
 
     widget = Gtk.Entry()
@@ -130,9 +132,16 @@ def read_action_input(item: ActionInput, widget):
 
     if item.value_type == "object" and isinstance(widget, Gtk.ComboBox):
         raw = widget.get_active_id()
-        if not raw:
+        if raw:
+            return True, json.loads(raw)
+        child = widget.get_child()
+        typed = child.get_text().strip() if isinstance(child, Gtk.Entry) else ""
+        if not typed:
             return False, None
-        return True, json.loads(raw)
+        try:
+            return True, json.loads(typed)
+        except ValueError:
+            return True, typed
 
     raw = widget.get_text().strip()
     if not raw:
