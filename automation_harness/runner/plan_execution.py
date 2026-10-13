@@ -23,6 +23,7 @@ from automation_harness.models.run import RunResult, utc_now
 from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.reporting.artifacts import RunArtifacts
 from automation_harness.reporting.html_report import render_html_report
+from automation_harness.runner.pre_step_evidence import collect_pre_step_evidence
 
 
 def compose_execution_repository(
@@ -224,6 +225,17 @@ def execute_plan(
             setattr(context, "execution_node_id", node_id)
             try:
                 with context.execution_scope(call.scope):
+                    # Evidence is observational: capture before invocation and never
+                    # let a collector failure change execution or assertion results.
+                    try:
+                        pre_evidence = collect_pre_step_evidence(context, node_id, resolved_inputs)
+                        recorder.record("pre_step_evidence", **pre_evidence.to_dict())
+                    except Exception as evidence_error:
+                        recorder.record("pre_step_evidence", node_id=node_id,
+                                        attempt_id="attempt-001", capture_phase="pre_execution",
+                                        evidence_status="unavailable", expected_components=0,
+                                        captured_components=0, components=[],
+                                        diagnostic="%s: %s" % (type(evidence_error).__name__, evidence_error))
                     invocation = context.run_step_detailed(
                         definition.name,
                         **resolved_inputs,

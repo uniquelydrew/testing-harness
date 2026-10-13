@@ -6,6 +6,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import quote
+from automation_harness.models.step_evidence import display_status
 
 
 def render_html_report(path: Path, events_path: Path, plan, result) -> None:
@@ -13,6 +14,8 @@ def render_html_report(path: Path, events_path: Path, plan, result) -> None:
     events = _read_events(events_path)
     step_events = _step_events(events)
     assertions = _assertions_by_node(events)
+    pre_step_evidence = {str(event.get('node_id')): event for event in events
+                         if event.get('event') == 'pre_step_evidence'}
     groups = _group_steps(plan.steps)
     status = "PASS" if result.exit_code == 0 else "FAIL"
     failed_assertions = sum(
@@ -54,6 +57,8 @@ def render_html_report(path: Path, events_path: Path, plan, result) -> None:
         for call in calls:
             event = step_events.get(call.node_id, {})
             state = event.get("status", "not-run")
+            evidence = pre_step_evidence.get(str(call.node_id), {})
+            display = display_status(state, evidence.get("evidence_status", "not_applicable"))
             failed = state == "failed"
             details_attr = " open" if failed else ""
             body.append('<details class="step-card %s"%s>' % (html.escape(state), details_attr))
@@ -61,13 +66,15 @@ def render_html_report(path: Path, events_path: Path, plan, result) -> None:
                 '<summary><span class="step-status">%s</span><span class="step-title">%s</span>'
                 '<code>%s · %s</code></summary>'
                 % (
-                    html.escape(state.upper()),
+                    html.escape(display),
                     html.escape(_step_display_name(call)),
                     html.escape(call.step_id),
                     html.escape(call.node_id),
                 )
             )
             body.append('<div class="step-body">')
+            if evidence:
+                body.append(_render_pre_step_evidence(evidence))
             if event.get("error"):
                 body.append('<div class="failure-message">%s</div>' % html.escape(str(event["error"])))
             for assertion in assertions.get(call.node_id, ()):
@@ -92,6 +99,27 @@ def render_html_report(path: Path, events_path: Path, plan, result) -> None:
     )
     path.write_text("\n".join(body) + "\n", encoding="utf-8")
 
+
+def _render_pre_step_evidence(event: Mapping[str, Any]) -> str:
+    """Render non-authoritative pre-action observations separately from assertions."""
+    status = str(event.get("evidence_status") or "not_applicable")
+    captured = int(event.get("captured_components") or 0)
+    expected = int(event.get("expected_components") or 0)
+    parts = ['<section class="pre-step-evidence"><h4>Pre-execution evidence</h4>',
+             '<p>Coverage: %d of %d — %s</p>' % (captured, expected, html.escape(status))]
+    for component in event.get("components") or ():
+        name = html.escape(str(component.get("component_id") or "unknown"))
+        path = component.get("image_path")
+        parts.append('<div class="evidence-item"><strong>%s</strong>' % name)
+        if path and component.get("status") == "captured":
+            safe_path = quote(str(path), safe="/")
+            parts.append('<a href="%s"><img loading="lazy" src="%s" alt="Pre-execution %s"></a>'
+                         % (safe_path, safe_path, name))
+        if component.get("diagnostic"):
+            parts.append('<p class="muted">%s</p>' % html.escape(str(component["diagnostic"])))
+        parts.append('</div>')
+    parts.append('</section>')
+    return "".join(parts)
 
 def _read_events(path: Path) -> list[dict[str, Any]]:
     events = []
