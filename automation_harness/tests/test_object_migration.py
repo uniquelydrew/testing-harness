@@ -4,7 +4,8 @@ from uuid import uuid4
 import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
-from automation_harness.core.object_migration import reconcile_object
+from automation_harness.core.object_migration import reconcile_object, persist_migration
+from automation_harness.core.test_plan import load_plan
 from automation_harness.models.plan import TestPlan, StepCall
 
 
@@ -55,3 +56,28 @@ def test_combination_requires_selection_for_differing_properties():
                                        selection="combine", fields={"description": "plan"})
     assert updated.objects == {}
     assert merged.get("File Menu").description == "recorded"
+
+
+def test_persist_migration_removes_plan_definition(tmp_path):
+    uid = str(uuid4())
+    plan = TestPlan(name="demo", objects={"File Menu": object_data(uid)})
+    updated, repository = reconcile_object(plan, ComponentRepository({}), "File Menu")
+    plan_path = tmp_path / "demo.ahplan"
+    repo_path = tmp_path / "demo.ahobjects"
+    persist_migration(plan_path, repo_path, updated, repository)
+    assert load_plan(plan_path).objects == {}
+    assert ComponentRepository.load((repo_path,)).get(uid).component_id == "File Menu"
+
+
+def test_persist_migration_rejects_overlap_before_writing(tmp_path):
+    uid = str(uuid4())
+    plan = TestPlan(name="demo", objects={"File Menu": object_data(uid)})
+    repository = ComponentRepository.from_document({
+        "version": 3, "components": {"File Menu": object_data(uid)}
+    })
+    plan_path = tmp_path / "demo.ahplan"
+    repo_path = tmp_path / "demo.ahobjects"
+    with pytest.raises(ComponentRepositoryError, match="ownership conflict"):
+        persist_migration(plan_path, repo_path, plan, repository)
+    assert not plan_path.exists()
+    assert not repo_path.exists()
