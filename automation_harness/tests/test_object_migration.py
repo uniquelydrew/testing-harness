@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
-from automation_harness.core.object_migration import reconcile_object, persist_migration
+from automation_harness.core.object_migration import reconcile_object, persist_migration, detect_legacy_objects, stage_legacy_migration
 from automation_harness.core.test_plan import load_plan
 from automation_harness.models.plan import TestPlan, StepCall
 
@@ -81,3 +81,30 @@ def test_persist_migration_rejects_overlap_before_writing(tmp_path):
         persist_migration(plan_path, repo_path, plan, repository)
     assert not plan_path.exists()
     assert not repo_path.exists()
+
+
+def test_bulk_legacy_migration_preserves_parent_child_ownership():
+    parent_id, child_id = str(uuid4()), str(uuid4())
+    parent = object_data(parent_id)
+    child = object_data(child_id)
+    child["owner_object_id"] = parent_id
+    plan = TestPlan(name="legacy", objects={"Window": parent, "Button": child},
+                    steps=(StepCall(node_id="one", step_id="gui.interact",
+                                    inputs={"component_id": "Button"}),))
+    migrated, repository = stage_legacy_migration(plan, ComponentRepository({}))
+    assert migrated.objects == {}
+    assert migrated.steps[0].inputs["component_id"] == child_id
+    assert repository.get(child_id).owner_object_id == parent_id
+
+
+def test_bulk_migration_never_auto_resolves_identity_conflicts():
+    uid = str(uuid4())
+    plan = TestPlan(name="legacy", objects={"File Menu": object_data(uid)})
+    repository = ComponentRepository.from_document({
+        "version": 3, "components": {"File Menu": object_data(uid)}
+    })
+    safe, conflicts = detect_legacy_objects(plan, repository)
+    assert not safe
+    assert conflicts
+    with pytest.raises(ComponentRepositoryError, match="explicit reconciliation"):
+        stage_legacy_migration(plan, repository)
