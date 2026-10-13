@@ -16,6 +16,7 @@ from automation_harness.authoring.gui.action_widgets import (
     read_action_input,
 )
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
+from automation_harness.authoring.plan_open import inspect_plan_open, PlanOpenState
 from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.plan_repository import (
     assign_repositories,
@@ -36,9 +37,15 @@ class TestPlanAuthoringWindow(TestPlanWindow):
     """Concrete test composition workflow layered on the Test Plan document window."""
 
     def __init__(self, *args, **kwargs):
+        # Preflight before TestPlanWindow can compose conflicting repositories.
+        path = args[0] if args else kwargs["path"]
+        self.open_result = inspect_plan_open(path)
+        legacy = self.open_result.state is PlanOpenState.MIGRATION_REQUIRED
+        kwargs["preloaded_plan"] = self.open_result.plan
+        kwargs["defer_repository"] = legacy
         super().__init__(*args, **kwargs)
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
-        if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
+        if not legacy and self.assigned_repository_path is not None and self.assigned_repository_path.exists():
             assigned = load_repository_set(self.plan, self.path).compose()
             self.repository = assigned
             if self.registry_resources:
