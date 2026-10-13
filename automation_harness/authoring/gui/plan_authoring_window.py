@@ -179,7 +179,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.set_status("Saved portable test plan")
 
     def add_object_action(self, component_id=None, action_id=None):
-        self.refresh_objects()
+        self._refresh_assigned_repository()
         if not self.repository.components:
             return self.info(
                 "Object Action",
@@ -216,7 +216,6 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     action_combo.set_active_id(preferred_action_id)
                 else:
                     action_combo.set_active(0)
-            rebuild_inputs()
 
         def rebuild_inputs(*_args):
             for child in inputs_box.get_children():
