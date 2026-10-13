@@ -15,6 +15,7 @@ from automation_harness.authoring.gui.action_widgets import (
     read_action_input,
 )
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
+from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.plan_repository import (
     assign_repositories,
     assigned_repository_path,
@@ -277,7 +278,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     continue
                 values[name] = value
             call = replace(definition.to_step_call(_next_node_id(self.plan.steps), component_id, values), group=group)
-            self.plan = replace(self.plan, steps=(*self.plan.steps, call))
+            self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1))
         except Exception as exc:
             dialog.destroy()
             return self.error("Object Action", "%s: %s" % (type(exc).__name__, exc))
