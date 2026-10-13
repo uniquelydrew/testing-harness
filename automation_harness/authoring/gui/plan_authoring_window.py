@@ -216,6 +216,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     action_combo.set_active_id(preferred_action_id)
                 else:
                     action_combo.set_active(0)
+            rebuild_inputs()
 
         def rebuild_inputs(*_args):
             for child in inputs_box.get_children():
@@ -224,6 +225,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             component_id = object_combo.get_active_id()
             action_id = action_combo.get_active_id()
             if not component_id or not action_id:
+                inputs_box.show_all()
                 return
             component = self.repository.get(component_id)
             definition = next(
