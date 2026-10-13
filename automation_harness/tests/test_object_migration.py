@@ -1,0 +1,57 @@
+"""Tests for in-memory object ownership transfer."""
+from uuid import uuid4
+
+import pytest
+
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
+from automation_harness.core.object_migration import reconcile_object
+from automation_harness.models.plan import TestPlan, StepCall
+
+
+def object_data(uid):
+    return {
+        "object_id": uid,
+        "object_type": "custom",
+        "actions": ["resolve"],
+        "strategies": [{"driver": "atspi", "selector": {"name": "File"}}],
+    }
+
+
+def test_migration_removes_embedded_definition_and_rewrites_reference():
+    uid = str(uuid4())
+    plan = TestPlan(name="demo", objects={"File Menu": object_data(uid)},
+                    steps=(StepCall(node_id="one", step_id="gui.interact",
+                                    inputs={"component_id": "File Menu"}),))
+    updated, repository = reconcile_object(plan, ComponentRepository({}), "File Menu")
+    assert updated.objects == {}
+    assert updated.steps[0].inputs["component_id"] == uid
+    assert repository.get(uid).component_id == "File Menu"
+
+
+def test_migration_rejects_identity_collision_without_mutating_inputs():
+    plan_id, repo_id = str(uuid4()), str(uuid4())
+    plan = TestPlan(name="demo", objects={"File Menu": object_data(plan_id)})
+    repository = ComponentRepository.from_document({
+        "version": 3, "components": {"File Menu": object_data(repo_id)}
+    })
+    with pytest.raises(ComponentRepositoryError, match="different immutable identities"):
+        reconcile_object(plan, repository, "File Menu")
+    assert "File Menu" in plan.objects
+
+
+def test_combination_requires_selection_for_differing_properties():
+    uid = str(uuid4())
+    source = object_data(uid)
+    source["description"] = "recorded"
+    destination = object_data(uid)
+    destination["description"] = "repository"
+    plan = TestPlan(name="demo", objects={"File Menu": source})
+    repository = ComponentRepository.from_document({
+        "version": 3, "components": {"File Menu": destination}
+    })
+    with pytest.raises(ValueError, match="requires an explicit selection"):
+        reconcile_object(plan, repository, "File Menu", selection="combine", fields={})
+    updated, merged = reconcile_object(plan, repository, "File Menu",
+                                       selection="combine", fields={"description": "plan"})
+    assert updated.objects == {}
+    assert merged.get("File Menu").description == "recorded"
