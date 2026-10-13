@@ -456,11 +456,18 @@ class ManagedExecutionQueue:
         self.recompute()
 
     def ready(self) -> tuple[str, ...]:
-        return tuple(
-            call.node_id
-            for call in self.plan.steps
-            if self.state.steps[call.node_id].status is StepStatus.READY
-        )
+        """Return only the next sequentially executable node.
+
+        GUI actions depend on the preceding authored state, even without
+        explicit data-flow edges. Never skip a blocked earlier node.
+        """
+        terminal = {StepStatus.PASSED, StepStatus.SKIPPED, StepStatus.CANCELLED}
+        for call in self.plan.steps:
+            status = self.state.steps[call.node_id].status
+            if status in terminal:
+                continue
+            return (call.node_id,) if status is StepStatus.READY else ()
+        return ()
 
     def start(self, node_id: str, resolved_inputs: Mapping[str, Any] | None = None) -> None:
         node = self._node(node_id)
