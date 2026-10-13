@@ -25,7 +25,7 @@ from automation_harness.authoring.plan_repository import (
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.object_migration import reconcile_object, persist_migration
+from automation_harness.core.object_migration import reconcile_object, persist_migration, stage_legacy_migration, detect_legacy_objects
 from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
@@ -328,6 +328,33 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not self.ensure_repository_interactive():
             return
         try:
+            if self.plan.objects:
+                destination = assigned_repository_path(self.plan, self.path)
+                repository = ComponentRepository.load((destination,))
+                safe, conflicts = detect_legacy_objects(self.plan, repository)
+                if conflicts:
+                    return self.error(
+                        "Legacy Object Reconciliation Required",
+                        "The plan contains conflicting embedded objects. Resolve these "
+                        "using Objects → Migrate Plan Objects before saving.\\n\\n"
+                        + "\\n".join(conflicts),
+                    )
+                if not self.confirm(
+                    "Migrate Legacy Objects",
+                    "Detected %d embedded legacy object(s). Transfer their definitions "
+                    "to %s and replace plan references with persistent object IDs? "
+                    "Both files will be updated. Cancel leaves them unchanged."
+                    % (len(safe), destination.name),
+                ):
+                    return
+                migrated, updated_repository = stage_legacy_migration(self.plan, repository)
+                persist_migration(self.path, destination, migrated, updated_repository)
+                self.plan = migrated
+                self.repository = updated_repository
+                self._assigned_repository_token = None
+                if self.registry_resources:
+                    self.repository = self.repository.overlay(self.registry_resources.repository)
+                self.refresh_all()
             portable = self._save_portable_plan()
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
