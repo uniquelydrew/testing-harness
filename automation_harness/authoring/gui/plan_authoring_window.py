@@ -45,7 +45,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 self.repository = self.repository.overlay(self.registry_resources.repository)
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
-
+        if not self._detect_and_migrate_legacy_on_open():
+            self.window.destroy()
 
     def _detect_and_migrate_legacy_on_open(self):
         """Detect immediately after loading, before normal editing begins."""
@@ -65,6 +66,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     "Use Objects → Migrate Plan Objects to resolve them.\\n\\n"
                     + "\\n".join(conflicts),
                 )
+                self.migrate_plan_objects()
+                if not self.plan.objects:
+                    return True
                 return False
             if not self.confirm(
                 "Migrate Legacy Objects",
