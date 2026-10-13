@@ -11,7 +11,7 @@ from gi.repository import Gtk
 
 from automation_harness.authoring.action_catalog import ActionInput, actions_for
 from automation_harness.models.component import ComponentDefinition
-from automation_harness.core.menu_navigation import menu_item_label, resolve_navigation
+from automation_harness.core.menu_navigation import menu_item_label, navigation_from_path, resolve_navigation
 
 
 def interaction_actions(definition: ComponentDefinition):
@@ -96,6 +96,8 @@ def read_action_input(item: ActionInput, widget):
             path, enabled = value
             if not enabled:
                 raise ValueError("the selected menu option is disabled")
+            if isinstance(path, (list, tuple)):
+                return True, navigation_from_path(widget._subobjects, path)
             return True, path
         model = widget.get_model()
         iterator = widget.get_active_iter()
@@ -112,9 +114,9 @@ def read_action_input(item: ActionInput, widget):
             if isinstance(path, list) and path and all(
                 isinstance(segment, str) and segment for segment in path
             ):
-                return True, path
+                return True, navigation_from_path({}, path)
         if isinstance(value, list):
-            return True, value
+            return True, navigation_from_path({}, value)
         raise ValueError("menu picker produced an invalid navigation value")
 
     if item.value_type == "boolean":
