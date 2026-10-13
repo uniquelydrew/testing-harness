@@ -114,9 +114,9 @@ def read_action_input(item: ActionInput, widget):
             if isinstance(path, list) and path and all(
                 isinstance(segment, str) and segment for segment in path
             ):
-                return True, navigation_from_path({}, path)
+                return True, " > ".join(path)
         if isinstance(value, list):
-            return True, navigation_from_path({}, value)
+            return True, " > ".join(value)
         raise ValueError("menu picker produced an invalid navigation value")
 
     if item.value_type == "boolean":
