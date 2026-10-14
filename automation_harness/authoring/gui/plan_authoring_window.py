@@ -134,6 +134,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if destination is None or not destination.is_file():
             return self.error("Migrate Plan Objects", "Assign an existing Object Repository first.")
         try:
+            before_plan = artifact_fingerprint(self.path).get("sha256")
+            before_repository = artifact_fingerprint(destination).get("sha256")
             repository = ComponentRepository.load((destination,))
             existing = repository.to_document()["components"]
             dialog = Gtk.Dialog(title="Reconcile Legacy Plan Objects", transient_for=self.window, modal=True)
@@ -209,7 +211,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             staged_plan, staged_repository = stage_reconciled_migration(self.plan, repository, decisions)
             emit("migration_commit_started", plan=str(self.path), repository=str(destination),
                  plan_before=artifact_fingerprint(self.path), repository_before=artifact_fingerprint(destination))
-            persist_migration(self.path, destination, staged_plan, staged_repository)
+            persist_migration(self.path, destination, staged_plan, staged_repository,
+                              expected_fingerprints=(before_plan, before_repository))
             emit("migration_commit_completed", plan=str(self.path), repository=str(destination),
                  plan_after=artifact_fingerprint(self.path), repository_after=artifact_fingerprint(destination))
             self.plan = staged_plan
