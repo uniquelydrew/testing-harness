@@ -219,22 +219,23 @@ def _environment_summary():
     }
 
 
-def _preflight(command):
+def _preflight(command, env=None):
+    env = os.environ if env is None else env
     checks = []
     def check(name, ok, detail):
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
-    display = os.environ.get("DISPLAY")
-    session_type = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+    display = env.get("DISPLAY")
+    session_type = (env.get("XDG_SESSION_TYPE") or "").lower()
     check("display", bool(display), display or "DISPLAY is unset")
     if display and session_type != "wayland":
-        xauthority = os.environ.get("XAUTHORITY")
+        xauthority = env.get("XAUTHORITY")
         check(
             "xauthority",
             bool(xauthority and os.path.isfile(xauthority) and os.access(xauthority, os.R_OK)),
             xauthority or "XAUTHORITY is unset",
         )
-    check("dbus", bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS")),
-          "present" if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else "DBUS_SESSION_BUS_ADDRESS is unset")
+    check("dbus", bool(env.get("DBUS_SESSION_BUS_ADDRESS")),
+          "present" if env.get("DBUS_SESSION_BUS_ADDRESS") else "DBUS_SESSION_BUS_ADDRESS is unset")
     executable = command[0]
     resolved = executable if os.path.isabs(executable) else (
         shutil.which(executable) if hasattr(shutil, "which") else None
@@ -286,8 +287,9 @@ def _supervise(args):
     manifest_path = os.path.join(session, "manifest.json")
     stop_path = os.path.join(session, "stop.request")
 
+    child_env = _desktop_environment()
     _write_json(os.path.join(session, "environment.json"), _environment_summary())
-    preflight = _preflight(command)
+    preflight = _preflight(command, env=child_env)
     _write_json(os.path.join(session, "preflight.json"), preflight)
     if not all(item["ok"] for item in preflight):
         manifest = {
@@ -303,7 +305,6 @@ def _supervise(args):
     err = open(stderr_path, "ab", 0)
     started = _utc()
     try:
-        child_env = _desktop_environment()
         child_env.setdefault("PYTHONFAULTHANDLER", "1")
         child_env["AUTOMATION_HARNESS_CODEX_SESSION_DIR"] = session
         diagnostic_dir = os.path.join(args.cwd, "artifacts", "crash-investigation")
