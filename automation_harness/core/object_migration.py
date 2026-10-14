@@ -224,3 +224,119 @@ def stage_legacy_migration(plan: TestPlan, repository: ComponentRepository):
         steps.append(call)
     migrated = replace(plan, objects={}, steps=tuple(steps))
     return migrated, merged
+
+
+def stage_reconciled_migration(plan, repository, decisions):
+    """Stage all legacy objects atomically; no input artifact is modified.
+
+    decisions maps source names to explicit {selection, target_name, fields,
+    identity_mapping}. Identity mapping is required when two colliding names
+    carry different UUIDs. No implicit repository merge is performed.
+    """
+    from dataclasses import replace
+    if set(decisions) != set(plan.objects):
+        raise ComponentRepositoryError("every legacy object requires a reconciliation decision")
+    documents = dict(repository.to_document()["components"])
+    mapping = {}
+    names = {}
+    for source_name in sorted(plan.objects):
+        source = plan.objects[source_name]
+        if not isinstance(source, Mapping) or not source.get("object_id"):
+            raise ComponentRepositoryError("invalid legacy object %r" % source_name)
+        decision = decisions[source_name]
+        selection = decision.get("selection")
+        target_name = decision.get("target_name") or source_name
+        target = documents.get(target_name)
+        source_id = source["object_id"]
+        same_id = [name for name, obj in documents.items() if obj.get("object_id") == source_id]
+        if target is None and same_id:
+            raise ComponentRepositoryError("explicit target_name required for UUID match %r" % source_name)
+        if target is None:
+            if selection != "plan":
+                raise ComponentRepositoryError("new object %r must use plan definition" % source_name)
+            resolved = dict(source)
+            destination_id = source_id
+        else:
+            destination_id = target["object_id"]
+            if destination_id != source_id and decision.get("identity_mapping") != destination_id:
+                raise ComponentRepositoryError("explicit identity mapping required for %r" % source_name)
+            if selection == "repository":
+                resolved = dict(target)
+            elif selection == "plan":
+                resolved = dict(source)
+            elif selection == "combine":
+                fields = decision.get("fields")
+                if not isinstance(fields, Mapping):
+                    raise ComponentRepositoryError("explicit combine fields required for %r" % source_name)
+                resolved = {}
+                for key in set(source) | set(target):
+                    if key in ("object_id", "owner_object_id"):
+                        continue
+                    if source.get(key) == target.get(key):
+                        if key in source:
+                            resolved[key] = source[key]
+                        continue
+                    choice = fields.get(key)
+                    if choice not in ("plan", "repository"):
+                        raise ComponentRepositoryError("field %r of %r requires a decision" % (key, source_name))
+                    chosen = source if choice == "plan" else target
+                    if key in chosen:
+                        resolved[key] = chosen[key]
+                owners = (source.get("owner_object_id"), target.get("owner_object_id"))
+                if owners[0] != owners[1]:
+                    raise ComponentRepositoryError("ownership conflict for %r requires a single definition" % source_name)
+                if owners[0] is not None:
+                    resolved["owner_object_id"] = owners[0]
+            else:
+                raise ComponentRepositoryError("invalid reconciliation selection for %r" % source_name)
+            resolved["object_id"] = destination_id
+        if source_id in mapping and mapping[source_id] != destination_id:
+            raise ComponentRepositoryError("conflicting identity mappings")
+        mapping[source_id] = destination_id
+        names[source_name] = destination_id
+        documents[target_name] = resolved
+
+    # Ownership and step references are resolved against the complete staged set.
+    for obj in documents.values():
+        owner = obj.get("owner_object_id")
+        if owner in mapping:
+            obj["owner_object_id"] = mapping[owner]
+    valid_ids = {obj["object_id"] for obj in documents.values()}
+    for name, obj in documents.items():
+        owner = obj.get("owner_object_id")
+        if owner and owner not in valid_ids:
+            raise ComponentRepositoryError("unresolved owner for %r" % name)
+
+    def rewrite(value):
+        if isinstance(value, Mapping):
+            return {key: (names.get(item, mapping.get(item, item))
+                          if key == "component_id" and isinstance(item, str)
+                          else mapping.get(item, item)
+                          if key == "owner_object_id" and isinstance(item, str)
+                          else rewrite(item))
+                    for key, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(rewrite(item) for item in value)
+        return value
+
+    steps = tuple(replace(step, inputs=rewrite(step.inputs)) for step in plan.steps)
+    migrated = replace(plan, objects={}, steps=steps)
+    merged = ComponentRepository.from_document(
+        {"version": 3, "components": documents}, source="staged legacy reconciliation"
+    )
+    for step in migrated.steps:
+        def check(value):
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    if key == "component_id" and isinstance(item, str):
+                        if item in names or item in mapping:
+                            raise ComponentRepositoryError("unresolved migrated step reference")
+                    else:
+                        check(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    check(item)
+        check(step.inputs)
+    return migrated, merged
