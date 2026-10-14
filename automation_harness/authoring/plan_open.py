@@ -1,7 +1,5 @@
 """Preflight legacy detection before the GTK editor resolves repositories."""
-from __future__ import annotations
-
-from dataclasses import dataclass
+from collections import namedtuple
 from enum import Enum
 from pathlib import Path
 
@@ -15,12 +13,7 @@ class PlanOpenState(Enum):
     MIGRATION_REQUIRED = "migration_required"
 
 
-@dataclass(frozen=True)
-class PlanOpenResult:
-    plan: object
-    state: PlanOpenState
-    repository_path: Path | None
-    legacy_names: tuple[str, ...]
+PlanOpenResult = namedtuple('PlanOpenResult', 'plan state repository_path legacy_names')
 
 
 def inspect_plan_open(path):
