@@ -27,7 +27,7 @@ from automation_harness.authoring.plan_repository import (
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.core.component_repository import ComponentRepository
-from automation_harness.core.object_migration import reconcile_object, persist_migration, stage_legacy_migration, detect_legacy_objects
+from automation_harness.core.object_migration import reconcile_object, persist_migration, stage_legacy_migration, detect_legacy_objects, stage_reconciled_migration
 from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
@@ -131,92 +131,100 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
 
     def migrate_plan_objects(self):
-        """Explicit ownership transfer; no repository snapshots remain in plan."""
+        """Collect all decisions, then commit the plan and repository once."""
         destination = assigned_repository_path(self.plan, self.path)
         if destination is None or not destination.is_file():
             return self.error("Migrate Plan Objects", "Assign an existing Object Repository first.")
         try:
             repository = ComponentRepository.load((destination,))
-            dialog = Gtk.Dialog(title="Migrate Plan Objects", transient_for=self.window, modal=True)
-            dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Migrate", Gtk.ResponseType.OK)
+            existing = repository.to_document()["components"]
+            dialog = Gtk.Dialog(title="Reconcile Legacy Plan Objects", transient_for=self.window, modal=True)
+            dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply All", Gtk.ResponseType.OK)
             area = dialog.get_content_area()
             area.set_spacing(8)
             area.set_border_width(10)
-            label = Gtk.Label(label="Select a plan-local object to transfer to the assigned repository.")
-            label.set_line_wrap(True)
-            area.pack_start(label, False, False, 0)
-            objects = Gtk.ComboBoxText()
-            for name in sorted(self.plan.objects):
-                objects.append(name, name)
-            objects.set_active(0)
-            area.pack_start(objects, False, False, 0)
-            mode = Gtk.ComboBoxText()
-            for key, caption in (("plan", "A — Plan definition"),
-                                 ("repository", "B — Repository definition"),
-                                 ("combine", "Combine properties")):
-                mode.append(key, caption)
-            mode.set_active(0)
-            area.pack_start(mode, False, False, 0)
-            field_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            area.pack_start(field_box, True, True, 0)
-            field_choices = {}
-
-            def refresh_fields(*_args):
-                for child in field_box.get_children():
-                    field_box.remove(child)
-                    child.destroy()
-                field_choices.clear()
-                name = objects.get_active_id()
-                if not name or mode.get_active_id() != "combine":
-                    dialog.show_all()
-                    return
-                source = self.plan.objects[name]
-                matches = [item for item in repository.components.values()
-                           if item.object_id == source.get("object_id") or item.component_id == name]
-                if len(matches) != 1:
-                    field_box.pack_start(Gtk.Label(label="Combine requires one unambiguous matching OR object."), False, False, 0)
-                    dialog.show_all()
-                    return
-                other = repository.to_document()["components"][matches[0].component_id]
-                for key in sorted(set(source) | set(other)):
-                    if key in ("object_id", "owner_object_id") or source.get(key) == other.get(key):
-                        continue
-                    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                    field_label = Gtk.Label(label=key)
-                    field_label.set_xalign(0)
-                    row.pack_start(field_label, True, True, 0)
-                    choice = Gtk.ComboBoxText()
-                    choice.append("plan", "A — Plan")
-                    choice.append("repository", "B — OR")
-                    choice.set_active(0)
-                    row.pack_start(choice, False, False, 0)
-                    field_choices[key] = choice
-                    field_box.pack_start(row, False, False, 0)
-                dialog.show_all()
-
-            objects.connect("changed", refresh_fields)
-            mode.connect("changed", refresh_fields)
-            refresh_fields()
+            area.pack_start(Gtk.Label(label="Resolve every object before applying. Cancel leaves both files unchanged."), False, False, 0)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_min_content_height(350)
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            scroll.add(content)
+            area.pack_start(scroll, True, True, 0)
+            widgets = {}
+            for name, source in sorted(self.plan.objects.items()):
+                frame = Gtk.Frame(label=name)
+                section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+                section.set_border_width(6)
+                frame.add(section)
+                content.pack_start(frame, False, False, 0)
+                targets = [key for key, obj in existing.items()
+                           if key == name or obj.get("object_id") == source.get("object_id")]
+                target_choice = Gtk.ComboBoxText()
+                target_choice.append("", "New repository object")
+                for key in targets:
+                    target_choice.append(key, key)
+                target_choice.set_active(1 if targets else 0)
+                section.pack_start(target_choice, False, False, 0)
+                mode = Gtk.ComboBoxText()
+                for key, title in (("plan", "A - Plan"), ("repository", "B - Repository"),
+                                   ("combine", "Combine - choose each differing field")):
+                    mode.append(key, title)
+                mode.set_active(0)
+                section.pack_start(mode, False, False, 0)
+                identity = Gtk.CheckButton(label="Explicitly map legacy UUID to selected repository UUID")
+                section.pack_start(identity, False, False, 0)
+                fields = {}
+                for target_name in targets:
+                    other = existing[target_name]
+                    for field in sorted(set(source) | set(other)):
+                        if field in ("object_id", "owner_object_id") or source.get(field) == other.get(field):
+                            continue
+                        if field in fields:
+                            continue
+                        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        row.pack_start(Gtk.Label(label=field), True, True, 0)
+                        choice = Gtk.ComboBoxText()
+                        choice.append("plan", "A - Plan")
+                        choice.append("repository", "B - Repository")
+                        choice.set_active(0)
+                        row.pack_start(choice, False, False, 0)
+                        section.pack_start(row, False, False, 0)
+                        fields[field] = choice
+                widgets[name] = (target_choice, mode, identity, fields)
+            dialog.show_all()
             response = dialog.run()
-            name = objects.get_active_id()
-            selected = mode.get_active_id()
-            fields = {key: widget.get_active_id() for key, widget in field_choices.items()}
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                emit("migration_cancelled", plan=str(self.path))
+                return False
+            decisions = {}
+            for name, (target_choice, mode, identity, fields) in widgets.items():
+                target_name = target_choice.get_active_id() or name
+                target = existing.get(target_name)
+                decisions[name] = {
+                    "target_name": target_name,
+                    "selection": mode.get_active_id(),
+                    "fields": {key: widget.get_active_id() for key, widget in fields.items()},
+                    "identity_mapping": target["object_id"] if target and identity.get_active() else None,
+                }
             dialog.destroy()
-            if response != Gtk.ResponseType.OK or not name:
-                return
-            updated_plan, updated_repository = reconcile_object(
-                self.plan, repository, name, selection=selected, fields=fields
-            )
-            persist_migration(self.path, destination, updated_plan, updated_repository)
-            self.plan = updated_plan
-            self.repository = updated_repository
+            staged_plan, staged_repository = stage_reconciled_migration(self.plan, repository, decisions)
+            emit("migration_commit_started", plan=str(self.path), repository=str(destination),
+                 plan_before=artifact_fingerprint(self.path), repository_before=artifact_fingerprint(destination))
+            persist_migration(self.path, destination, staged_plan, staged_repository)
+            emit("migration_commit_completed", plan=str(self.path), repository=str(destination),
+                 plan_after=artifact_fingerprint(self.path), repository_after=artifact_fingerprint(destination))
+            self.plan = staged_plan
+            self.repository = staged_repository
             self._assigned_repository_token = None
             if self.registry_resources:
                 self.repository = self.repository.overlay(self.registry_resources.repository)
             self.refresh_all()
             self.mark_dirty(False)
-            self.set_status("Migrated %s to %s" % (name, destination.name))
+            self.set_status("Migrated %d legacy objects" % len(decisions))
+            return True
         except Exception as exc:
+            emit("migration_failed", plan=str(self.path), error_type=type(exc).__name__, error=str(exc))
             return self.error("Migrate Plan Objects", "%s: %s" % (type(exc).__name__, exc))
 
 
