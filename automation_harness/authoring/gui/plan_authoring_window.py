@@ -54,7 +54,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
         if not self._detect_and_migrate_legacy_on_open():
-            self.window.destroy()
+            # Keep the editor visible so repository recovery can be retried.
+            # Block editing until the legacy migration has completed.
+            self.set_status("Legacy migration pending — use Objects to resolve the repository")
+            self.save_button.set_sensitive(False) if hasattr(self, "save_button") else None
 
     def _detect_and_migrate_legacy_on_open(self):
         """Detect immediately after loading, before normal editing begins."""
@@ -63,8 +66,42 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             return True
         destination = assigned_repository_path(self.plan, self.path)
         if destination is None or not destination.is_file():
-            self.error("Legacy Plan", "Assign an existing Object Repository before opening this legacy plan. No files were modified.")
-            return False
+            # Legacy files may carry only a recording association or a moved OR.
+            # Ask for a replacement without persisting it before migration.
+            dialog = Gtk.MessageDialog(
+                transient_for=self.window, modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.NONE,
+                text="Resolve Legacy Object Repository",
+            )
+            dialog.format_secondary_text(
+                ("Assigned repository not found: %s. " % destination if destination else
+                 "This plan has no authoring repository association. ") +
+                "Select the existing repository used by this plan. "
+                "Cancel preserves the original plan and repository."
+            )
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Locate Repository…", Gtk.ResponseType.OK)
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.OK:
+                emit("migration_cancelled", plan=str(self.path))
+                return False
+            selected = self.choose_file(title="Locate Existing Object Repository", suffix=REPOSITORY_SUFFIX)
+            if selected is None:
+                return False
+            selected = selected.resolve()
+            if not selected.is_file():
+                self.error("Legacy Repository", "Selected repository does not exist: %s" % selected)
+                return False
+            try:
+                ComponentRepository.load((selected,))
+                self.plan = assign_repositories(self.plan, self.path, (
+                    RepositoryAssociation(selected, RepositoryScope.LOCAL),
+                ))
+            except Exception as exc:
+                self.error("Legacy Repository", "%s: %s" % (type(exc).__name__, exc))
+                return False
         try:
             destination = assigned_repository_path(self.plan, self.path)
             repository = ComponentRepository.load((destination,))
