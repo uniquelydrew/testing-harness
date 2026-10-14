@@ -368,6 +368,22 @@ def _supervise(args):
     )
     if gdb_ptrace_blocked:
         state = "diagnostic_blocked"
+    if code != 0:
+        failure_dir = os.path.join(session, "failure-evidence")
+        try:
+            if not os.path.isdir(failure_dir):
+                os.makedirs(failure_dir)
+            _write_json(os.path.join(failure_dir, "process.json"), {
+                "timestamp": _utc(), "returncode": code,
+                "signal": -code if code < 0 else None,
+                "application_process": manifest.get("application_process"),
+            })
+            for filename in ("authoring-events.jsonl", "preflight.json", "environment.json"):
+                source = os.path.join(session, filename)
+                if os.path.isfile(source):
+                    shutil.copyfile(source, os.path.join(failure_dir, filename))
+        except (IOError, OSError):
+            pass
     manifest.update({
         "state": state, "finished_at": _utc(), "returncode": code,
         "signal": -code if code < 0 else None,
@@ -553,6 +569,8 @@ def _report(args):
     print("stdout: %s" % os.path.join(session, "stdout.log"))
     print("stderr: %s" % os.path.join(session, "stderr.log"))
     print("runtime: %s" % os.path.join(session, "runtime.jsonl"))
+    print("authoring events: %s" % os.path.join(session, "authoring-events.jsonl"))
+    print("failure evidence: %s" % os.path.join(session, "failure-evidence"))
     return 0
 
 
