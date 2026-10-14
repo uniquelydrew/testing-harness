@@ -17,6 +17,7 @@ from automation_harness.authoring.gui.action_widgets import (
 )
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
 from automation_harness.authoring.plan_open import inspect_plan_open, PlanOpenState
+from automation_harness.authoring.diagnostic_events import emit, artifact_fingerprint
 from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.plan_repository import (
     assign_repositories,
@@ -58,6 +59,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
     def _detect_and_migrate_legacy_on_open(self):
         """Detect immediately after loading, before normal editing begins."""
         if not self.plan.objects:
+            emit('migration_not_required', plan=str(self.path))
             return True
         if not self.ensure_repository_interactive():
             self.info("Legacy Plan", "Repository assignment is required before legacy objects can be migrated.")
@@ -66,6 +68,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             destination = assigned_repository_path(self.plan, self.path)
             repository = ComponentRepository.load((destination,))
             safe, conflicts = detect_legacy_objects(self.plan, repository)
+            emit('migration_classified', plan=str(self.path), repository=str(destination), safe_count=len(safe), conflict_count=len(conflicts), repository_fingerprint=artifact_fingerprint(destination))
             if conflicts:
                 self.error(
                     "Legacy Object Reconciliation Required",
@@ -84,8 +87,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 % (len(safe), destination.name),
             ):
                 return False
+            emit('migration_commit_started', plan=str(self.path), repository=str(destination), plan_before=artifact_fingerprint(self.path), repository_before=artifact_fingerprint(destination))
             migrated, updated_repository = stage_legacy_migration(self.plan, repository)
             persist_migration(self.path, destination, migrated, updated_repository)
+            emit('migration_commit_completed', plan=str(self.path), repository=str(destination), plan_after=artifact_fingerprint(self.path), repository_after=artifact_fingerprint(destination))
             self.plan = migrated
             self.repository = updated_repository
             self._assigned_repository_token = None
@@ -96,6 +101,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             self.set_status("Migrated %d legacy objects on open" % len(safe))
             return True
         except Exception as exc:
+            emit("migration_failed", plan=str(self.path), error_type=type(exc).__name__, error=str(exc))
             self.error("Legacy Migration", "%s: %s" % (type(exc).__name__, exc))
             return False
 
