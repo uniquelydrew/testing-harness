@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import os
+import hashlib
 import tempfile
 import yaml
 from typing import Mapping
@@ -104,7 +105,7 @@ def reconcile_object(plan: TestPlan, repository: ComponentRepository, source_nam
 
 
 def persist_migration(plan_path: Path, repository_path: Path, plan: TestPlan,
-                      repository: ComponentRepository) -> None:
+                      repository: ComponentRepository, expected_fingerprints=None) -> None:
     """Commit a staged migration with rollback on replacement failure.
 
     Both new documents are validated and written to temporary files before
@@ -116,6 +117,17 @@ def persist_migration(plan_path: Path, repository_path: Path, plan: TestPlan,
     repository_path = Path(repository_path)
     if plan_path.resolve() == repository_path.resolve():
         raise ValueError("plan and repository paths must differ")
+    if expected_fingerprints is not None:
+        for path, expected in ((plan_path, expected_fingerprints[0]), (repository_path, expected_fingerprints[1])):
+            current = None
+            if path.is_file():
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                current = digest.hexdigest()
+            if current != expected:
+                raise ComponentRepositoryError("migration destination changed during reconciliation: %s" % path)
     repository.validate_persistence()
     repository_from_plan(plan)
     from automation_harness.core.object_reconciliation import object_conflicts
