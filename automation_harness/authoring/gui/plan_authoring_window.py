@@ -61,8 +61,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not self.plan.objects:
             emit('migration_not_required', plan=str(self.path))
             return True
-        if not self.ensure_repository_interactive():
-            self.info("Legacy Plan", "Repository assignment is required before legacy objects can be migrated.")
+        destination = assigned_repository_path(self.plan, self.path)
+        if destination is None or not destination.is_file():
+            self.error("Legacy Plan", "Assign an existing Object Repository before opening this legacy plan. No files were modified.")
             return False
         try:
             destination = assigned_repository_path(self.plan, self.path)
@@ -76,10 +77,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     "Use Objects → Migrate Plan Objects to resolve them.\\n\\n"
                     + "\\n".join(conflicts),
                 )
-                self.migrate_plan_objects()
-                if not self.plan.objects:
-                    return True
-                return False
+                return bool(self.migrate_plan_objects())
             if not self.confirm(
                 "Migrate Legacy Objects",
                 "Detected %d legacy object(s) in this plan. Move them into %s "
