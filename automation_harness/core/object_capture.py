@@ -330,6 +330,14 @@ class ObjectCaptureService:
             revision=existing.revision + 1,
             validate_live=validate_live,
         )
+        # A recapture updates a locator, never the semantic type of an object.
+        # Enforce this in the shared capture service for all GUI frontends.
+        if proposed.object_type != existing.object_type:
+            raise ValueError(
+                "Recapture type mismatch for %s: expected %s, captured %s. "
+                "Select a component of the same type or create a new object."
+                % (existing.component_id, existing.object_type.value, proposed.object_type.value)
+            )
         properties = dict(proposed.properties or {})
         if any(strategy.type == "anchored_visual" for strategy in proposed.strategies):
             properties["coordinate_space"] = "normalized-owner"
