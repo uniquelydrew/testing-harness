@@ -34,12 +34,13 @@ class TestPlanWindow(ArtifactWindow):
     def __init__(self, path, *, project_context=None, opener=None, preloaded_plan=None, defer_repository=False):
         super().__init__(path, project_context=project_context, opener=opener)
         self.plan = preloaded_plan if preloaded_plan is not None else load_plan(self.path)
+        self._defer_repository_composition = bool(defer_repository)
         self.runtime_registry = default_step_registry()
         self.project = AuthoringProject.load(self.project_context) if self.project_context else None
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
         # Legacy migration must precede composition of competing definitions.
-        self.repository = repository_from_plan(self.plan) if defer_repository else self._initial_repository()
+        self.repository = ComponentRepository({}) if defer_repository else self._initial_repository()
         self._assigned_repository_token = None
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -135,6 +136,8 @@ class TestPlanWindow(ArtifactWindow):
 
     def _refresh_assigned_repository(self):
         """Reload an externally edited assigned repository when its file changes."""
+        if self._defer_repository_composition:
+            return False
         path = assigned_repository_path(self.plan, self.path)
         if path is None or not path.is_file():
             return False
