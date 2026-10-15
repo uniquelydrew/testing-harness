@@ -812,9 +812,13 @@ def test_action_and_text_events_drain_against_last_resolved_target():
     adapter._action(SimpleNamespace(
         type="object:state-changed:checked", detail1=True, source=object(),
     ))
-    adapter._text(SimpleNamespace(
-        type="object:text-changed:insert", any_data="updated", source=object(),
-    ))
+    # Text callbacks now snapshot their AT-SPI source directly rather than
+    # resolving through the driver's pointer-oriented capture pipeline.
+    with patch("automation_harness.recording.adapters.atspi._capture_accessible", return_value=target) as capture:
+        adapter._text(SimpleNamespace(
+            type="object:text-changed:insert", any_data="updated", source=object(),
+        ))
+    assert capture.call_count == 1
     adapter._pointer_worker.stop_and_drain()
 
     assert [type(item).__name__ for item in emitted] == [
