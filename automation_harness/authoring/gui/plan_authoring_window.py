@@ -63,6 +63,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not self.plan.objects:
             emit('migration_not_required', plan=str(self.path))
             return True
+        original_plan = self.plan
         destination = assigned_repository_path(self.plan, self.path)
         if destination is None or not destination.is_file():
             # Legacy files may carry only a recording association or a moved OR.
@@ -113,13 +114,17 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                     "Use Objects → Migrate Plan Objects to resolve them.\\n\\n"
                     + "\\n".join(conflicts),
                 )
-                return bool(self.migrate_plan_objects())
+                completed = bool(self.migrate_plan_objects())
+                if not completed:
+                    self.plan = original_plan
+                return completed
             if not self.confirm(
                 "Migrate Legacy Objects",
                 "Detected %d legacy object(s) in this plan. Move them into %s "
                 "before editing? Cancel preserves the original files."
                 % (len(safe), destination.name),
             ):
+                self.plan = original_plan
                 return False
             emit('migration_commit_started', plan=str(self.path), repository=str(destination), plan_before=artifact_fingerprint(self.path), repository_before=artifact_fingerprint(destination))
             migrated, updated_repository = stage_legacy_migration(self.plan, repository)
@@ -137,6 +142,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             return True
         except Exception as exc:
             emit("migration_failed", plan=str(self.path), error_type=type(exc).__name__, error=str(exc))
+            self.plan = original_plan
             self.error("Legacy Migration", "%s: %s" % (type(exc).__name__, exc))
             return False
 
