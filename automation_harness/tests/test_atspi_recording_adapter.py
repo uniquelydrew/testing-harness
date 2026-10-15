@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from automation_harness.models.component import CapturedComponent, ComponentState
 from automation_harness.drivers.atspi_driver import (
@@ -785,9 +786,10 @@ def test_action_and_text_callbacks_are_ignored_after_admission_closes():
     adapter._action(SimpleNamespace(
         type="object:state-changed:checked", detail1=True, source=object(),
     ))
-    adapter._text(SimpleNamespace(
-        type="object:text-changed:insert", any_data="updated", source=object(),
-    ))
+    with patch("automation_harness.recording.adapters.atspi._capture_accessible", return_value=target):
+        adapter._text(SimpleNamespace(
+            type="object:text-changed:insert", any_data="updated", source=object(),
+        ))
 
     assert adapter._pointer_worker.snapshot()["queue_depth"] == 0
     adapter._pointer_worker.stop_and_drain()
@@ -919,3 +921,39 @@ def test_pointer_worker_drain_is_bounded_and_recoverable():
     assert worker.stop_and_drain(timeout=1.0) is True
     assert worker.snapshot()["worker_alive"] is False
     assert worker.state == worker.STOPPED
+
+
+def test_text_callback_avoids_full_tree_resolution_and_drains_on_stop():
+    target = replace(
+        _target(), role="text field", actions=("set_text",),
+        state=ComponentState(True, editable=True),
+    )
+    driver = _Driver(target)
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    emitted = []
+    adapter._emit = emitted.append
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+    with patch("automation_harness.recording.adapters.atspi._capture_accessible", return_value=target) as capture:
+        adapter._text(SimpleNamespace(
+            type="object:text-changed:insert", any_data="updated", source=object(),
+        ))
+    assert capture.call_count == 1
+    assert driver.sources == []
+    assert adapter._active_callbacks == 0
+    assert adapter._pointer_worker.stop_and_drain(timeout=1.0)
+    assert [type(item).__name__ for item in emitted] == ["TextChanged"]
+
+
+def test_text_callback_skips_capture_after_shutdown_requested():
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+    adapter._stop_requested.set()
+    with patch("automation_harness.recording.adapters.atspi._capture_accessible") as capture:
+        adapter._text(SimpleNamespace(
+            type="object:text-changed:insert", any_data="updated", source=object(),
+        ))
+    capture.assert_not_called()
+    assert adapter._active_callbacks == 0
