@@ -129,6 +129,23 @@ class AtspiDriver:
         match, _trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
         return _capture_accessible(match, pyatspi)
 
+    def capture_text_event_source_snapshot(self, source: Any) -> CapturedComponent:
+        """Capture bounded source evidence for a text event, never scan the desktop."""
+        pyatspi = _pyatspi()
+        attributes = _attributes(source)
+        parent = _parent(source)
+        return CapturedComponent(
+            name=getattr(source, "name", None), role=_role_name(source),
+            description=None, accessible_id=_accessible_id(source, attributes=attributes),
+            application=_application_name(source), window=_window_name(source), hierarchy=(), actions=(),
+            bounds=None, state=_component_state(source, pyatspi, attributes=attributes, bounds=None),
+            backend_properties=attributes,
+            parent_name=getattr(parent, "name", None) if parent is not None else None,
+            parent_role=_role_name(parent) if parent is not None else None,
+            parent_accessible_id=_accessible_id(parent) if parent is not None else None,
+            framework="atspi", native_class=attributes.get("class") or attributes.get("class-name"),
+        )
+
     def capture_at_point(self, x: int, y: int) -> CapturedComponent:
         """Capture the deepest accessible object containing one desktop point."""
         pyatspi = _pyatspi()
