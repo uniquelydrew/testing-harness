@@ -54,10 +54,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
         if not self._detect_and_migrate_legacy_on_open():
-            # Keep the editor visible so repository recovery can be retried.
-            # Block editing until the legacy migration has completed.
+            # The editor remains available for repository recovery, but cannot
+            # save or run while embedded definitions remain unresolved.
             self.set_status("Legacy migration pending — use Objects to resolve the repository")
-            self.save_button.set_sensitive(False) if hasattr(self, "save_button") else None
 
     def _detect_and_migrate_legacy_on_open(self):
         """Detect immediately after loading, before normal editing begins."""
