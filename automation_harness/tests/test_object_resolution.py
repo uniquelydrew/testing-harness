@@ -4,6 +4,7 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.component_handle import ComponentHandle
 from automation_harness.core.object_resolution import ObjectResolutionError, resolve_repository_object
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy, ResolvedComponent
+from automation_harness.models.gui import ObjectType
 
 
 class _CaptureService:
@@ -93,3 +94,22 @@ def test_resolved_existence_is_independent_of_visibility():
     assert resolved.observed_state("exists") is True
     assert resolved.observed_state("visible") is False
     assert resolved.observed_state("focused") is None
+
+
+def test_semantic_resolution_succeeds_without_bounds():
+    class BoundlessService:
+        def capture_by_locator(self, *, identification):
+            return CapturedComponent(
+                name="Menu", role="menu", description=None, accessible_id="file",
+                application="Demo", window="Main", hierarchy=(), actions=(), bounds=None,
+                state=ComponentState(present=True), object_type=ObjectType.MENU,
+            )
+
+    definition = ComponentDefinition(
+        component_id="File", object_type=ObjectType.MENU,
+        strategies=(ComponentStrategy("atspi", {"identification": {"mandatory": {"accessible_id": "file"}}}),),
+    )
+    result = resolve_repository_object(BoundlessService(), ComponentRepository({"File": definition}), definition)
+    assert result.exists is True
+    assert result.bounds is None
+    assert result.has_visual_bounds is False

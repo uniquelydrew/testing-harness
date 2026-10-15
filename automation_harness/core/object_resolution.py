@@ -22,10 +22,19 @@ class ObjectResolutionError(LookupError):
     pass
 
 
+def semantic_type_compatible(expected: ObjectType, actual: ObjectType) -> bool:
+    """Return whether a live object can represent the persisted semantic role."""
+    if expected is ObjectType.CUSTOM:
+        return True
+    if expected in (ObjectType.WINDOW, ObjectType.DIALOG):
+        return actual in (ObjectType.WINDOW, ObjectType.DIALOG)
+    return expected is actual
+
+
 @dataclass(frozen=True)
 class ObjectResolution:
     definition: ComponentDefinition
-    bounds: tuple[int, int, int, int]
+    bounds: tuple[int, int, int, int] | None
     strategy: str
     captured: CapturedComponent | None = None
     owner: "ObjectResolution | None" = None
@@ -34,6 +43,10 @@ class ObjectResolution:
     def exists(self) -> bool:
         """A successful semantic resolution establishes existence, not visibility."""
         return True
+
+    @property
+    def has_visual_bounds(self) -> bool:
+        return self.bounds is not None and self.bounds[2] > 0 and self.bounds[3] > 0
 
     def observed_state(self, name: str):
         """Return an observed state, preserving unknown as None."""
@@ -63,14 +76,19 @@ def resolve_repository_object(service, repository: ComponentRepository, definiti
             if strategy.type == "anchored_visual":
                 return _resolve_visual(service, repository, definition, strategy.options)
             captured = resolve_live_capture(strategy.type, strategy.options, service=service)
-            if definition.object_type in (ObjectType.WINDOW, ObjectType.DIALOG):
-                if captured.semantic_type() not in (ObjectType.WINDOW, ObjectType.DIALOG):
-                    raise ObjectResolutionError("window locator resolved a non-window object")
-            if captured.bounds is None:
-                raise ObjectResolutionError("resolved object has no screen bounds")
+            if not semantic_type_compatible(definition.object_type, captured.semantic_type()):
+                raise ObjectResolutionError(
+                    "locator resolved incompatible semantic type: expected %s, got %s"
+                    % (definition.object_type.value, captured.semantic_type().value)
+                )
+            bounds = None
+            if captured.bounds is not None:
+                normalized = tuple(int(round(float(value))) for value in captured.bounds)
+                if normalized[2] > 0 and normalized[3] > 0:
+                    bounds = normalized
             return ObjectResolution(
                 definition=definition,
-                bounds=tuple(int(round(float(value))) for value in captured.bounds),
+                bounds=bounds,
                 strategy=strategy.type,
                 captured=captured,
             )
@@ -123,6 +141,8 @@ def _resolve_visual(service, repository, definition, options):
         raise ObjectResolutionError("visual object has no concrete owner_object_id")
     owner_definition = repository.get(owner_id)
     owner = resolve_repository_object(service, repository, owner_definition)
+    if not owner.has_visual_bounds:
+        raise ObjectResolutionError("visual owner resolved without desktop bounds")
     relative = options.get("relative_bounds")
     if not isinstance(relative, (list, tuple)) or len(relative) != 4:
         raise ValueError("anchored visual relative_bounds must contain four values")
