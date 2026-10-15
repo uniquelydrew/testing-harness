@@ -12,7 +12,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
@@ -36,6 +36,7 @@ class _RepositoryWorkbenchHost:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
+        self.fingerprint = repository_fingerprint(self.path)
         self.recovery_issues = ()
         try:
             self.repository = ComponentRepository.load((self.path,))
@@ -123,7 +124,7 @@ class _RepositoryWorkbenchHost:
         try:
             shutil.copy2(self.path, backup)
             self.repository.validate_persistence()
-            self.repository.save(self.path)
+            self.fingerprint = self.repository.save(self.path, expected_fingerprint=self.fingerprint)
             removed = len(self.recovery_issues)
             self.recovery_issues = ()
             self._mark_repository_dirty(False)
@@ -536,7 +537,9 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
         self._repository_host.repository.validate_persistence()
-        self._repository_host.repository.save(self._repository_host.path)
+        self._repository_host.fingerprint = self._repository_host.repository.save(
+            self._repository_host.path, expected_fingerprint=self._repository_host.fingerprint,
+        )
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))
