@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import hashlib
 import os
 import tempfile
 from typing import Any, Iterable, Mapping
@@ -15,6 +16,21 @@ from automation_harness.models.gui import ObjectType, default_actions
 
 class ComponentRepositoryError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class RepositoryFingerprint:
+    exists: bool
+    sha256: str | None = None
+    size: int | None = None
+
+
+def repository_fingerprint(path: Path) -> RepositoryFingerprint:
+    path = Path(path)
+    if not path.exists():
+        return RepositoryFingerprint(False)
+    content = path.read_bytes()
+    return RepositoryFingerprint(True, hashlib.sha256(content).hexdigest(), len(content))
 
 
 _ATSPI_SIMPLE_KEYS = {"name", "role", "accessible_id", "application", "window", "hierarchy"}
@@ -210,7 +226,7 @@ class ComponentRepository:
             },
         }
 
-    def save(self, path: Path) -> None:
+    def save(self, path: Path, *, expected_fingerprint: RepositoryFingerprint | None = None) -> RepositoryFingerprint:
         path.parent.mkdir(parents=True, exist_ok=True)
         # A repository is the source of UUID references held by plans.  Never
         # expose a partially-written YAML document to another open authoring
@@ -225,7 +241,10 @@ class ComponentRepository:
                 handle.write(document)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if expected_fingerprint is not None and repository_fingerprint(path) != expected_fingerprint:
+                raise ComponentRepositoryError("repository changed on disk; reload before saving")
             os.replace(temporary_name, str(path))
+            return repository_fingerprint(path)
         except Exception:
             try:
                 os.unlink(temporary_name)
