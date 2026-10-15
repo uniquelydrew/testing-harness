@@ -10,6 +10,7 @@ from typing import Any, Callable
 from automation_harness.drivers.atspi_driver import (
     AtspiDriver,
     AtspiExcludedClickSource,
+    _capture_accessible,
     _capture_semantic_accessible,
     _pyatspi,
 )
@@ -808,14 +809,25 @@ class AtspiRecordingAdapter:
         if not self._begin_callback():
             return
         try:
-            # Resolve the thread-bound source here. Only the immutable capture
-            # crosses to the worker; a prior pointer target is never reused.
+            # Text events already carry their accessible source. Do not invoke
+            # the pointer-oriented capture_event_source() pipeline here: it
+            # walks the live application tree and can stall the GTK callback
+            # during recording stop. Never reuse a previous pointer target.
             after = getattr(event, "any_data", None)
-            if after is not None:
-                target = self._target(event)
-                self._pointer_worker.accept_text(
-                    str(after), str(getattr(event, "type", "")), time.monotonic(), target,
-                )
+            if after is not None and not self._stop_requested.is_set():
+                target = None
+                source = getattr(event, "source", None)
+                if source is not None:
+                    try:
+                        snapshot = _capture_accessible(source, self._pyatspi)
+                        if _is_recordable_target(snapshot) and _is_editable_text_target(snapshot):
+                            target = snapshot
+                    except Exception as exc:
+                        self._diagnostic("atspi_text_source_capture_failed", error=str(exc))
+                if target is not None and not self._stop_requested.is_set():
+                    self._pointer_worker.accept_text(
+                        str(after), str(getattr(event, "type", "")), time.monotonic(), target,
+                    )
         finally:
             self._end_callback()
 
