@@ -214,7 +214,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 for key, title in (("plan", "A - Plan"), ("repository", "B - Repository"),
                                    ("combine", "Combine - choose each differing field")):
                     mode.append(key, title)
-                mode.set_active(0)
+                # Prefer existing repository definitions when resolving a collision.
+                mode.set_active(1 if targets else 0)
                 section.pack_start(mode, False, False, 0)
                 identity = Gtk.CheckButton(label="Explicitly map legacy UUID to selected repository UUID")
                 section.pack_start(identity, False, False, 0)
