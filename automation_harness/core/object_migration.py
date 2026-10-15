@@ -248,7 +248,9 @@ def stage_reconciled_migration(plan, repository, decisions):
     from dataclasses import replace
     if set(decisions) != set(plan.objects):
         raise ComponentRepositoryError("every legacy object requires a reconciliation decision")
-    documents = dict(repository.to_document()["components"])
+    # Reconciliation must not mutate the caller's repository documents in place.
+    from copy import deepcopy
+    documents = deepcopy(repository.to_document()["components"])
     mapping = {}
     names = {}
     for source_name in sorted(plan.objects):
