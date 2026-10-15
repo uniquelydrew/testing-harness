@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.menu_inventory import with_inventory_metadata
 from automation_harness.core.object_hierarchy import hierarchy_contract, recapture_comparison
+from automation_harness.core.object_resolution import resolve_repository_object
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import AtspiIdentification, CapturedComponent, ComponentDefinition, ComponentStrategy
 from automation_harness.models.gui import ActionType, ObjectType
@@ -37,6 +38,26 @@ class LocatorAssessment:
             "unique": self.unique,
             "stability": dict(self.stability),
         }
+
+
+class RecaptureValidationError(ValueError):
+    def __init__(self, code: str, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+
+
+@dataclass(frozen=True)
+class RecaptureCandidate:
+    object_id: str
+    component_id: str
+    base_revision: int
+    proposed: ComponentDefinition
+    comparison: Mapping[str, Any]
+    roundtrip_strategy: str
+    roundtrip_capture: CapturedComponent | None
+    visual_status: str
+    validation: Mapping[str, Any]
 
 
 class ObjectCaptureService:
@@ -322,7 +343,7 @@ class ObjectCaptureService:
         *,
         validate_live: bool = True,
     ) -> tuple[ComponentDefinition, dict[str, Any]]:
-        """Re-reference an existing logical object to a fresh live capture."""
+        """Compatibility wrapper for callers that do not have a repository."""
         # Reject a mismatched semantic type before locator construction or
         # live identification; recapture must preserve the object's role.
         captured_type = captured.semantic_type()
@@ -361,6 +382,53 @@ class ObjectCaptureService:
         )
         comparison = recapture_comparison(existing, captured, proposed)
         return proposed, comparison
+
+    def stage_recapture(self, repository: ComponentRepository, existing: ComponentDefinition,
+                        captured: CapturedComponent, *, validate_live: bool = True) -> RecaptureCandidate:
+        """Create and independently validate a locator-only update without mutation."""
+        if captured.semantic_type() != existing.object_type:
+            raise RecaptureValidationError("wrong_class", "recapture requires the same semantic type")
+        if existing.framework and captured.framework and existing.framework != captured.framework:
+            raise RecaptureValidationError("wrong_framework", "recapture cannot migrate framework")
+        ownership = dict(existing.scope or {}).get("ownership", {})
+        ownership = ownership if isinstance(ownership, Mapping) else {}
+        for name, expected, actual, code in (
+            ("application", ownership.get("application"), captured.application, "wrong_application_scope"),
+            ("window", ownership.get("window"), captured.window, "wrong_window_scope"),
+        ):
+            if expected not in (None, "") and actual not in (None, "") and str(expected) != str(actual):
+                raise RecaptureValidationError(code, "recapture changed %s scope" % name)
+        if existing.native_class and captured.native_class and existing.native_class != captured.native_class:
+            raise RecaptureValidationError("native_class_incompatible", "recapture changed native class")
+        proposed, comparison = self.recapture_definition(existing, captured, validate_live=validate_live)
+        proposed = _merge_recapture_definition(existing, proposed)
+        candidate_repository = repository.with_component(proposed)
+        roundtripped_repository = candidate_repository.validate_persistence()
+        roundtripped = roundtripped_repository.get(existing.object_id)
+        try:
+            resolved = resolve_repository_object(self, roundtripped_repository, roundtripped)
+        except Exception as exc:
+            raise RecaptureValidationError("locator_unresolved", "serialized locator did not resolve: %s" % exc) from exc
+        resolved_capture = resolved.captured
+        if resolved_capture is not None:
+            if resolved_capture.semantic_type() != existing.object_type:
+                raise RecaptureValidationError("roundtrip_semantic_mismatch", "serialized locator resolved a different semantic type")
+            if captured.framework and resolved_capture.framework and captured.framework != resolved_capture.framework:
+                raise RecaptureValidationError("roundtrip_framework_mismatch", "serialized locator resolved a different framework")
+            for expected, actual, label in ((captured.application, resolved_capture.application, "application"), (captured.window, resolved_capture.window, "window"), (captured.accessible_id, resolved_capture.accessible_id, "accessible id")):
+                if expected not in (None, "") and actual not in (None, "") and expected != actual:
+                    raise RecaptureValidationError("roundtrip_scope_mismatch", "serialized locator changed %s" % label)
+        return RecaptureCandidate(existing.object_id, existing.component_id, existing.revision, proposed,
+            comparison, resolved.strategy, resolved_capture,
+            "available" if resolved.has_visual_bounds else "unavailable",
+            {"roundtrip": "passed"})
+
+    @staticmethod
+    def apply_recapture_candidate(repository: ComponentRepository, candidate: RecaptureCandidate) -> ComponentRepository:
+        existing = repository.get(candidate.object_id)
+        if existing.revision != candidate.base_revision:
+            raise RecaptureValidationError("repository_revision_conflict", "repository object changed while recapture was staged")
+        return repository.with_component(candidate.proposed)
     def save_capture(
         self,
         path: Path,
@@ -663,3 +731,33 @@ def _stability(key: str) -> str:
         "parent": "high",
         "hierarchy": "medium",
     }.get(key, "unknown")
+
+
+def _merge_subobjects(existing: Mapping[str, Any], fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep learned menu branches absent from a partial recapture."""
+    merged = {str(key): dict(value) for key, value in existing.items() if isinstance(value, Mapping)}
+    for key, value in fresh.items():
+        if not isinstance(value, Mapping):
+            continue
+        current = dict(merged.get(str(key), {}))
+        current.update(dict(value))
+        old_children = merged.get(str(key), {}).get("subobjects", {})
+        new_children = value.get("subobjects", {})
+        if isinstance(old_children, Mapping) and isinstance(new_children, Mapping):
+            current["subobjects"] = _merge_subobjects(old_children, new_children)
+        merged[str(key)] = current
+    return merged
+
+
+def _merge_recapture_definition(existing: ComponentDefinition, fresh: ComponentDefinition) -> ComponentDefinition:
+    properties = dict(fresh.properties or {})
+    if any(strategy.type == "anchored_visual" for strategy in fresh.strategies):
+        properties["coordinate_space"] = "normalized-owner"
+        properties["locator_status"] = "ready"
+        properties.pop("recapture_reason", None)
+        properties.pop("previous_owner_object_id", None)
+    return replace(fresh, object_id=existing.object_id, component_id=existing.component_id,
+        description=existing.description, owner_object_id=existing.owner_object_id,
+        actions=existing.actions, expected_states=existing.expected_states, visual=existing.visual,
+        action_completion=existing.action_completion,
+        subobjects=_merge_subobjects(existing.subobjects, fresh.subobjects), properties=properties)
