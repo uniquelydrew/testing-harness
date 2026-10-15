@@ -323,6 +323,15 @@ class ObjectCaptureService:
         validate_live: bool = True,
     ) -> tuple[ComponentDefinition, dict[str, Any]]:
         """Re-reference an existing logical object to a fresh live capture."""
+        # Reject a mismatched semantic type before locator construction or
+        # live identification; recapture must preserve the object's role.
+        captured_type = captured.semantic_type()
+        if captured_type != existing.object_type:
+            raise ValueError(
+                "Recapture type mismatch for %s: expected %s, captured %s. "
+                "Select a component of the same type or create a new object."
+                % (existing.component_id, existing.object_type.value, captured_type.value)
+            )
         proposed = self.definition_from_capture(
             existing.component_id,
             captured,
