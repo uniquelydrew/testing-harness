@@ -345,6 +345,11 @@ def stage_reconciled_migration(plan, repository, decisions):
             if isinstance(value, Mapping):
                 for key, item in value.items():
                     if key == "component_id" and isinstance(item, str):
+                        # A source UUID can also be the valid destination UUID
+                        # when reconciliation preserves immutable identity.
+                        # Validate against the staged repository first.
+                        if item in valid_ids:
+                            continue
                         if item in names or item in mapping:
                             raise ComponentRepositoryError("unresolved migrated step reference")
                     else:
