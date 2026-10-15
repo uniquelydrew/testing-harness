@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
-from automation_harness.core.object_migration import reconcile_object, persist_migration, detect_legacy_objects, stage_legacy_migration
+from automation_harness.core.object_migration import reconcile_object, persist_migration, detect_legacy_objects, stage_legacy_migration, stage_reconciled_migration
 from automation_harness.core.test_plan import load_plan
 from automation_harness.models.plan import TestPlan, StepCall
 
@@ -108,3 +108,21 @@ def test_bulk_migration_never_auto_resolves_identity_conflicts():
     assert conflicts
     with pytest.raises(ComponentRepositoryError, match="explicit reconciliation"):
         stage_legacy_migration(plan, repository)
+
+
+def test_reconciled_migration_accepts_existing_destination_uuid():
+    uid = str(uuid4())
+    plan = TestPlan(name="legacy", objects={"File Menu": object_data(uid)},
+                    steps=(StepCall(node_id="one", step_id="gui.interact",
+                                    inputs={"component_id": "File Menu"}),
+                           StepCall(node_id="two", step_id="gui.interact",
+                                    inputs={"component_id": uid})))
+    repository = ComponentRepository.from_document({
+        "version": 3, "components": {"File Menu": object_data(uid)}
+    })
+    migrated, updated_repository = stage_reconciled_migration(
+        plan, repository, {"File Menu": {"selection": "repository"}}
+    )
+    assert migrated.objects == {}
+    assert [step.inputs["component_id"] for step in migrated.steps] == [uid, uid]
+    assert updated_repository.get(uid).component_id == "File Menu"
