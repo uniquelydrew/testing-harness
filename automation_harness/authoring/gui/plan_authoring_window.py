@@ -127,6 +127,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             persist_migration(self.path, destination, migrated, updated_repository)
             emit('migration_commit_completed', plan=str(self.path), repository=str(destination), plan_after=artifact_fingerprint(self.path), repository_after=artifact_fingerprint(destination))
             self.plan = migrated
+            self._defer_repository_composition = False
             self.repository = updated_repository
             self._assigned_repository_token = None
             if self.registry_resources:
@@ -141,7 +142,13 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             return False
 
     def show_objects_menu(self):
-        self.refresh_objects()
+        # Repository refresh can fail while legacy objects are being repaired;
+        # the recovery menu must remain available regardless.
+        try:
+            self.refresh_objects()
+        except Exception as exc:
+            emit("objects_menu_refresh_failed", plan=str(self.path), error=str(exc))
+            self.set_status("Object refresh failed: %s" % exc)
         menu = Gtk.Menu()
 
         def add_item(label, callback, sensitive=True):
@@ -161,6 +168,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             self.open_assigned_repository,
             assigned_repository_path(self.plan, self.path) is not None,
         )
+        self._objects_popup_menu = menu
         menu.show_all()
         menu.popup_at_widget(self.objects_button, Gdk.Gravity.SOUTH, Gdk.Gravity.NORTH, None)
 
@@ -253,6 +261,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             emit("migration_commit_completed", plan=str(self.path), repository=str(destination),
                  plan_after=artifact_fingerprint(self.path), repository_after=artifact_fingerprint(destination))
             self.plan = staged_plan
+            self._defer_repository_composition = False
             self.repository = staged_repository
             self._assigned_repository_token = None
             if self.registry_resources:
