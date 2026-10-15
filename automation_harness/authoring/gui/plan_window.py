@@ -131,6 +131,8 @@ class TestPlanWindow(ArtifactWindow):
         return repository_from_plan(self.plan)
 
     def _qualified_plan(self):
+        if self._defer_repository_composition or self.plan.objects:
+            raise ValueError("Legacy object reconciliation must complete before validation or execution")
         return qualify_plan(self.plan, component_repository=self.repository,
                             reusable_steps=self.reusable, registry=self.runtime_registry)
 
