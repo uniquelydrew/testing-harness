@@ -118,6 +118,7 @@ class RecordingSession:
         self._menu_context: MenuRecordingContext | None = None
         self._popup_selection_context: PopupSelectionContext | None = None
         self._captured_menu_owners: list[CapturedComponent] = []
+        self._captured_popup_selector_owners: list[CapturedComponent] = []
         # Adapter callbacks arrive on independent AT-SPI and JavaFX threads.
         # Correlation is stateful, so every observation and lifecycle snapshot
         # must be serialized as one transaction.
@@ -215,6 +216,16 @@ class RecordingSession:
     def captured_menu_owners(self) -> tuple[CapturedComponent, ...]:
         with self._lock:
             return tuple(self._captured_menu_owners)
+
+    def captured_popup_selector_owners(self) -> tuple[CapturedComponent, ...]:
+        """Durable popup control captures, including cancelled selections.
+
+        Opening a ComboBox/ChoiceBox is observation evidence, not an authored
+        click. Persist its owner as an object independently of whether the
+        user chooses an item and a select_item step can be emitted.
+        """
+        with self._lock:
+            return tuple(self._captured_popup_selector_owners)
 
     def observe(self, observation: Observation) -> None:
         with self._lock:
@@ -541,6 +552,9 @@ class RecordingSession:
         self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
 
     def _start_popup_selection_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
+        if not any(_same_logical_target(existing, owner) for existing in self._captured_popup_selector_owners):
+            self._captured_popup_selector_owners.append(owner)
+            self.diagnostic("popup_selector_owner_captured", owner=owner, reason=reason)
         if self._popup_selection_context is not None:
             if _same_logical_target(self._popup_selection_context.owner, owner):
                 if self._popup_selection_context.committed_at is None:
