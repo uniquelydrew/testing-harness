@@ -552,9 +552,16 @@ class RecordingSession:
         self._begin(ActionType.SELECT_ITEM, observation, {"value": value})
 
     def _start_popup_selection_context(self, owner: CapturedComponent, timestamp: float, reason: str) -> None:
-        if not any(_same_logical_target(existing, owner) for existing in self._captured_popup_selector_owners):
-            self._captured_popup_selector_owners.append(owner)
-            self.diagnostic("popup_selector_owner_captured", owner=owner, reason=reason)
+        # Selection metadata describes a transient popup gesture, not the
+        # stable ComboBox/ChoiceBox owner to persist in the repository.
+        owner_properties = {
+            key: value for key, value in dict(owner.backend_properties or {}).items()
+            if key not in {"popup_selection", "combo_selection"}
+        }
+        durable_owner = replace(owner, backend_properties=owner_properties)
+        if not any(_same_logical_target(existing, durable_owner) for existing in self._captured_popup_selector_owners):
+            self._captured_popup_selector_owners.append(durable_owner)
+            self.diagnostic("popup_selector_owner_captured", owner=durable_owner, reason=reason)
         if self._popup_selection_context is not None:
             if _same_logical_target(self._popup_selection_context.owner, owner):
                 if self._popup_selection_context.committed_at is None:
