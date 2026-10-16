@@ -76,3 +76,28 @@ def test_menu_path_is_traversed_and_terminal_item_activated(monkeypatch):
     assert report.activated is True
     assert result["action"] == "select_menu_item"
     assert [item["name"] for item in result["path"]] == ["File", "Recent", "Report.yaml"]
+
+
+def test_atspi_menu_route_matches_uncaptured_visible_text(monkeypatch):
+    open_item = _ActionAccessible("Open", "menu item")
+    file_menu = _ActionAccessible("File", "menu", [open_item])
+    root = _Accessible("Application", "menu bar", [file_menu])
+    monkeypatch.setattr(
+        "automation_harness.drivers.atspi_driver._select_accessible",
+        lambda _desktop, _identity: (root, ()),
+    )
+    monkeypatch.setattr(
+        "automation_harness.drivers.atspi_driver._pyatspi",
+        lambda: type("Api", (), {
+            "Registry": type("Registry", (), {
+                "getDesktop": staticmethod(lambda _index: object()),
+            }),
+        }),
+    )
+    result = AtspiDriver().select_menu_path([
+        {"kind": "menu", "criteria": {"text": "File"}},
+        {"kind": "menu_item", "criteria": {"text": "Open"}},
+    ], identification={"mandatory": {"name": "Application"}})
+    assert open_item.activated is True
+    assert [item["name"] for item in result["path"]] == ["File", "Open"]
+
