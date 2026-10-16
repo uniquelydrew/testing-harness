@@ -72,6 +72,7 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.recording_session = None
+        self._recording_insertion_anchor = None
         self._recording_stop_pending = False
         self._recording_generation = 0
         self._recording_completion_source = None
@@ -275,6 +276,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                         "Another Test Plan is already recording. Stop that recording before starting a new one.",
                     )
                 session.start()
+                # Record the insertion anchor only for a successfully started session.
+                self._recording_insertion_anchor = self.selected(self.flow_tree, 1)
                 self.recording_session = session
                 _ACTIVE_RECORDING_WINDOW = self
         except Exception as exc:
@@ -783,7 +786,12 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             if diagnostic_session is not None:
                 diagnostic_session.diagnostic("recording_plan_update_started")
             if resolved:
-                self.plan = replace(self.plan, steps=(*self.plan.steps, *resolved))
+                from automation_harness.authoring.step_order import insert_calls
+                anchor = self._recording_insertion_anchor
+                if anchor is not None and anchor not in {item.node_id for item in self.plan.steps}:
+                    anchor = None
+                self.plan = insert_calls(self.plan, resolved, after_node_id=anchor)
+                self._recording_insertion_anchor = None
                 if diagnostic_session is not None:
                     diagnostic_session.diagnostic(
                         "recording_plan_steps_appended",
