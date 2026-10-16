@@ -76,6 +76,22 @@ def logical_menu_metadata(capture: CapturedComponent | None) -> Mapping[str, Any
     return value if isinstance(value, Mapping) else None
 
 
+def logical_menu_identity(capture: CapturedComponent | None) -> Mapping[str, Any] | None:
+    """Canonical durable owner/path identity, independent of popup skin state."""
+    metadata = logical_menu_metadata(capture)
+    if metadata is None:
+        return None
+    owner = metadata.get("owner")
+    path = metadata.get("path")
+    if not isinstance(owner, Mapping) or not isinstance(path, (tuple, list)):
+        return None
+    owner_selector = _owner_selector(owner)
+    return {
+        "owner": dict(owner_selector) if isinstance(owner_selector, Mapping) else {},
+        "path": tuple(_canonical_selector(item) for item in path if isinstance(item, Mapping)),
+    }
+
+
 def ensure_recorded_menu_owner(repository, capture: CapturedComponent) -> ComponentDefinition | None:
     """Return the existing or proposed logical Context Menu owner without mutation.
 
