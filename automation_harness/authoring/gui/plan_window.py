@@ -11,6 +11,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
+from automation_harness.authoring.step_order import insert_calls, reorder_calls, StepOrderError
 from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
@@ -233,9 +234,14 @@ class TestPlanWindow(ArtifactWindow):
         by_id = {call.node_id: call for call in self.plan.steps}
         if set(ordered_ids) != set(by_id):
             return
-        reordered = tuple(by_id[node_id] for node_id in ordered_ids)
-        if reordered != tuple(self.plan.steps):
-            self.plan = replace(self.plan, steps=reordered)
+        try:
+            updated = reorder_calls(self.plan, ordered_ids)
+        except StepOrderError as exc:
+            self.refresh_flow()
+            self.error("Step order", str(exc))
+            return
+        if updated != self.plan:
+            self.plan = updated
             self.mark_dirty()
             self.set_status("%d authored calls • drag order updated" % len(self.plan.steps))
 
@@ -386,7 +392,7 @@ class TestPlanWindow(ArtifactWindow):
         inputs, outputs = configured
         group = self.ask_text("Insert Registry Step", "Composed step/group:", definition.name) or definition.name
         call = StepCall(_next_node_id(self.plan.steps), step_id, inputs=inputs, outputs=outputs, group=group)
-        self.plan = replace(self.plan, steps=(*self.plan.steps, call)); self.mark_dirty(); self.refresh_all()
+        self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1)); self.mark_dirty(); self.refresh_all()
 
     def _configure_contract(self, definition):
         dialog = Gtk.Dialog(title="Insert %s" % definition.name, transient_for=self.window, modal=True)
@@ -440,7 +446,12 @@ class TestPlanWindow(ArtifactWindow):
         if not node_id: return
         steps = list(self.plan.steps); index = next(i for i, item in enumerate(steps) if item.node_id == node_id); target = index + offset
         if target < 0 or target >= len(steps): return
-        steps[index], steps[target] = steps[target], steps[index]; self.plan = replace(self.plan, steps=tuple(steps)); self.mark_dirty(); self.refresh_all()
+        steps[index], steps[target] = steps[target], steps[index]
+        try:
+            self.plan = reorder_calls(self.plan, [item.node_id for item in steps])
+        except StepOrderError as exc:
+            return self.error("Step order", str(exc))
+        self.mark_dirty(); self.refresh_all()
 
     def _expanded(self):
         return expand_reusable_steps(self.plan, self.reusable) if self.reusable else self.plan
