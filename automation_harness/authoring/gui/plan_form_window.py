@@ -215,6 +215,11 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                         if current is None and isinstance(preserve.get("options"), dict):
                             current = preserve["options"].get("selector")
                     widget = create_action_input_widget(item, component, current=current)
+                    if hasattr(widget, "_entry") and isinstance(widget._entry, Gtk.Entry):
+                        widget._entry.connect("changed", lambda *_args: (
+                            action_inputs_modified.__setitem__(0, True)
+                            if not action_editor_initializing[0] else None
+                        ))
                     if isinstance(widget, Gtk.Entry):
                         widget.connect("changed", lambda *_args: (
                             action_inputs_modified.__setitem__(0, True)
@@ -303,7 +308,10 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 if not action_type:
                     raise ValueError("A supported Action is required.")
                 if (component_id == current_component and action_type == current_action_type
-                        and not action_inputs_modified[0]):
+                        and not action_inputs_modified[0] and all(
+                            name in action or (name == "path" and "value" in action)
+                            for name, (item, _widget) in action_input_fields.items() if item.required
+                        )):
                     inputs = call.inputs
                 else:
                     action = {"type": action_type}
