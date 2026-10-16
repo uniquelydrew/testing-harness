@@ -12,10 +12,11 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
+from automation_harness.core.visual_projection import project_visual_target
 from automation_harness.core.repository_hierarchy import (
     authoring_parent_ids,
     repository_migration_report,
@@ -35,6 +36,7 @@ class _RepositoryWorkbenchHost:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
+        self.fingerprint = repository_fingerprint(self.path)
         self.recovery_issues = ()
         try:
             self.repository = ComponentRepository.load((self.path,))
@@ -122,7 +124,7 @@ class _RepositoryWorkbenchHost:
         try:
             shutil.copy2(self.path, backup)
             self.repository.validate_persistence()
-            self.repository.save(self.path)
+            self.fingerprint = self.repository.save(self.path, expected_fingerprint=self.fingerprint)
             removed = len(self.recovery_issues)
             self.recovery_issues = ()
             self._mark_repository_dirty(False)
@@ -306,11 +308,13 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         def worker():
             try:
                 captured = self.app.capture.capture_next_click(click_count=click_count, timeout=30.0)
-                proposed, comparison = self.app.capture.recapture_definition(definition, captured)
+                candidate = self.app.capture.stage_recapture(
+                    self._repository_host.repository, definition, captured,
+                )
             except Exception as exc:
                 GLib.idle_add(self._recapture_finished, node.key, None, None, None, exc)
             else:
-                GLib.idle_add(self._recapture_finished, node.key, proposed, comparison, captured, None)
+                GLib.idle_add(self._recapture_finished, node.key, candidate, candidate.comparison, captured, None)
 
         import threading
         threading.Thread(target=worker, name="repository-object-recapture", daemon=True).start()
@@ -373,7 +377,15 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         definition = self._definition_by_key.get(key)
         if definition is None:
             return False
-        updated = self._repository_host.repository.with_component(proposed)
+        candidate = proposed
+        try:
+            updated = self.app.capture.apply_recapture_candidate(
+                self._repository_host.repository, candidate,
+            )
+        except Exception as exc:
+            self.app._error("Recapture object", "%s: %s" % (type(exc).__name__, exc))
+            return False
+        proposed = candidate.proposed
         self._repository_host.repository = updated
         self.app.repository = updated
         self._definition_by_key[key] = proposed
@@ -416,8 +428,11 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
 
         def worker():
             try:
-                result = resolve_repository_object(
+                semantic = resolve_repository_object(
                     self.app.capture, self._repository_host.repository, definition,
+                )
+                result = project_visual_target(
+                    self.app.capture, self._repository_host.repository, semantic, operation="highlight",
                 )
             except Exception as exc:
                 GLib.idle_add(self._highlight_resolution_failed, generation, exc)
@@ -432,7 +447,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             return False
         self.app._show_highlight(result.bounds, False)
         GLib.timeout_add(1400, self._clear_highlight)
-        self._set_status("Highlighted %s via %s" % (result.definition.component_id, result.strategy))
+        self._set_status("Highlighted %s via %s" % (result.semantic.definition.component_id, result.strategy))
         return False
 
     def _render_properties(self, node):
@@ -522,7 +537,9 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
         self._repository_host.repository.validate_persistence()
-        self._repository_host.repository.save(self._repository_host.path)
+        self._repository_host.fingerprint = self._repository_host.repository.save(
+            self._repository_host.path, expected_fingerprint=self._repository_host.fingerprint,
+        )
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))
