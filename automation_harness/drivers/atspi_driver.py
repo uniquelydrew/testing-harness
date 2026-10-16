@@ -1206,11 +1206,12 @@ def _menu_child_matches(child: Any, criteria: Mapping[str, Any]) -> bool:
         "role": _role_name(child),
         "accessible_id": _accessible_id(child),
     }
-    # Authored routes without captured inventory use visible menu text.
-    # AT-SPI exposes that text as the accessible name, not a 'text' property.
+    # Menu inventories use cross-backend 'id' and 'text' names; AT-SPI
+    # exposes these as accessible_id and accessible name respectively.
+    aliases = {"text": "name", "id": "accessible_id", "accessible_name": "name"}
     return all(
-        (key in actual or key == "text")
-        and str(actual.get("name" if key == "text" else key) or "").casefold()
+        aliases.get(key, key) in actual
+        and str(actual.get(aliases.get(key, key)) or "").casefold()
             == str(expected or "").casefold()
         for key, expected in criteria.items()
     )
