@@ -3,6 +3,8 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+from automation_harness.authoring.plan_repository import materialize_captured_target
+from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.completion import _infer_condition
 from automation_harness.core.interaction_preparation import preparation_requirement
 from automation_harness.drivers.javafx_bridge import (
@@ -149,6 +151,26 @@ class MenuComboRegression(unittest.TestCase):
                 self.assertEqual(len(captured), 1)
                 self.assertEqual(captured[0].accessible_id, owner_id)
                 self.assertEqual(captured[0].semantic_type(), ObjectType.COMBO_BOX)
+
+    def test_opened_popup_owner_can_be_materialized_without_selection(self):
+        for name, owner_class, owner_id in (
+            ("Camera", "javafx.scene.control.ComboBox", "camera"),
+            ("Site", "javafx.scene.control.ChoiceBox", "siteSelector_"),
+        ):
+            with self.subTest(owner_class=owner_class):
+                owner = _captured_recording_node(_popup_owner(name, owner_class, owner_id))
+                session = RecordingSession()
+                session.start()
+                session.observe(PointerInteraction(
+                    0.5, "javafx", owner, {}, "primary", "released", (20, 20),
+                ))
+                self.assertEqual(session.stop(), ())
+                repository, object_id, created = materialize_captured_target(
+                    ComponentRepository({}), session.captured_popup_selector_owners()[0],
+                )
+                self.assertTrue(created)
+                self.assertEqual(repository.get(object_id).object_type, ObjectType.COMBO_BOX)
+                self.assertEqual(repository.get(object_id).native_class, owner_class)
 
     def test_repeated_popup_open_records_owner_once(self):
         owner = _captured_recording_node(_popup_owner(
