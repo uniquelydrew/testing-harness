@@ -664,11 +664,18 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         )
         recording_repository = getattr(diagnostic_session, "repository", None)
 
-        # Menu opening is capture evidence, not an executable click. Retain its
-        # durable owner even when the traversal is cancelled or no terminal
-        # item is observed during this recording.
-        owners = diagnostic_session.captured_menu_owners() if diagnostic_session else ()
-        for owner_capture in owners:
+        # Opening menus and popup selectors provides durable owner evidence.
+        # Even when selection is cancelled, the owner should be available in
+        # the Object Repository; only a completed selection becomes a step.
+        menu_owners = diagnostic_session.captured_menu_owners() if diagnostic_session else ()
+        popup_owners = (
+            diagnostic_session.captured_popup_selector_owners()
+            if diagnostic_session else ()
+        )
+        for owner_kind, owner_capture in (
+            [("menu", owner) for owner in menu_owners]
+            + [("popup_selector", owner) for owner in popup_owners]
+        ):
             try:
                 if assigned_repository is None:
                     assigned_repository, assigned_path = self._ensure_review_repository(
@@ -679,10 +686,15 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                 )
                 if created:
                     captured_ids.add(owner_id)
+                if diagnostic_session is not None:
+                    diagnostic_session.diagnostic(
+                        "review_owner_materialized", owner_kind=owner_kind,
+                        object_id=owner_id, created=created,
+                    )
             except Exception as exc:
                 if diagnostic_session is not None:
                     diagnostic_session.diagnostic_exception(
-                        "review_menu_owner_failed", exc, owner=owner_capture,
+                        "review_%s_owner_failed" % owner_kind, exc, owner=owner_capture,
                     )
 
         for interaction in interactions or ():
