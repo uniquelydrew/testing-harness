@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from automation_harness.backends.base import ExecutionBackend
 from automation_harness.core.completion import await_step_completion
 from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
+from automation_harness.core.object_reconciliation import object_conflicts
 from automation_harness.core.reusable_step_expansion import expand_reusable_steps
 from automation_harness.core.reusable_steps import ReusableStepDefinition
 from automation_harness.core.step_registry import default_step_registry
@@ -32,28 +33,16 @@ def compose_execution_repository(
     """Resolve legacy portable snapshots without hiding immutable-ID conflicts."""
     if live_repository is None:
         return repository_from_plan(plan)
-    live = live_repository.to_document()["components"]
-    merged = dict(live)
-    live_ids = {definition.object_id: name for name, definition in live_repository.components.items()}
-    for name, snapshot in plan.objects.items():
-        if not isinstance(snapshot, Mapping):
-            raise ComponentRepositoryError("embedded component %r must be a mapping" % name)
-        object_id = snapshot.get("object_id")
-        if name in live:
-            if object_id != live[name]["object_id"]:
-                raise ComponentRepositoryError(
-                    "embedded component %r has object_id %r but live repository has %r"
-                    % (name, object_id, live[name]["object_id"])
-                )
-            continue  # Live revision is authoritative for the same immutable object.
-        if object_id in live_ids:
-            raise ComponentRepositoryError(
-                "embedded component %r reuses live object_id %r owned by %r"
-                % (name, object_id, live_ids[object_id])
-            )
-        merged[name] = snapshot
+    conflicts = object_conflicts(plan.objects, live_repository)
+    if conflicts:
+        raise ComponentRepositoryError("; ".join(conflicts))
+    # Disjoint plan-local objects remain available without copying or
+    # overriding any repository-managed definition.
+    merged = dict(live_repository.to_document()["components"])
+    merged.update(plan.objects)
     return ComponentRepository.from_document(
-        {"version": 3, "components": merged}, source="execution repository composition",
+        {"version": 3, "components": merged},
+        source="execution repository composition",
     )
 
 
