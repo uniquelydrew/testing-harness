@@ -30,14 +30,16 @@ from automation_harness.runner.plan_execution import execute_plan, compose_execu
 class TestPlanWindow(ArtifactWindow):
     title_prefix = "Automation Harness Test Plan"
 
-    def __init__(self, path, *, project_context=None, opener=None):
+    def __init__(self, path, *, project_context=None, opener=None, preloaded_plan=None, defer_repository=False):
         super().__init__(path, project_context=project_context, opener=opener)
-        self.plan = load_plan(self.path)
+        self.plan = preloaded_plan if preloaded_plan is not None else load_plan(self.path)
+        self._defer_repository_composition = bool(defer_repository)
         self.runtime_registry = default_step_registry()
         self.project = AuthoringProject.load(self.project_context) if self.project_context else None
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
-        self.repository = self._initial_repository()
+        # Legacy migration must precede composition of competing definitions.
+        self.repository = ComponentRepository({}) if defer_repository else self._initial_repository()
         self._assigned_repository_token = None
         if self.registry_resources:
             self.repository = self.repository.overlay(self.registry_resources.repository)
@@ -128,11 +130,15 @@ class TestPlanWindow(ArtifactWindow):
         return repository_from_plan(self.plan)
 
     def _qualified_plan(self):
+        if self._defer_repository_composition or self.plan.objects:
+            raise ValueError("Legacy object reconciliation must complete before validation or execution")
         return qualify_plan(self.plan, component_repository=self.repository,
                             reusable_steps=self.reusable, registry=self.runtime_registry)
 
     def _refresh_assigned_repository(self):
         """Reload an externally edited assigned repository when its file changes."""
+        if self._defer_repository_composition:
+            return False
         path = assigned_repository_path(self.plan, self.path)
         if path is None or not path.is_file():
             return False
@@ -457,8 +463,16 @@ class TestPlanWindow(ArtifactWindow):
         if self.reusable:
             portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
         expanded = expand_reusable_steps(portable, self.reusable) if self.reusable else portable
-        complete_snapshot = embed_plan_repository(expanded, self.repository)
-        portable = replace(portable, objects=complete_snapshot.objects)
+        assigned = assigned_repository_path(portable, self.path)
+        if assigned is None or not assigned.is_file():
+            raise ValueError(
+                "Assign an existing Object Repository or create one before saving"
+            )
+        if portable.objects:
+            raise ValueError(
+                "Legacy embedded objects must be migrated into the assigned "
+                "Object Repository before saving"
+            )
         _, _, issues = qualify_plan(portable, component_repository=self.repository,
                                      reusable_steps=self.reusable, registry=self.runtime_registry)
         if issues:
