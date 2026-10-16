@@ -15,7 +15,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.core.object_resolution import owner_relative_bounds, resolve_live_capture
-from automation_harness.core.menu_navigation import resolve_navigation
+from automation_harness.core.menu_navigation import resolve_navigation, selectors_from_navigation
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
@@ -183,8 +183,7 @@ class ComponentHandle:
                 payload = self.select_child(index)
             elif semantic.type == ActionType.SELECT_MENU_ITEM:
                 navigation = semantic.options.get("path", semantic.value)
-                path = resolve_navigation(self.definition.subobjects, navigation)
-                selectors = self._menu_path_selectors(path)
+                selectors = selectors_from_navigation(self.definition.subobjects, navigation)
                 payload = self._accessibility_operation(
                     "select menu item", "select_menu_path", selectors,
                 )
