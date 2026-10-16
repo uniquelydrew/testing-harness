@@ -393,7 +393,7 @@ class ObjectRepositoryWindow(ArtifactWindow):
             # Parse the complete repository so owner_uuid relationships remain
             # intact, including when the edited object is itself a child.
             updated = ComponentRepository.from_document(
-                {"version": 3, "components": updated_components}, source="option editor",
+                {"version": 3, "components": updated_components}, source=str(self.path),
             )
             updated.validate_persistence()
             self.repository = updated
