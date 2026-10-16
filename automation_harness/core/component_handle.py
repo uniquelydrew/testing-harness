@@ -15,7 +15,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.core.object_resolution import owner_relative_bounds, resolve_live_capture
-from automation_harness.core.menu_navigation import resolve_navigation
+from automation_harness.core.menu_navigation import resolve_navigation, selectors_from_navigation
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
 from automation_harness.models.component import ComponentDefinition, ComponentState, ResolvedComponent
@@ -165,10 +165,25 @@ class ComponentHandle:
                 if not isinstance(semantic.value, str):
                     raise ValueError("append_text requires a string value")
                 payload = self.set_text(self.get_text() + semantic.value)
-            elif semantic.type == ActionType.SELECT_ITEM and (semantic.options.get("path") is not None or isinstance(semantic.value, str)):
+            elif semantic.type == ActionType.SELECT_ITEM and (
+                semantic.options.get("path") is not None
+                or isinstance(semantic.value, str)
+                or (self.definition.object_type is ObjectType.COMBO_BOX and semantic.selector is not None)
+            ):
                 navigation = semantic.options.get("path", semantic.value)
-                if self.definition.object_type is ObjectType.COMBO_BOX and isinstance(navigation, str):
-                    selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                if self.definition.object_type is ObjectType.COMBO_BOX:
+                    if navigation is None and semantic.selector is not None:
+                        criteria = dict(semantic.selector.criteria)
+                        if "name" in criteria and "text" not in criteria:
+                            criteria["text"] = criteria.pop("name")
+                        if not criteria:
+                            raise ValueError("popup item selector requires criteria")
+                        selectors = [{"kind": "popup_item", "criteria": criteria}]
+                    elif isinstance(navigation, str):
+                        selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                    else:
+                        path = resolve_navigation(self.definition.subobjects, navigation)
+                        selectors = self._menu_path_selectors(path)
                 else:
                     path = resolve_navigation(self.definition.subobjects, navigation)
                     selectors = self._menu_path_selectors(path)
@@ -183,8 +198,7 @@ class ComponentHandle:
                 payload = self.select_child(index)
             elif semantic.type == ActionType.SELECT_MENU_ITEM:
                 navigation = semantic.options.get("path", semantic.value)
-                path = resolve_navigation(self.definition.subobjects, navigation)
-                selectors = self._menu_path_selectors(path)
+                selectors = selectors_from_navigation(self.definition.subobjects, navigation)
                 payload = self._accessibility_operation(
                     "select menu item", "select_menu_path", selectors,
                 )

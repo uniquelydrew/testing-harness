@@ -180,6 +180,10 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             action_inputs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             row = _entry_row(grid, row, "Action Inputs", action_inputs_box)
 
+            def mark_action_input_modified(*_args):
+                if not action_editor_initializing[0]:
+                    action_inputs_modified[0] = True
+
             def rebuild_action_inputs(*_args):
                 for child in action_inputs_box.get_children():
                     child.destroy()
@@ -215,16 +219,15 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                         if current is None and isinstance(preserve.get("options"), dict):
                             current = preserve["options"].get("selector")
                     widget = create_action_input_widget(item, component, current=current)
+                    if hasattr(widget, "_entry") and isinstance(widget._entry, Gtk.Entry):
+                        widget._entry.connect("changed", mark_action_input_modified)
                     if isinstance(widget, Gtk.Entry):
-                        widget.connect("changed", lambda *_args: (
-                            action_inputs_modified.__setitem__(0, True)
-                            if not action_editor_initializing[0] else None
-                        ))
+                        widget.connect("changed", mark_action_input_modified)
                     elif isinstance(widget, Gtk.ComboBox):
-                        widget.connect("changed", lambda *_args: (
-                            action_inputs_modified.__setitem__(0, True)
-                            if not action_editor_initializing[0] else None
-                        ))
+                        widget.connect("changed", mark_action_input_modified)
+                        child = widget.get_child()
+                        if isinstance(child, Gtk.Entry):
+                            child.connect("changed", mark_action_input_modified)
                     line = Gtk.Box(spacing=6)
                     label = Gtk.Label(label=item.name + (" *" if item.required else ""))
                     label.set_size_request(160, -1); label.set_xalign(0)
@@ -303,7 +306,10 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 if not action_type:
                     raise ValueError("A supported Action is required.")
                 if (component_id == current_component and action_type == current_action_type
-                        and not action_inputs_modified[0]):
+                        and not action_inputs_modified[0] and all(
+                            item.name in action
+                            for item, _widget in action_input_fields.values() if item.required
+                        )):
                     inputs = call.inputs
                 else:
                     action = {"type": action_type}

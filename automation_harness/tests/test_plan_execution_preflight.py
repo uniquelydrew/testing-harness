@@ -199,7 +199,6 @@ def test_menu_qualification_accepts_canonical_and_legacy_navigation(action):
     {"type": "select_menu_item", "path": []},
     {"type": "select_menu_item", "path": ["missing"]},
     {"type": "select_menu_item", "value": ""},
-    {"type": "select_menu_item", "value": "Export > Missing"},
 ])
 def test_menu_qualification_rejects_bad_navigation_before_execution(action):
     repo = _menu_repository()
@@ -207,3 +206,15 @@ def test_menu_qualification_rejects_bad_navigation_before_execution(action):
         inputs={"component_id": "File", "action": action}),))
     _, _, issues = qualify_plan(plan, component_repository=repo)
     assert any("invalid menu navigation" in issue for issue in issues)
+
+def test_menu_qualification_accepts_uncaptured_visible_text_route():
+    """An unseen option is permitted; the live backend must still resolve it."""
+    repository = _menu_repository()
+    plan = TestPlan(name="unseen menu route", steps=(StepCall(
+        node_id="choose", step_id="gui.object.action",
+        inputs={"component_id": "File", "action": {
+            "type": "select_menu_item", "path": "Export > Missing",
+        }},
+    ),))
+    _, _, issues = qualify_plan(plan, component_repository=repository)
+    assert issues == []
