@@ -208,6 +208,7 @@ class MenuComboRegression(unittest.TestCase):
         self.assertEqual(len(interactions), 1)
         self.assertEqual(interactions[0].action, ActionType.SELECT_ITEM)
         self.assertEqual([item.accessible_id for item in session.captured_popup_selector_owners()], ["camera"])
+        self.assertNotIn("popup_selection", session.captured_popup_selector_owners()[0].backend_properties)
 
     def test_choicebox_duplicate_selection_events_commit_once(self):
         owner = _captured_recording_node(_popup_owner(
