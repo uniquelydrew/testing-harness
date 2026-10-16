@@ -94,31 +94,19 @@ def load_repository_set(plan, plan_path: Path) -> RepositorySet:
 
 
 def ensure_default_repository(plan, plan_path: Path):
-    associations = assigned_repositories(plan, plan_path)
-    # Do not manufacture a test-scoped repository beside a plan that already
-    # has a real assignment.  The fallback is a recording implementation
-    # detail, not another layer of resolution.
+    """Legacy entrypoint: require explicit repository selection.
+
+    Never create or silently associate a companion OR during recording.
+    """
     assigned = assigned_repository_path(plan, plan_path)
-    if assigned is not None:
-        return plan, assigned
-    existing = next((item.path for item in associations if item.scope is RepositoryScope.RECORDING), None)
-    if existing is not None:
-        if not existing.exists():
-            ComponentRepository({}).save(existing)
-        return plan, existing
-    default_path = Path(plan_path).resolve().with_suffix(".ahobjects")
-    if not default_path.exists():
-        ComponentRepository({}).save(default_path)
-    if associations:
-        plan = assign_repositories(
-            plan, plan_path,
-            (RepositoryAssociation(default_path, RepositoryScope.RECORDING), *associations),
+    if assigned is None:
+        raise ValueError(
+            "Object Repository required: select an existing repository or create one "
+            "before recording or saving this test plan"
         )
-    else:
-        plan = assign_repositories(plan, plan_path, (
-            RepositoryAssociation(default_path, RepositoryScope.RECORDING),
-        ))
-    return plan, default_path
+    if not assigned.is_file():
+        raise FileNotFoundError("assigned Object Repository is missing: %s" % assigned)
+    return plan, assigned
 
 
 def load_authoring_repository(plan, plan_path: Path) -> tuple[ComponentRepository, Path | None]:
