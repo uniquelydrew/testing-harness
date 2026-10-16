@@ -130,6 +130,63 @@ class MenuComboRegression(unittest.TestCase):
                     (ActionType.SELECT_ITEM, owner_id, {"value": "North"}),
                 ])
 
+    def test_popup_selector_owner_is_captured_without_selection_step(self):
+        for name, owner_class, owner_id in (
+            ("Camera", "javafx.scene.control.ComboBox", "camera"),
+            ("Site", "javafx.scene.control.ChoiceBox", "siteSelector_"),
+        ):
+            with self.subTest(owner_class=owner_class):
+                owner = _captured_recording_node(_popup_owner(name, owner_class, owner_id))
+                session = RecordingSession()
+                session.start()
+                session.observe(PointerInteraction(
+                    0.5, "javafx", owner, {}, "primary", "released", (20, 20),
+                ))
+                # An unfinished popup is not an executable interaction, but
+                # opening its owner is sufficient capture evidence for the OR.
+                self.assertEqual(session.stop(), ())
+                captured = session.captured_popup_selector_owners()
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0].accessible_id, owner_id)
+                self.assertEqual(captured[0].semantic_type(), ObjectType.COMBO_BOX)
+
+    def test_repeated_popup_open_records_owner_once(self):
+        owner = _captured_recording_node(_popup_owner(
+            "Site", "javafx.scene.control.ChoiceBox", "siteSelector_",
+        ))
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(
+            0.5, "javafx", owner, {}, "primary", "released", (20, 20),
+        ))
+        session.observe(PointerInteraction(
+            1.0, "javafx", owner, {}, "primary", "released", (20, 20),
+        ))
+        self.assertEqual(session.stop(), ())
+        self.assertEqual(len(session.captured_popup_selector_owners()), 1)
+
+    def test_completed_popup_selection_retains_owner_for_repository(self):
+        owner = _captured_recording_node(_popup_owner(
+            "Camera", "javafx.scene.control.ComboBox", "camera",
+        ))
+        selected = _popup_selection(
+            _popup_owner("Camera", "javafx.scene.control.ComboBox", "camera"),
+            native_class="javafx.scene.control.ListCell",
+            role="list item", index=1, value="North",
+        )
+        session = RecordingSession()
+        session.start()
+        session.observe(PointerInteraction(
+            0.5, "javafx", owner, {}, "primary", "released", (20, 20),
+        ))
+        session.observe(PointerInteraction(
+            1.0, "javafx", selected, {}, "primary", "released", (20, 45),
+        ))
+        interactions = session.stop()
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0].action, ActionType.SELECT_ITEM)
+        self.assertEqual([item.accessible_id for item in session.captured_popup_selector_owners()], ["camera"])
+
     def test_choicebox_duplicate_selection_events_commit_once(self):
         owner = _captured_recording_node(_popup_owner(
             "Site", "javafx.scene.control.ChoiceBox", "siteSelector_"))
