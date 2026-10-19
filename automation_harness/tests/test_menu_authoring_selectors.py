@@ -153,7 +153,7 @@ def test_menu_execution_uses_same_scoped_selectors_as_preflight(monkeypatch):
     )
     recorded = []
     monkeypatch.setattr(ComponentHandle, "prepare_for_interaction",
-                        lambda *_args, **_kw: SimpleNamespace(strategy="none"))
+                        lambda *_args, **_kw: SimpleNamespace(strategy="none", to_dict=lambda: {}))
     monkeypatch.setattr(ComponentHandle, "_accessibility_operation",
                         lambda _self, _label, method, selectors: recorded.append((method, selectors)) or {})
     result = handle.execute({"type": "select_menu_item", "path": "File > Save As"})
@@ -177,7 +177,7 @@ def test_combo_selection_executes_authored_selector(monkeypatch, selector, expec
     )
     recorded = []
     monkeypatch.setattr(ComponentHandle, "prepare_for_interaction",
-                        lambda *_args, **_kw: SimpleNamespace(strategy="none"))
+                        lambda *_args, **_kw: SimpleNamespace(strategy="none", to_dict=lambda: {}))
     monkeypatch.setattr(ComponentHandle, "_accessibility_operation",
                         lambda _self, _label, method, value: recorded.append((method, value)) or {})
     handle.execute({"type": "select_item", "selector": selector})
