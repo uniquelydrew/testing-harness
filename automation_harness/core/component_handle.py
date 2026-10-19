@@ -165,10 +165,25 @@ class ComponentHandle:
                 if not isinstance(semantic.value, str):
                     raise ValueError("append_text requires a string value")
                 payload = self.set_text(self.get_text() + semantic.value)
-            elif semantic.type == ActionType.SELECT_ITEM and (semantic.options.get("path") is not None or isinstance(semantic.value, str)):
+            elif semantic.type == ActionType.SELECT_ITEM and (
+                semantic.options.get("path") is not None
+                or isinstance(semantic.value, str)
+                or (self.definition.object_type is ObjectType.COMBO_BOX and semantic.selector is not None)
+            ):
                 navigation = semantic.options.get("path", semantic.value)
-                if self.definition.object_type is ObjectType.COMBO_BOX and isinstance(navigation, str):
-                    selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                if self.definition.object_type is ObjectType.COMBO_BOX:
+                    if navigation is None and semantic.selector is not None:
+                        criteria = dict(semantic.selector.criteria)
+                        if "name" in criteria and "text" not in criteria:
+                            criteria["text"] = criteria.pop("name")
+                        if not criteria:
+                            raise ValueError("popup item selector requires criteria")
+                        selectors = [{"kind": "popup_item", "criteria": criteria}]
+                    elif isinstance(navigation, str):
+                        selectors = [{"kind": "popup_item", "criteria": {"text": navigation}}]
+                    else:
+                        path = resolve_navigation(self.definition.subobjects, navigation)
+                        selectors = self._menu_path_selectors(path)
                 else:
                     path = resolve_navigation(self.definition.subobjects, navigation)
                     selectors = self._menu_path_selectors(path)
