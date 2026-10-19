@@ -11,7 +11,9 @@ from gi.repository import Gtk
 
 from automation_harness.authoring.action_catalog import ActionInput, actions_for
 from automation_harness.models.component import ComponentDefinition
-from automation_harness.core.menu_navigation import menu_item_label, resolve_navigation
+from automation_harness.core.menu_navigation import (
+    menu_item_label, navigation_from_path, resolve_navigation, selectors_from_navigation,
+)
 
 
 def interaction_actions(definition: ComponentDefinition):
@@ -96,7 +98,11 @@ def read_action_input(item: ActionInput, widget):
             path, enabled = value
             if not enabled:
                 raise ValueError("the selected menu option is disabled")
-            return True, path
+            route = navigation_from_path(widget._subobjects, path) if isinstance(path, (list, tuple)) else path
+            # A manually typed known route must observe the same disabled-state
+            # checks as selecting that option from the tree.
+            selectors_from_navigation(widget._subobjects, route)
+            return True, route
         model = widget.get_model()
         iterator = widget.get_active_iter()
         if model is None or iterator is None:
@@ -112,9 +118,9 @@ def read_action_input(item: ActionInput, widget):
             if isinstance(path, list) and path and all(
                 isinstance(segment, str) and segment for segment in path
             ):
-                return True, path
+                return True, " > ".join(path)
         if isinstance(value, list):
-            return True, value
+            return True, " > ".join(value)
         raise ValueError("menu picker produced an invalid navigation value")
 
     if item.value_type == "boolean":
@@ -197,6 +203,7 @@ class MenuPathPicker(Gtk.Box):
         self._entry = Gtk.Entry()
         self._entry.set_hexpand(True)
         self._entry.set_placeholder_text("Route, e.g. File > Open")
+        self._entry.connect("changed", self._on_entry_changed)
         self.pack_start(self._entry, True, True, 0)
         self._button = Gtk.Button(label="Choose menu option…")
         self._button.set_halign(Gtk.Align.START)
@@ -214,9 +221,28 @@ class MenuPathPicker(Gtk.Box):
         self._popover = Gtk.Popover.new(self._button)
         self._popover.set_border_width(6)
         self._popover.set_size_request(360, 260)
-        self._popover.add(self._tree)
-        self._button.connect("clicked", lambda *_args: self._popover.popup())
+        self._popover_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_size_request(340, 180)
+        scroll.add(self._tree)
+        self._popover_content.pack_start(scroll, True, True, 0)
+        if not menu_path_options(subobjects):
+            message = Gtk.Label(label="No selectable captured menu options. Enter a route manually.")
+            message.set_line_wrap(True)
+            self._popover_content.pack_start(message, False, False, 0)
+        self._popover.add(self._popover_content)
+        self._button.connect("clicked", self._open_popover)
         self._populate(subobjects)
+
+    def _open_popover(self, *_args):
+        self._popover_content.show_all()
+        self._popover.popup()
+
+    def _on_entry_changed(self, *_args):
+        # A typed route supersedes a previously selected tree option.
+        self._selected_path = None
+        self._selected_enabled = False
 
     def _populate(self, subobjects, parent=None, prefix=(), labels=()):
         for key, raw in subobjects.items():
@@ -252,10 +278,11 @@ class MenuPathPicker(Gtk.Box):
             return
         if not bool(self._store.get_value(iterator, self._ENABLED)):
             return
-        self._selected_path = tuple(json.loads(self._store.get_value(iterator, self._PATH)))
-        self._selected_enabled = True
+        selected_path = tuple(json.loads(self._store.get_value(iterator, self._PATH)))
         label = self._store.get_value(iterator, self._LABEL)
         self._entry.set_text(label)
+        self._selected_path = selected_path
+        self._selected_enabled = True
         self._button.set_label("Choose from menu")
         self._popover.popdown()
 
@@ -271,13 +298,17 @@ class MenuPathPicker(Gtk.Box):
             except ValueError:
                 wanted = None
         if wanted is None:
+            if isinstance(value, str):
+                self._entry.set_text(value)
+            elif isinstance(value, (list, tuple)):
+                self._entry.set_text(" > ".join(str(item) for item in value))
             return
         iterator = self._store.get_iter_first()
         found = self._find_path(iterator, wanted)
         if found is not None:
+            self._entry.set_text(self._store.get_value(found, self._LABEL))
             self._selected_path = wanted
             self._selected_enabled = bool(self._store.get_value(found, self._ENABLED))
-            self._entry.set_text(self._store.get_value(found, self._LABEL))
 
     def selected_value(self):
         if self._selected_path is not None:
@@ -285,7 +316,13 @@ class MenuPathPicker(Gtk.Box):
         route = self._entry.get_text().strip()
         if not route:
             return None
-        path = resolve_navigation(self._as_mapping(), route)
+        if not self._subobjects:
+            return route, True
+        try:
+            path = resolve_navigation(self._as_mapping(), route)
+        except ValueError:
+            # Permit authored routes not yet represented in repository metadata.
+            return route, True
         return path, True
 
     def _find_path(self, iterator, wanted):

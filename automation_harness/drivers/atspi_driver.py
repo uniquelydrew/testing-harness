@@ -1206,9 +1206,13 @@ def _menu_child_matches(child: Any, criteria: Mapping[str, Any]) -> bool:
         "role": _role_name(child),
         "accessible_id": _accessible_id(child),
     }
+    # Menu inventories use cross-backend 'id' and 'text' names; AT-SPI
+    # exposes these as accessible_id and accessible name respectively.
+    aliases = {"text": "name", "id": "accessible_id", "accessible_name": "name"}
     return all(
-        key in actual
-        and str(actual.get(key) or "").casefold() == str(expected or "").casefold()
+        aliases.get(key, key) in actual
+        and str(actual.get(aliases.get(key, key)) or "").casefold()
+            == str(expected or "").casefold()
         for key, expected in criteria.items()
     )
 

@@ -85,6 +85,90 @@ def resolve_navigation(
     return path
 
 
+
+def selectors_from_navigation(
+    subobjects: Mapping[str, Mapping[str, Any]], navigation,
+) -> list[dict[str, Any]]:
+    """Build scoped menu selectors from captured inventory or explicit labels.
+
+    Captured options provide preferred durable selectors, not an exhaustive
+    allow-list: unobserved options use exact visible-text selectors. Internal
+    ID paths, however, must resolve to their recorded definitions. A known
+    disabled or non-selectable item is never converted into a fallback.
+    """
+    by_id = isinstance(navigation, (list, tuple))
+    if by_id:
+        segments = resolve_navigation(subobjects, navigation)
+    else:
+        if not isinstance(navigation, str) or not navigation.strip():
+            raise ValueError("menu navigation must be a non-empty string")
+        segments = [item.strip() for item in navigation.split(">")]
+        if any(not item for item in segments):
+            raise ValueError("menu navigation must use non-empty segments separated by ' > '")
+
+    current = subobjects
+    selectors: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        last = index == len(segments) - 1
+        key = segment
+        raw = None
+        if by_id:
+            raw = current.get(segment)
+            if not isinstance(raw, Mapping):
+                raise ValueError("menu path segment %r is not defined" % segment)
+        else:
+            matches = []
+            for candidate_key, candidate in current.items():
+                if not isinstance(candidate, Mapping):
+                    continue
+                names = {
+                    str(candidate_key).casefold(),
+                    menu_item_label(str(candidate_key), candidate).casefold(),
+                }
+                for field in ("text", "name", "accessible_name", "accessible_id", "id"):
+                    value = _criteria(candidate).get(field)
+                    if value not in (None, ""):
+                        names.add(str(value).casefold())
+                if segment.casefold() in names:
+                    matches.append((str(candidate_key), candidate))
+            if len(matches) > 1:
+                raise ValueError("ambiguous menu option %r" % segment)
+            if matches:
+                key, raw = matches[0]
+
+        if raw is None:
+            selectors.append({
+                "kind": "menu_item" if last else "menu",
+                "criteria": {"text": segment},
+            })
+            current = {}
+            continue
+
+        if raw.get("enabled") is False:
+            raise ValueError("menu option %r is disabled" % segment)
+        if str(raw.get("kind") or "").replace(" ", "_").casefold() == "separator":
+            raise ValueError("menu option %r is a separator" % segment)
+        if last and raw.get("selectable") is False:
+            raise ValueError("menu option %r is not selectable" % segment)
+
+        stored = raw.get("selector")
+        stored = stored if isinstance(stored, Mapping) else {}
+        kind = raw.get("kind") or stored.get("kind") or ("menu_item" if last else "menu")
+        criteria = _criteria(raw)
+        selector = {"kind": str(kind).replace(" ", "_"), "criteria": dict(criteria) if criteria else {
+            "text": menu_item_label(key, raw),
+        }}
+        for optional in ("ordinal", "relative_offset"):
+            value = raw.get(optional, stored.get(optional))
+            if value is not None:
+                selector[optional] = value
+        selectors.append(selector)
+        nested = raw.get("subobjects")
+        current = nested if isinstance(nested, Mapping) else {}
+
+    return selectors
+
+
 def menu_item_label(key: str, raw: Mapping[str, Any]) -> str:
     for field in ("display_name", "label", "text", "name"):
         value = raw.get(field)

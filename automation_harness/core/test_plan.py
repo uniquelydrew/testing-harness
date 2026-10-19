@@ -265,10 +265,10 @@ def validate_plan_components(plan: TestPlan, repository: ComponentRepository) ->
                 action = GuiAction.from_value(call.inputs.get("action"))
                 from automation_harness.models.gui import ActionType
                 if action.type is ActionType.SELECT_MENU_ITEM:
-                    from automation_harness.core.menu_navigation import resolve_navigation
+                    from automation_harness.core.menu_navigation import selectors_from_navigation
                     navigation = action.options.get("path", action.value)
                     try:
-                        resolve_navigation(definition.subobjects, navigation)
+                        selectors_from_navigation(definition.subobjects, navigation)
                     except ValueError as exc:
                         issues.append(f"{call.node_id}: invalid menu navigation: {exc}")
                 if not definition.supports(action.type):

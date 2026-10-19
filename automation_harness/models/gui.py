@@ -115,7 +115,25 @@ class GuiAction:
         known = {"type", "value", "selector", "options"}
         options = value.get("options", {})
         if not isinstance(options, Mapping): raise ValueError("action.options must be a mapping")
-        return cls(ActionType(raw_type), value.get("value"), ObjectSelector.from_value(value.get("selector")), {**dict(options), **{k: v for k, v in value.items() if k not in known}})
+        action_type = ActionType(raw_type)
+        action_value = value.get("value")
+        raw_selector = value.get("selector")
+        selection_types = {
+            ActionType.SELECT, ActionType.SELECT_ITEM,
+            ActionType.SELECT_ROW, ActionType.SELECT_CELL,
+        }
+        if action_type in selection_types and raw_selector is not None:
+            if isinstance(raw_selector, Mapping) and "kind" not in raw_selector:
+                # Authoring accepts a concise criteria mapping for a logical item.
+                raw_selector = {"kind": "item", "criteria": dict(raw_selector)}
+            elif not isinstance(raw_selector, (Mapping, ObjectSelector)):
+                # Free-form ComboBox/ChoiceBox selections are authored under
+                # 'selector', while recorded selections use 'value'.
+                if action_value is None:
+                    action_value = raw_selector
+                raw_selector = None
+        return cls(action_type, action_value, ObjectSelector.from_value(raw_selector),
+                   {**dict(options), **{k: v for k, v in value.items() if k not in known}})
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"type": self.type.value}

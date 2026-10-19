@@ -67,6 +67,7 @@ class ObjectRepositoryWindow(ArtifactWindow):
         right.pack_start(self.scrolled(self.detail), True, True, 0)
         row = Gtk.Box(spacing=6); right.pack_start(row, False, False, 0)
         self.button("Edit Definition", self.edit_selected, parent=row)
+        self.button("Edit Options", self.edit_selected_options, parent=row)
         self.button("Highlight", self.highlight_selected, parent=row)
         self.button("Click", self.click_selected, parent=row)
         self.button("Open Project", self.open_project, parent=row)
@@ -346,6 +347,60 @@ class ObjectRepositoryWindow(ArtifactWindow):
         except Exception as exc:
             return self.error("Object Repository", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty(); self.refresh()
+
+    def edit_selected_options(self):
+        """Edit captured option suggestions without changing object identity."""
+        component_id = self.selected(self.tree)
+        if not component_id:
+            return self.info("Object Repository", "Select an object first.")
+        components = self.repository.to_document()["components"]
+        current = components[component_id]
+        dialog = Gtk.Dialog(
+            title="Edit Options — %s" % component_id,
+            transient_for=self.window, modal=True,
+        )
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply", Gtk.ResponseType.OK)
+        message = Gtk.Label(
+            label="Edit captured or configured subobjects as JSON. "
+                  "The inventory is a source of selectors, not an exhaustive list of permitted values.",
+        )
+        message.set_line_wrap(True)
+        dialog.get_content_area().pack_start(message, False, False, 6)
+        editor = Gtk.TextView()
+        editor.set_monospace(True)
+        editor.get_buffer().set_text(json.dumps(current.get("subobjects", {}), indent=2))
+        scroll = self.scrolled(editor)
+        scroll.set_size_request(720, 440)
+        dialog.get_content_area().pack_start(scroll, True, True, 0)
+        dialog.show_all()
+        response = dialog.run()
+        buffer = editor.get_buffer()
+        raw = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        try:
+            options = json.loads(raw)
+            if not isinstance(options, dict) or any(
+                not isinstance(key, str) or not key or not isinstance(value, dict)
+                for key, value in options.items()
+            ):
+                raise ValueError("options must be a JSON object of named option objects")
+            definition = dict(current)
+            definition["subobjects"] = options
+            updated_components = dict(components)
+            updated_components[component_id] = definition
+            # Parse the complete repository so owner_uuid relationships remain
+            # intact, including when the edited object is itself a child.
+            updated = ComponentRepository.from_document(
+                {"version": 3, "components": updated_components}, source=str(self.path),
+            )
+            updated.validate_persistence()
+            self.repository = updated
+        except Exception as exc:
+            return self.error("Edit Options", "%s: %s" % (type(exc).__name__, exc))
+        self.mark_dirty()
+        self.refresh()
 
     def duplicate_selected(self):
         component_id = self.selected(self.tree)
