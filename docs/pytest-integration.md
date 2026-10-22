@@ -220,6 +220,28 @@ artifact directories in your CI artifact collection.
 - **No automatic migration:** Existing Python test bundles continue using
   `automation-run run`, and saved TestPlans require no format changes.
 
+## Manual RHEL GUI qualification
+
+The existing manually dispatched [RHEL Desktop Integration](../.github/workflows/rhel-desktop.yml)
+workflow now invokes `scripts/ci/pytest-plan-desktop.sh` as part of
+`scripts/ci/desktop-integration.sh`. The smoke plan exercises
+`automation-pytest` on Python 3.6 against a real, isolated Xvfb-backed GUI
+reference process and produces:
+
+- `artifacts/desktop/pytest-plan.xml` (pytest JUnit output)
+- `artifacts/desktop/pytest-plan-runs/` (authoritative harness artifacts)
+
+These are collected alongside the workflow's existing desktop diagnostics.
+The runner must have the expected `self-hosted`, `rhel8`, and `desktop`
+labels. The workflow is intentionally **manual** so absent desktop runners
+do not leave ordinary pull requests waiting indefinitely.
+
+This manual test has been **added but not executed on a RHEL runner**;
+successful Python 3.6 headless CI is not proof of GUI or ERSA compatibility.
+The synthetic smoke exercises backend lifecycle and JUnit/artifact integration,
+not native ERSA component identity or action playback. ERSA test validation
+remains a separate internal environment qualification task.
+
 ### Adapter regression test command
 
 Once the optional pytest dependencies are installed, run:

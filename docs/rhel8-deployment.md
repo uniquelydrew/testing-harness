@@ -103,6 +103,12 @@ termination or host failure.
 See [`pytest-integration.md`](pytest-integration.md) for options and current
 qualification status.
 
+The manually dispatched RHEL desktop workflow now includes
+`scripts/ci/pytest-plan-desktop.sh`, which exercises a synthetic GUI
+`.ahplan` through pytest and archives JUnit/harness artifacts. It requires a
+registered RHEL desktop runner and has not yet been executed as part of this
+branch's qualification.
+
 ## AT-SPI and PyGObject
 
 The virtual environment is created with `--system-site-packages` so the RHEL
