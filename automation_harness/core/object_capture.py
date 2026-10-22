@@ -39,6 +39,25 @@ class LocatorAssessment:
         }
 
 
+class RecaptureValidationError(ValueError):
+    """Rejected recapture that would change the identity contract."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class RecaptureCandidate:
+    """Validated, uncommitted locator update tied to an object revision."""
+
+    object_id: str
+    component_id: str
+    base_revision: int
+    proposed: ComponentDefinition
+    comparison: Mapping[str, Any]
+
+
 class ObjectCaptureService:
     """Local Object Spy service used by both CLI and authoring GUI.
 
@@ -322,7 +341,8 @@ class ObjectCaptureService:
         *,
         validate_live: bool = True,
     ) -> tuple[ComponentDefinition, dict[str, Any]]:
-        """Re-reference an existing logical object to a fresh live capture."""
+        """Re-reference an object without changing its semantic ownership."""
+        self._validate_recapture_contract(existing, captured)
         proposed = self.definition_from_capture(
             existing.component_id,
             captured,
@@ -340,10 +360,81 @@ class ObjectCaptureService:
             proposed,
             object_id=existing.object_id,
             owner_object_id=existing.owner_object_id,
+            object_type=existing.object_type,
+            description=existing.description,
+            actions=existing.actions,
+            expected_states=existing.expected_states,
+            action_completion=existing.action_completion,
+            visual=existing.visual,
+            subobjects=_merge_recapture_subobjects(existing.subobjects, proposed.subobjects),
             properties=properties,
         )
         comparison = recapture_comparison(existing, captured, proposed)
         return proposed, comparison
+
+    @staticmethod
+    def _validate_recapture_contract(existing: ComponentDefinition, captured: CapturedComponent) -> None:
+        captured_type = captured.semantic_type()
+        if captured_type != existing.object_type:
+            raise RecaptureValidationError(
+                "wrong_semantic_type",
+                "recapture of %s requires %s, not %s"
+                % (existing.component_id, existing.object_type.value, captured_type.value),
+            )
+        if existing.framework and captured.framework and existing.framework != captured.framework:
+            raise RecaptureValidationError("wrong_framework", "recapture changed framework")
+        if existing.native_class and captured.native_class and existing.native_class != captured.native_class:
+            raise RecaptureValidationError("wrong_native_class", "recapture changed native class")
+        scope = dict(existing.scope or {}).get("ownership", {})
+        if isinstance(scope, Mapping):
+            for name in ("application", "window"):
+                expected = scope.get(name)
+                actual = getattr(captured, name, None)
+                if expected not in (None, "") and actual not in (None, "") and str(expected) != str(actual):
+                    raise RecaptureValidationError(
+                        "wrong_" + name + "_scope", "recapture changed %s ownership" % name,
+                    )
+
+    def stage_recapture(
+        self,
+        repository: ComponentRepository,
+        existing: ComponentDefinition,
+        captured: CapturedComponent,
+        *,
+        validate_live: bool = True,
+    ) -> RecaptureCandidate:
+        """Validate a capture before presenting it for authoring review."""
+        current = repository.get(existing.object_id)
+        if current.revision != existing.revision:
+            raise RecaptureValidationError(
+                "stale_revision", "object changed after the recapture was requested",
+            )
+        proposed, comparison = self.recapture_definition(
+            existing, captured, validate_live=validate_live,
+        )
+        # Validate the complete updated repository, not an isolated definition.
+        repository.with_component(proposed).validate_persistence()
+        return RecaptureCandidate(
+            existing.object_id, existing.component_id, existing.revision,
+            proposed, comparison,
+        )
+
+    @staticmethod
+    def apply_recapture_candidate(
+        repository: ComponentRepository, candidate: RecaptureCandidate,
+    ) -> ComponentRepository:
+        """Refuse to apply a staged capture after the object has changed."""
+        current = repository.get(candidate.object_id)
+        if current.revision != candidate.base_revision:
+            raise RecaptureValidationError(
+                "stale_revision", "object changed while recapture was being reviewed",
+            )
+        if candidate.proposed.object_id != candidate.object_id or candidate.proposed.component_id != current.component_id:
+            raise RecaptureValidationError(
+                "object_identity_conflict", "staged recapture no longer targets this object",
+            )
+        return repository.with_component(candidate.proposed).validate_persistence()
+
     def save_capture(
         self,
         path: Path,
@@ -624,6 +715,23 @@ def _visual_region_at_point(
     if region_width < 6 or region_height < 6:
         return None
     return (left + min_x, top + min_y, region_width, region_height)
+
+
+
+def _merge_recapture_subobjects(existing: Mapping[str, Any], fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """A partial recapture must not discard recorded menu/option inventory."""
+    merged = {str(key): dict(value) for key, value in existing.items() if isinstance(value, Mapping)}
+    for key, value in fresh.items():
+        if not isinstance(value, Mapping):
+            continue
+        current = dict(merged.get(str(key), {}))
+        current.update(dict(value))
+        old_children = merged.get(str(key), {}).get("subobjects")
+        new_children = value.get("subobjects")
+        if isinstance(old_children, Mapping) and isinstance(new_children, Mapping):
+            current["subobjects"] = _merge_recapture_subobjects(old_children, new_children)
+        merged[str(key)] = current
+    return merged
 
 
 def _criteria_stability(criteria: Mapping[str, Any]) -> dict[str, Any]:

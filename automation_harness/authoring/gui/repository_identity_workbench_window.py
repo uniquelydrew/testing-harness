@@ -310,11 +310,13 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         def worker():
             try:
                 captured = self.app.capture.capture_next_click(click_count=click_count, timeout=30.0)
-                proposed, comparison = self.app.capture.recapture_definition(definition, captured)
+                candidate = self.app.capture.stage_recapture(
+                    self._repository_host.repository, definition, captured,
+                )
             except Exception as exc:
                 GLib.idle_add(self._recapture_finished, node.key, None, None, None, exc)
             else:
-                GLib.idle_add(self._recapture_finished, node.key, proposed, comparison, captured, None)
+                GLib.idle_add(self._recapture_finished, node.key, candidate, candidate.comparison, captured, None)
 
         import threading
         threading.Thread(target=worker, name="repository-object-recapture", daemon=True).start()
@@ -337,9 +339,10 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             self._finish_recapture_review(key, proposed, comparison, captured)
         return False
 
-    def _finish_recapture_review(self, key, proposed, comparison, captured=None):
+    def _finish_recapture_review(self, key, candidate, comparison, captured=None):
         if self._closed:
             return False
+        proposed = candidate.proposed
         self._repository_host._clear_highlight()
         self.window.show_all()
         self.window.present()
@@ -377,7 +380,12 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         definition = self._definition_by_key.get(key)
         if definition is None:
             return False
-        updated = self._repository_host.repository.with_component(proposed)
+        try:
+            updated = self.app.capture.apply_recapture_candidate(
+                self._repository_host.repository, candidate,
+            )
+        except Exception as exc:
+            return self.app._error("Recapture object", "%s: %s" % (type(exc).__name__, exc))
         self._repository_host.repository = updated
         self.app.repository = updated
         self._definition_by_key[key] = proposed
