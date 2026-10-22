@@ -30,6 +30,10 @@ python3 -m pip install -e '.[test,vision]'
 
 bash scripts/ci/build-agents.sh
 
+# Qualify the optional .ahplan-to-pytest adapter on this RHEL GUI runner.
+# Uses its own synthetic reference GUI, not private application resources.
+bash scripts/ci/pytest-plan-desktop.sh
+
 python3 -m pytest -m "ui or integration" --junitxml="$ARTIFACTS/pytest.xml"
 automation-run selftest --reference-display virtual 2>&1 | tee "$ARTIFACTS/selftest.log"
 automation-run selftest --require-atspi --reference-display virtual 2>&1 | tee "$ARTIFACTS/selftest-atspi.log"

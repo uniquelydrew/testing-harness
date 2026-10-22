@@ -24,12 +24,13 @@ setup(
         "typing_extensions==4.1.1",
     ],
     extras_require={
+        "pytest": ["pytest>=6.2,<7.0"],
         "vision": ["Pillow==8.4.0"],
         "test": [
             "Pillow==8.4.0",
             "PyGObject==3.38.0; platform_system == 'Linux'",
             "pycairo==1.20.1; platform_system == 'Linux'",
-            "pytest>=4.5,<7.0",
+            "pytest>=6.2,<7.0",
         ],
     },
     entry_points={
@@ -41,6 +42,7 @@ setup(
             "automation-javafx=automation_harness.compat.python36:run_javafx",
             "automation-java-target=automation_harness.compat.java_target:main",
             "automation-codex-runtime=automation_harness.codex_runtime:main",
+            "automation-pytest=automation_harness.compat.pytest_cli:main",
         ]
     },
 )

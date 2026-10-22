@@ -38,7 +38,7 @@ class _Driver:
         self.sources.append((source, settle_delay))
         return self.target
 
-    def capture_at_point_snapshot(self, x, y):
+    def capture_at_point_snapshot(self, x, y, *, excluded_application_prefixes=()):
         self.point_snapshots.append((x, y))
         return self.target
 

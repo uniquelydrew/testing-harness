@@ -40,6 +40,7 @@ backend remains intentionally disabled.
 - [Managed execution state](#managed-execution-state)
 - [Validation and execution](#validation-and-execution)
 - [Evidence and run artifacts](#evidence-and-run-artifacts)
+- [Optional pytest integration](#optional-pytest-integration)
 - [Python bundle mode](#python-bundle-mode)
 - [Command reference](#command-reference)
 - [Repository layout](#repository-layout)
@@ -109,8 +110,9 @@ Python package dependencies are:
 - `dataclasses==0.8`
 - `typing_extensions==4.1.1`
 
-Pillow is an optional vision dependency. pytest is required only for
-development and qualification tests.
+Pillow is an optional vision dependency. pytest is used for development tests,
+Python test bundles, and the optional declarative-plan integration; core
+harness operation does not require pytest.
 
 Install the wheel into the environment where the harness will run:
 
@@ -127,6 +129,10 @@ automation-author
 automation-plan
 automation-javafx
 ```
+
+The optional `automation-pytest` command becomes usable after installing
+`.[pytest]`; it is not part of the normal bootstrap dependency set. See
+[Optional pytest integration](#optional-pytest-integration).
 
 ## Linux GUI requirements
 
@@ -1825,11 +1831,73 @@ platform
 
 ---
 
+# Optional pytest integration
+
+The opt-in `automation-pytest` command collects saved `.ahplan` files as
+native pytest test items. **One plan is one pytest test**, not one test per
+managed step. pytest owns suite discovery, selection, and JUnit output; the
+harness continues to own plan validation, step execution, object resolution,
+backend lifecycle, evidence, and HTML reporting.
+
+Install the extra into the same Python environment as the harness (for RHEL 8,
+after activating the bootstrapped environment):
+
+```bash
+python -m pip install -e '.[pytest]'
+```
+
+Example commands (substitute paths to your own plans/project; no ERSA plans
+are included in this public repository):
+
+```bash
+automation-pytest --collect-only -q ./tests/plans
+
+automation-pytest ./tests/plans \
+  --ah-backend=live-desktop \
+  --ah-project=./tests/project.ahproject \
+  --ah-runs-dir="$HOME/.local/state/automation-harness/pytest-runs" \
+  --junitxml="$HOME/.local/state/automation-harness/pytest-junit.xml"
+
+automation-pytest ./tests/plans/T1789.ahplan \
+  --ah-backend=reference \
+  --ah-reference-mode=headless
+```
+
+The `--ah-project` option is optional; when supplied, the selected plan must
+belong to that project. A run resolves plan-associated object repositories and,
+if a project is supplied, its reusable-step registries. `--ah-var=NAME=VALUE`
+may be repeated to override top-level variables (JSON values are accepted).
+Collected plans have the `ahplan` marker, and `live-desktop` plans also
+receive the `gui` marker.
+
+Each pytest result exposes a harness run ID and artifact paths in its JUnit
+properties, while the per-plan `events.jsonl`, `execution_state.json`, and
+`report.html` retain authoritative execution diagnostics. The `--junitxml`
+output file is produced by pytest separately from the individual harness run
+directories.
+
+The adapter has passed its Python 3.6 headless-reference CI tests, but
+**RHEL 8.9 live-GUI qualification remains outstanding**. It does not
+automatically inject pytest fixtures or isolate concurrent GUI workers.
+For guaranteed external cleanup after a failed managed step, supply
+`--ah-teardown-command='bash path/to/stop.sh'`; an optional
+`--ah-setup-command` runs before each plan. Neither command is executed
+through an implicit shell. On RHEL/Python 3.6, use `automation-pytest`
+rather than bare `pytest` to activate the compatibility loader.
+
+See [`docs/pytest-integration.md`](docs/pytest-integration.md) for supported
+options, project resource behavior, result semantics, and limitations.
+
+---
+
 # Python bundle mode
 
 Declarative TestPlans are the primary composition model for tests built from installed reusable steps.
 
-A separate Python/pytest bundle mode remains available for framework development, qualification, and reusable-step development.
+The separate Python/pytest bundle mode remains available for framework
+development, qualification, and reusable-step development. Unlike the optional
+`.ahplan` pytest collector above, `automation-run run` executes Python tests
+from a bundle manifest using the existing pytest subprocess integration.
 
 Example bundle manifest:
 
@@ -1975,6 +2043,21 @@ automation-run plan run ./test.ahplan --backend reference --components ./objects
 automation-run plan run ./test.ahplan --backend reference --var track_id='"alpha"'
 ```
 
+## Optional pytest plan collection
+
+```bash
+automation-pytest --collect-only -q ./tests/plans
+
+automation-pytest ./tests/plans --ah-backend=live-desktop \
+  --junitxml=/tmp/automation-pytest-junit.xml
+
+automation-pytest ./tests/plans/T1789.ahplan --ah-project=./tests/project.ahproject \
+  --ah-var='camera="North"'
+```
+
+These paths are examples, not checked-in ERSA assets. See
+[`docs/pytest-integration.md`](docs/pytest-integration.md).
+
 ## Python bundles
 
 ```bash
@@ -2055,8 +2138,16 @@ automation_harness/
     state.py                  synthetic service/state model
     services.py               reference implementations of semantic services
 
+  compat/
+    pytest_cli.py             Python 3.6-safe optional pytest entry point
+
+  integrations/
+    pytest/
+      plugin.py               .ahplan collector and pytest result adapter
+
   runner/
     cli.py                    automation-run command
+    plan_resources.py         shared project/plan repository and step resolution
     plan_cli.py               direct automation-plan entry point
     execution.py              Python bundle execution
     plan_execution.py         declarative TestPlan execution

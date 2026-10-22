@@ -501,7 +501,7 @@ def test_materialize_existing_combo_promotes_observed_canonical_select_item():
     persisted = _capture("Site Selector", kind=ObjectType.COMBO_BOX)
     definition = ComponentDefinition(
         component_id="Site Selector Combo Box",
-        object_id="combo-1",
+        object_id="10000000-0000-0000-0000-000000000004",
         strategies=(persisted.candidate_strategy(),),
         object_type=ObjectType.COMBO_BOX,
         actions=frozenset({"click"}),
@@ -523,7 +523,7 @@ def test_materialize_existing_combo_does_not_promote_noncanonical_action():
     persisted = _capture("Site Selector", kind=ObjectType.COMBO_BOX)
     definition = ComponentDefinition(
         component_id="Site Selector Combo Box",
-        object_id="combo-1",
+        object_id="10000000-0000-0000-0000-000000000004",
         strategies=(persisted.candidate_strategy(),),
         object_type=ObjectType.COMBO_BOX,
         actions=frozenset({"click"}),

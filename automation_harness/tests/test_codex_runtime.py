@@ -81,6 +81,7 @@ def test_supervisor_marks_gdb_ptrace_block_as_diagnostic_blocked(tmp_path, monke
 def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsys):
     root = str(tmp_path / "runtime-root")
     session = str(tmp_path / "runtime-root" / "session-1")
+    os.makedirs(session)
     monkeypatch.setattr(codex_runtime, "_runtime_root", lambda: root)
     monkeypatch.setattr(codex_runtime, "_active", lambda _root: None)
     monkeypatch.setattr(codex_runtime, "_session_dir", lambda _root: session)
@@ -89,15 +90,18 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
     popen_calls = []
 
     class DummyPopen:
-        def __init__(self, command, stdin=None, stdout=None, stderr=None, preexec_fn=None, close_fds=None):
+        def __init__(self, command, stdin=None, stdout=None, stderr=None, env=None,
+                     preexec_fn=None, close_fds=None):
             popen_calls.append(command)
             self.pid = 43210
 
         def poll(self):
             return None
 
+    real_exists = os.path.exists
+
     def fake_exists(path):
-        return path == os.path.join(session, "manifest.json")
+        return path == os.path.join(session, "manifest.json") or real_exists(path)
 
     monkeypatch.setattr(codex_runtime.subprocess, "Popen", DummyPopen)
     monkeypatch.setattr(codex_runtime.time, "sleep", lambda *_args: None)
@@ -134,8 +138,8 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
     gdb_command = supervisor[separator + 1 :]
     assert gdb_command[:3] == ["/usr/bin/gdb", "--batch", "--quiet"]
     assert "-log" not in gdb_command
-    assert ["-ex", "set logging overwrite on"] == gdb_command[5:7]
-    assert ["-ex", "set logging on"] == gdb_command[7:9]
+    assert ["-ex", "set logging overwrite on"] == gdb_command[7:9]
+    assert ["-ex", "set logging on"] == gdb_command[9:11]
     assert gdb_command[-5:] == [
         "-return-child-result",
         "--args",
@@ -180,10 +184,10 @@ def test_prepare_runtime_root_falls_back_when_default_is_unwritable(tmp_path, mo
     fallback_base = str(tmp_path / "fallback")
     real_makedirs = os.makedirs
 
-    def fake_makedirs(path):
+    def fake_makedirs(path, mode=0o777, exist_ok=False):
         if path == preferred:
             raise OSError(30, "Read-only file system")
-        return real_makedirs(path)
+        return real_makedirs(path, mode=mode, exist_ok=exist_ok)
 
     monkeypatch.setattr(codex_runtime.os, "makedirs", fake_makedirs)
     monkeypatch.setenv("TMPDIR", fallback_base)

@@ -27,16 +27,16 @@ The bootstrap performs the following work automatically:
 8. Builds the native JavaFX bridge agent when `javac` and `jar` are available.
 9. Locates the Java ATK wrapper without assuming one exact RPM layout.
 10. Qualifies CLI import, required Python bindings, Pillow screen capture, GTK authoring, AT-SPI, the JavaFX agent, and the available display mode.
-11. Writes `$XDG_STATE_HOME/automation-harness/bootstrap-env` (or `~/.local/state/automation-harness/bootstrap-env`) with the resulting runtime paths, outside the source tree.
+11. Writes `.automation-harness-env` in the source checkout with exports for the runtime tools and any discovered Java agents.
 
 After a successful bootstrap:
 
 ```bash
-source "${XDG_STATE_HOME:-$HOME/.local/state}/automation-harness/bootstrap-env"
+source ./.automation-harness-env
 automation-run selftest
 ```
 
-The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER` when the wrapper is discovered. Set `AUTOMATION_HARNESS_RUNTIME_DIR` before bootstrapping to use another external runtime location; the virtual environment, diagnostic logs, and run evidence are placed beneath it.
+The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER` when the wrapper is discovered. Set `AUTOMATION_HARNESS_VENV` to relocate the virtual environment, and use `AUTOMATION_HARNESS_RUNTIME_DIR` to relocate runtime artifacts and diagnostic evidence.
 
 ## RHEL privilege and repository requirements
 
@@ -64,6 +64,50 @@ AUTOMATION_HARNESS_VENV=/opt/automation-harness/venv bash bootstrap.sh
 ```
 
 The Pillow pip fallback defaults to `Pillow==8.4.0`, the final Pillow release that supports Python 3.6. An explicit deployment mirror or validated replacement version can be selected with `AUTOMATION_HARNESS_PILLOW_VERSION`.
+
+## Optional declarative-plan pytest adapter
+
+The normal RHEL bootstrap **does not install the optional pytest dependency**.
+Install it only when `.ahplan` collection or external pytest/JUnit orchestration
+is needed. From the source checkout, using the bootstrapped Python environment:
+
+```bash
+cd testing-harness
+source ./.automation-harness-env
+python -m pip install -e '.[pytest]'
+automation-pytest --help
+```
+
+The optional dependency uses pytest 6.2-compatible releases on Python 3.6.
+Use the `automation-pytest` command: it enables the source-compatibility
+loader before pytest loads the plan adapter. Do **not** assume that invoking
+bare `pytest` from the system interpreter initializes this loader.
+
+A basic collection-only invocation does not require launching the target
+desktop or reference backend:
+
+```bash
+automation-pytest --collect-only -q /path/to/test-plans
+```
+
+Actual `--ah-backend=live-desktop` execution still requires a qualified
+desktop session, a usable `DISPLAY`, a D-Bus session, and at least one
+supported accessibility driver. An externally supplied CI/X11 session must
+meet those requirements; the adapter does not provision an isolated desktop.
+The plugin does not run later plan steps after a failed managed step. For
+external cleanup, configure `--ah-teardown-command` with a bounded,
+idempotent stop script. The command runs in a `finally` block even if
+setup or execution fails; it cannot guarantee recovery from process
+termination or host failure.
+
+See [`pytest-integration.md`](pytest-integration.md) for options and current
+qualification status.
+
+The manually dispatched RHEL desktop workflow now includes
+`scripts/ci/pytest-plan-desktop.sh`, which exercises a synthetic GUI
+`.ahplan` through pytest and archives JUnit/harness artifacts. It requires a
+registered RHEL desktop runner and has not yet been executed as part of this
+branch's qualification.
 
 ## AT-SPI and PyGObject
 

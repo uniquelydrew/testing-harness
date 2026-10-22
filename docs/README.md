@@ -1,8 +1,8 @@
 # Documentation index
 
 The root [`README.md`](../README.md) is the authoritative user and command
-reference. The installed package includes the same document at
-`automation_harness/README.md`.
+reference. A bundled documentation copy is maintained at
+`automation_harness/README.md`; both receive updates for new user-facing commands.
 
 ## Current guides
 
@@ -11,7 +11,8 @@ reference. The installed package includes the same document at
 | [`live-environment-authoring.md`](live-environment-authoring.md) | Current `live-desktop` authoring model, YAML-backed artifact extensions, regex identity, recording, and click semantics |
 | [`script-backed-steps.md`](script-backed-steps.md) | Script-step manifest contract, JSON process protocol, registration, and execution semantics |
 | [`javafx-identity-contract.md`](javafx-identity-contract.md) | JavaFX identity, lineage, matching, and bridge requirements |
-| [`rhel8-deployment.md`](rhel8-deployment.md) | RHEL 8/Python 3.6 bootstrap and qualification |
+| [`rhel8-deployment.md`](rhel8-deployment.md) | RHEL 8/Python 3.6 bootstrap, optional pytest setup, and qualification |
+| [`pytest-integration.md`](pytest-integration.md) | Experimental `.ahplan` pytest adapter: installation, CLI options, plan discovery, resource loading, JUnit reporting, limits |
 | [`../javafx_agent/README.md`](../javafx_agent/README.md) | Loopback JavaFX capture/action bridge |
 | [`../java-agent/README.md`](../java-agent/README.md) | HTTP recording-agent contract |
 
