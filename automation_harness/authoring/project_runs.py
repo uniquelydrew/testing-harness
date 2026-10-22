@@ -8,11 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
-from automation_harness.authoring.plan_repository import assigned_repositories, load_repository_set
-from automation_harness.authoring.step_registry import load_step_registry_resources
 from automation_harness.backends.live_desktop import LiveDesktopBackend
-from automation_harness.core.reusable_step_snapshot import load_snapshotted_reusable_steps
-from automation_harness.core.test_plan import load_plan, repository_from_plan
+from automation_harness.core.test_plan import load_plan
+from automation_harness.runner.plan_resources import resolve_plan_resources
 from automation_harness.runner.plan_execution import execute_plan
 
 
@@ -149,14 +147,12 @@ def execute_project_batch(project, project_path: Path, plan_paths: Iterable[Path
                 progress("started", index, total, pending)
             try:
                 plan = load_plan(plan_path)
-                resources = load_step_registry_resources(project.step_registries) if project.step_registries else None
-                reusable = dict(resources.steps) if resources else load_snapshotted_reusable_steps(plan)
-                repository = repository_from_plan(plan)
-                if assigned_repositories(plan, plan_path):
-                    repository = repository.overlay(load_repository_set(plan, plan_path).compose())
-                if resources:
-                    repository = repository.overlay(resources.repository)
-                result = execute_plan(plan, backend_factory(), runs_dir=Path(runs_dir), component_repository=repository, reusable_steps=reusable)
+                resources = resolve_plan_resources(plan, plan_path, project=project)
+                result = execute_plan(
+                    plan, backend_factory(), runs_dir=Path(runs_dir),
+                    component_repository=resources.repository,
+                    reusable_steps=resources.reusable_steps,
+                )
                 record = ProjectPlanRun(
                     str(plan_path), plan.name, "passed" if result.exit_code == 0 else "failed", started, _now(),
                     result.passed, result.failed, result.exit_code,
