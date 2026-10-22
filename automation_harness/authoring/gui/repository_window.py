@@ -9,7 +9,7 @@ from gi.repository import GObject, Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.plan_repository import merge_objects_or
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.component_naming import unique_component_name
 from automation_harness.core.repository_hierarchy import (
     authoring_parent_ids,
@@ -28,6 +28,7 @@ class ObjectRepositoryWindow(ArtifactWindow):
     def __init__(self, path, *, project_context=None, opener=None):
         super().__init__(path, project_context=project_context, opener=opener)
         self.repository = ComponentRepository.load((self.path,))
+        self._loaded_fingerprint = repository_fingerprint(self.path)
         self.capture = HybridObjectCaptureService()
         self._highlight_windows = []
         self.button("Save", self.save)
@@ -319,13 +320,25 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self._highlight_windows = []
 
     def save(self):
-        self.repository.validate_persistence()
-        self.repository.save(self.path); self.mark_dirty(False); self.set_status("Saved object repository")
+        try:
+            self.repository.validate_persistence()
+            saved_fingerprint = self.repository.save(
+                self.path, expected_fingerprint=self._loaded_fingerprint,
+            )
+        except Exception as exc:
+            # Do not discard in-memory edits or mark a stale save as successful.
+            return self.error("Save Object Repository", "%s: %s" % (type(exc).__name__, exc))
+        self._loaded_fingerprint = saved_fingerprint
+        self.mark_dirty(False)
+        self.set_status("Saved object repository")
 
     def reload(self):
         if self.dirty and not self.confirm("Reload", "Discard unsaved repository changes?"):
             return
-        self.repository = ComponentRepository.load((self.path,)); self.mark_dirty(False); self.refresh()
+        self.repository = ComponentRepository.load((self.path,))
+        self._loaded_fingerprint = repository_fingerprint(self.path)
+        self.mark_dirty(False)
+        self.refresh()
 
     def edit_selected(self):
         component_id = self.selected(self.tree)

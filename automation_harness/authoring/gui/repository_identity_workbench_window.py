@@ -12,7 +12,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
@@ -51,6 +51,7 @@ class _RepositoryWorkbenchHost:
                     "%s; recovery could not parse it: %s" % (load_error, recovery_error),
                 ),)
         self.migration_report = repository_migration_report(self.repository)
+        self._loaded_fingerprint = repository_fingerprint(self.path)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
         self.window.set_decorated(False)
@@ -122,7 +123,10 @@ class _RepositoryWorkbenchHost:
         try:
             shutil.copy2(self.path, backup)
             self.repository.validate_persistence()
-            self.repository.save(self.path)
+            saved_fingerprint = self.repository.save(
+                self.path, expected_fingerprint=self._loaded_fingerprint,
+            )
+            self._loaded_fingerprint = saved_fingerprint
             removed = len(self.recovery_issues)
             self.recovery_issues = ()
             self._mark_repository_dirty(False)
@@ -521,8 +525,15 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 errors.append("%s: %s" % (definition.component_id, exc))
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
-        self._repository_host.repository.validate_persistence()
-        self._repository_host.repository.save(self._repository_host.path)
+        try:
+            self._repository_host.repository.validate_persistence()
+            saved_fingerprint = self._repository_host.repository.save(
+                self._repository_host.path,
+                expected_fingerprint=self._repository_host._loaded_fingerprint,
+            )
+        except Exception as exc:
+            return self.app._error("Save repository", "%s: %s" % (type(exc).__name__, exc))
+        self._repository_host._loaded_fingerprint = saved_fingerprint
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))
