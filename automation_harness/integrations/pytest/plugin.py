@@ -3,7 +3,6 @@
 pytest owns collection and suite results; the harness owns every plan step,
 object resolution, backend lifecycle, evidence event, and HTML report.
 """
-from __future__ import annotations
 
 import json
 from pathlib import Path

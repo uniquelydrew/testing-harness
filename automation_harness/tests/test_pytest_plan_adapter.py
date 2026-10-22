@@ -22,6 +22,24 @@ steps: []
 """
 
 
+def test_cli_disables_assertion_rewriting_before_loading_adapter(monkeypatch):
+    """Pytest must not bypass the Python 3.6 source compatibility loader."""
+    from automation_harness.compat.pytest_cli import main
+
+    captured = []
+
+    def fake_main(arguments):
+        captured.extend(arguments)
+        return 0
+
+    monkeypatch.setattr(pytest, "main", fake_main)
+    assert main(["--collect-only", "-q"]) == 0
+    assert captured[:3] == [
+        "--assert=plain", "-p", "automation_harness.integrations.pytest.plugin",
+    ]
+    assert captured[-2:] == ["--collect-only", "-q"]
+
+
 def test_variable_overrides_parse_json_and_strings():
     assert parse_variable_overrides(["site=12", "enabled=true", "camera=North Gate"]) == {
         "site": 12, "enabled": True, "camera": "North Gate",

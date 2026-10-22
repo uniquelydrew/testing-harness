@@ -3,7 +3,6 @@
 No shell is spawned: callers must name the executable and its arguments.
 Unlike a later managed plan step, teardown runs even after step execution fails.
 """
-from __future__ import annotations
 
 import shlex
 import subprocess

@@ -88,6 +88,9 @@ jobs:
     container:
       image: python:3.6-buster
     timeout-minutes: 20
+    # Ensure the pytester subprocess tests also use the Python 3.6 source loader.
+    env:
+      PYTEST_ADDOPTS: "--assert=plain"
     steps:
       - uses: actions/checkout@v4
       - name: Install Python 3.6-compatible test dependencies

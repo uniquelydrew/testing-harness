@@ -10,7 +10,11 @@ def main(argv=None):
     import pytest
 
     arguments = list(sys.argv[1:] if argv is None else argv)
+    # The harness Python 3.6 compatibility loader transforms source at import time.
+    # Pytest assertion rewriting bypasses that loader and attempts to compile
+    # Python 3.7+ syntax directly (e.g. postponed annotations).
     return pytest.main([
+        "--assert=plain",
         "-p", "automation_harness.integrations.pytest.plugin",
     ] + arguments)
 

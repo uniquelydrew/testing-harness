@@ -1,7 +1,9 @@
 # Pytest integration (experimental)
 
-**Status:** The adapter's Python 3.6 CI test job has passed, including
-real headless reference-backend execution and failure scenarios.
+**Status:** Experimental. Python 3.6 CI checks the installed
+`automation-pytest` entry point and exercises real headless reference-backend
+execution and failure scenarios. A passing CI run on the current revision is
+required for qualification; the presence of these tests alone is not a pass.
 RHEL 8.9 live-GUI execution remains **unqualified**. The adapter is opt-in,
 and its support for a shared desktop remains intentionally serial.
 
@@ -35,7 +37,12 @@ python -m pip install -e '.[pytest]'
 The optional extra declares `pytest>=6.2,<7.0`. For Python 3.6, use
 `automation-pytest` rather than bare `pytest`; its entry point installs
 the harness's Python 3.6 compatibility loader before pytest imports the
-adapter. Other test plugins are not required.
+adapter. It also selects pytest's `--assert=plain` mode, because pytest's
+assertion rewriter would otherwise compile harness modules without the source
+transformations required by Python 3.6. For direct `python -m pytest` runs of
+the adapter regression suite, set `PYTEST_ADDOPTS=--assert=plain` so nested
+pytester subprocesses use the same import behavior. Other test plugins are
+not required.
 
 ## Discovering and selecting plans
 
@@ -202,9 +209,9 @@ artifact directories in your CI artifact collection.
 
 ## Limitations and qualification
 
-- **RHEL GUI not yet qualified:** Python 3.6 CI passes with the real
-  headless reference backend, but X11/AT-SPI/JavaFX/ERSA live-desktop
-  execution has not been qualified on RHEL 8.9.
+- **RHEL GUI not yet qualified:** Python 3.6 CI includes real
+  headless reference-backend execution, but even a passing run does not qualify
+  X11/AT-SPI/JavaFX/ERSA live-desktop execution on RHEL 8.9.
 - **No implicit fixture injection:** Declarative `.ahplan` items do not
   automatically receive Python pytest fixtures. Teardown is explicit via
   `--ah-teardown-command`.
@@ -247,7 +254,7 @@ remains a separate internal environment qualification task.
 Once the optional pytest dependencies are installed, run:
 
 ```bash
-python -m pytest -q automation_harness/tests/test_pytest_plan_adapter.py
+PYTEST_ADDOPTS=--assert=plain python -m pytest -q automation_harness/tests/test_pytest_plan_adapter.py
 ```
 
 This command targets the repository's Python test suite; `automation-pytest`

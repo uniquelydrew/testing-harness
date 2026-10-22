@@ -1,5 +1,4 @@
 """Shared plan resource resolution for Project Manager and external adapters."""
-from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
