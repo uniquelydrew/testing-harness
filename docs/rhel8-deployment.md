@@ -94,7 +94,11 @@ Actual `--ah-backend=live-desktop` execution still requires a qualified
 desktop session, a usable `DISPLAY`, a D-Bus session, and at least one
 supported accessibility driver. An externally supplied CI/X11 session must
 meet those requirements; the adapter does not provision an isolated desktop.
-The plugin does not guarantee cleanup after a failed managed step.
+The plugin does not run later plan steps after a failed managed step. For
+external cleanup, configure `--ah-teardown-command` with a bounded,
+idempotent stop script. The command runs in a `finally` block even if
+setup or execution fails; it cannot guarantee recovery from process
+termination or host failure.
 
 See [`pytest-integration.md`](pytest-integration.md) for options and current
 qualification status.

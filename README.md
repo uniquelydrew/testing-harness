@@ -1867,6 +1867,8 @@ The `--ah-project` option is optional; when supplied, the selected plan must
 belong to that project. A run resolves plan-associated object repositories and,
 if a project is supplied, its reusable-step registries. `--ah-var=NAME=VALUE`
 may be repeated to override top-level variables (JSON values are accepted).
+Collected plans have the `ahplan` marker, and `live-desktop` plans also
+receive the `gui` marker.
 
 Each pytest result exposes a harness run ID and artifact paths in its JUnit
 properties, while the per-plan `events.jsonl`, `execution_state.json`, and
@@ -1874,12 +1876,14 @@ properties, while the per-plan `events.jsonl`, `execution_state.json`, and
 output file is produced by pytest separately from the individual harness run
 directories.
 
-This adapter is **experimental and has not yet passed an end-to-end
-Python 3.6/GUI qualification run**. It does not automatically supply pytest
-fixtures to `.ahplan` items, guarantee cleanup after a failed managed step, or
-provide multiworker isolation for a shared live desktop. On RHEL/Python 3.6,
-use `automation-pytest` rather than bare `pytest` so the harness compatibility
-loader is installed first.
+The adapter has passed its Python 3.6 headless-reference CI tests, but
+**RHEL 8.9 live-GUI qualification remains outstanding**. It does not
+automatically inject pytest fixtures or isolate concurrent GUI workers.
+For guaranteed external cleanup after a failed managed step, supply
+`--ah-teardown-command='bash path/to/stop.sh'`; an optional
+`--ah-setup-command` runs before each plan. Neither command is executed
+through an implicit shell. On RHEL/Python 3.6, use `automation-pytest`
+rather than bare `pytest` to activate the compatibility loader.
 
 See [`docs/pytest-integration.md`](docs/pytest-integration.md) for supported
 options, project resource behavior, result semantics, and limitations.

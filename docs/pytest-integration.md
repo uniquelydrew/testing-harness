@@ -1,10 +1,9 @@
 # Pytest integration (experimental)
 
-**Status:** Initial adapter implementation is committed on
-`codex/pytest-plan-integration`. End-to-end Python 3.6 / RHEL GUI execution
-has **not yet been qualified**. Treat this document as the implemented
-interface and its known limitations, not proof that a GUI regression suite
-has passed.
+**Status:** The adapter's Python 3.6 CI test job has passed, including
+real headless reference-backend execution and failure scenarios.
+RHEL 8.9 live-GUI execution remains **unqualified**. The adapter is opt-in,
+and its support for a shared desktop remains intentionally serial.
 
 ## Responsibility boundary
 
@@ -58,9 +57,9 @@ are reported as collection errors. Resource resolution, backend qualification,
 and GUI execution occur later, during the test's run phase. Collection-only
 runs do not start an execution backend.
 
-The plugin does not automatically assign the `ahplan` or `gui` pytest
-markers to collected items; those names are registered for use by other pytest
-tests. Use file paths or pytest `-k` for plan selection.
+Every collected plan is marked `ahplan`. The `gui` marker is also applied
+when the selected backend is `live-desktop`. For example, select only
+declarative plans using `-m ahplan`, or filter by filename with `-k`.
 
 ## Running plans
 
@@ -96,6 +95,9 @@ Headless mode does not support GUI-only actions.
 | `--ah-var=NAME=VALUE` | None | Repeated top-level variable overrides; JSON values are decoded |
 | `--ah-reference-mode` | `gui` | `gui` or `headless` for the reference backend |
 | `--ah-reference-display` | `virtual` | `virtual`, `native`, or `auto` reference display selection |
+| `--ah-setup-command=COMMAND` | None | Optional executable and arguments run before each plan |
+| `--ah-teardown-command=COMMAND` | None | Optional executable and arguments run in `finally` after each plan |
+| `--ah-lifecycle-timeout=SECONDS` | `90` | Positive per-command timeout; failures fail the pytest item |
 
 The usual pytest flags also apply, including `--collect-only`, `-k`,
 `-q`, and `--junitxml`.
@@ -110,6 +112,42 @@ automation-pytest ./tests/ersa/plans/T1789.ahplan \
 ```
 
 JSON literals become their native types. Non-JSON values remain strings.
+
+## Explicit application lifecycle
+
+The harness's `live-desktop` backend does **not** own the application
+lifecycle. For external GUI applications, use explicit setup and teardown
+commands around each collected plan when a guaranteed cleanup action is needed:
+
+```bash
+automation-pytest ./tests/ersa/plans \
+  --ah-backend=live-desktop \
+  --ah-setup-command='bash extensions/applications/ersa/launch.sh' \
+  --ah-teardown-command='bash extensions/applications/ersa/stop.sh' \
+  --ah-lifecycle-timeout=90
+```
+
+These example paths refer to private integration assets, not files shipped by
+the public harness. Commands run with the pytest root directory as their
+working directory and inherit the process environment (including
+`DISPLAY`, D-Bus credentials, and `XAUTHORITY` where available).
+Arguments are split with `shlex` and passed directly to the executable:
+**no shell is spawned automatically**. Use `bash path/to/script.sh` if a
+shell script requires it. Shell operators, redirects, and environment
+expansion are not interpreted by the adapter.
+
+When configured, teardown runs after a passing test, after a failed managed
+step, or after a setup failure. Command errors and timeouts fail the pytest
+item; if both execution and teardown fail, both reasons are reported.
+Command stdout/stderr are attached to pytest report sections when the
+command succeeds. A successful teardown does not imply that a specific
+application state was restored; lifecycle scripts must enforce their own
+idempotency and environmental guarantees.
+
+This is **external process lifecycle**, not pytest fixture injection or
+a guarantee that cleanup steps embedded *later in the TestPlan* will run.
+Without a configured teardown command, the harness's managed execution
+early-stop behavior is unchanged.
 
 ## Project and resource resolution
 
@@ -141,15 +179,21 @@ The adapter reads its `RunResult` and emits a pytest result:
 | Any nonzero exit code (`1`, `2`, `3`) | Failed pytest item with the harness diagnostics |
 | Invalid `.ahplan` during discovery | Collection error |
 
-**Important:** A runtime preflight failure or invalid execution plan is
-currently reported as a failed pytest item, not a distinct pytest
-infrastructure error. More granular status classification is future work.
+**Important:** All nonzero harness exit codes still fail the pytest item,
+but the adapter now records a stable `harness_result_class` property to
+distinguish `step_failure` (1), `qualification_failure` (2), and
+`runtime_error` (3). This is metadata for CI consumers, **not** a change
+to pytest's failure/error phases. Unexpected adapter exceptions use
+`adapter_error`, and teardown failures set `harness_teardown=failed`.
 
 If pytest is invoked with `--junitxml=PATH`, each executed plan can publish:
 
 - `harness_run_id`
+- `harness_exit_code`
+- `harness_result_class`
 - `harness_artifact_dir`
 - `harness_report_html`
+- `harness_teardown` (only when teardown fails)
 
 These are JUnit testcase properties pointing to the harness's own files.
 The JUnit output is produced by pytest, **not** by copying an XML file out
@@ -158,14 +202,15 @@ artifact directories in your CI artifact collection.
 
 ## Limitations and qualification
 
-- **Experimental:** Unit/adapter regression tests have been added, but there
-  is no confirmed passing Python 3.6 or RHEL live-GUI validation for this
-  branch yet.
+- **RHEL GUI not yet qualified:** Python 3.6 CI passes with the real
+  headless reference backend, but X11/AT-SPI/JavaFX/ERSA live-desktop
+  execution has not been qualified on RHEL 8.9.
 - **No implicit fixture injection:** Declarative `.ahplan` items do not
-  automatically receive Python pytest fixtures or teardown behavior.
-- **No guaranteed post-failure plan cleanup:** The existing managed plan
-  runner stops on failed steps. Cleanup steps later in that same plan are
-  not guaranteed to execute.
+  automatically receive Python pytest fixtures. Teardown is explicit via
+  `--ah-teardown-command`.
+- **Managed-plan cleanup still conditional:** The existing managed plan
+  runner stops on failed steps. Cleanup steps later in the plan are not
+  guaranteed to execute; use external teardown for guaranteed invocation.
 - **No shared-display parallel execution:** The plugin rejects xdist
   multiworker use with `live-desktop` if the worker count is exposed by
   pytest. It does not implement per-worker display/application isolation.
@@ -186,4 +231,4 @@ python -m pytest -q automation_harness/tests/test_pytest_plan_adapter.py
 This command targets the repository's Python test suite; `automation-pytest`
 is the intended command for executing discovered `.ahplan` files on the
 RHEL/Python 3.6 runtime. Passing adapter tests alone does not demonstrate
-GUI-end-to-end readiness.
+RHEL GUI-end-to-end readiness.

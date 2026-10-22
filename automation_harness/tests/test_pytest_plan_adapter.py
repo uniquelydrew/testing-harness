@@ -2,7 +2,11 @@
 
 import pytest
 
-from automation_harness.integrations.pytest.plugin import load_selected_project, parse_variable_overrides
+from automation_harness.integrations.pytest.plugin import load_selected_project, parse_variable_overrides, result_class
+from automation_harness.integrations.pytest.lifecycle import run_command, LifecycleError
+import sys
+import shlex
+import json
 from automation_harness.core.test_plan import load_plan
 from automation_harness.runner.plan_resources import resolve_plan_resources
 
@@ -133,3 +137,203 @@ def test_failed_harness_plan_fails_pytest_with_step_diagnostics(pytester, monkey
     result = pytester.runpytest_inprocess("-q", str(plan))
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*step 'watch' failed*"])
+
+
+def test_result_categories_are_distinct():
+    assert [result_class(i) for i in (0, 1, 2, 3)] == [
+        "passed", "step_failure", "qualification_failure", "runtime_error",
+    ]
+
+
+def test_lifecycle_rejects_empty_and_failing_commands(tmp_path):
+    with pytest.raises(LifecycleError, match="must not be empty"):
+        run_command("   ", phase="setup", cwd=tmp_path, timeout=1)
+    command = shlex.quote(sys.executable) + ' -c "raise SystemExit(17)"'
+    with pytest.raises(LifecycleError, match="exited 17"):
+        run_command(command, phase="teardown", cwd=tmp_path, timeout=10)
+
+
+def test_collector_assigns_ahplan_marker(pytester):
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    path = pytester.path / "T1789.ahplan"
+    path.write_text(PLAN, encoding="utf-8")
+    result = pytester.runpytest_inprocess("--collect-only", "-q", "-m", "ahplan", str(path))
+    result.stdout.fnmatch_lines(["*1 test collected*"])
+    assert result.ret == 0
+
+
+def test_teardown_runs_after_failed_execution(pytester, monkeypatch):
+    from types import SimpleNamespace
+    from automation_harness.integrations.pytest import plugin
+
+    monkeypatch.setattr(plugin, "LiveDesktopBackend", lambda: object())
+    monkeypatch.setattr(
+        plugin, "execute_plan",
+        lambda *args, **kwargs: SimpleNamespace(
+            exit_code=1, run_id="failed-run", artifact_dir=pytester.path / "failed-run",
+            validation_errors=["step failed"],
+        ),
+    )
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "T1789.ahplan"
+    plan.write_text(PLAN, encoding="utf-8")
+    marker = pytester.path / "teardown.marker"
+    script = pytester.path / "teardown.py"
+    script.write_text(
+        "from pathlib import Path\nPath(%r).write_text('done')\n" % str(marker),
+        encoding="utf-8",
+    )
+    command = shlex.quote(sys.executable) + " " + shlex.quote(str(script))
+    xml = pytester.path / "junit.xml"
+
+    result = pytester.runpytest_inprocess(
+        "-q", str(plan), "--ah-teardown-command=" + command,
+        "--junitxml=" + str(xml),
+    )
+    result.assert_outcomes(failed=1)
+    assert marker.read_text(encoding="utf-8") == "done"
+    assert "step_failure" in xml.read_text(encoding="utf-8")
+
+
+def test_teardown_runs_even_if_setup_fails(pytester):
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "T1789.ahplan"
+    plan.write_text(PLAN, encoding="utf-8")
+    setup = pytester.path / "setup.py"
+    setup.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    marker = pytester.path / "cleaned.marker"
+    teardown = pytester.path / "teardown.py"
+    teardown.write_text(
+        "from pathlib import Path\nPath(%r).write_text('cleaned')\n" % str(marker),
+        encoding="utf-8",
+    )
+    result = pytester.runpytest_inprocess(
+        "-q", str(plan),
+        "--ah-setup-command=" + shlex.quote(sys.executable) + " " + shlex.quote(str(setup)),
+        "--ah-teardown-command=" + shlex.quote(sys.executable) + " " + shlex.quote(str(teardown)),
+    )
+    result.assert_outcomes(failed=1)
+    assert marker.read_text(encoding="utf-8") == "cleaned"
+
+
+def test_actual_headless_reference_plan_execution(pytester):
+    """Real subprocess/backend/registered-step execution; no mocks."""
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "reference-smoke.ahplan"
+    plan.write_text(
+        """name: reference-pytest-smoke
+version: 1
+variables: {expected: 42}
+objects: {}
+step_definitions: {}
+steps:
+  - id: check-variable
+    step: validation.equal
+    inputs:
+      name: expected
+      actual: {$var: expected}
+      expected: 42
+""", encoding="utf-8",
+    )
+    runs_dir = pytester.path / "harness-runs"
+    xml = pytester.path / "junit.xml"
+    result = pytester.runpytest_subprocess(
+        "-p", "automation_harness.integrations.pytest.plugin",
+        "-q", str(plan), "--ah-backend=reference", "--ah-reference-mode=headless",
+        "--ah-runs-dir=" + str(runs_dir), "--junitxml=" + str(xml),
+    )
+    result.assert_outcomes(passed=1)
+    runs = list(runs_dir.glob("*/run.json"))
+    assert len(runs) == 1
+    data = json.loads(runs[0].read_text(encoding="utf-8"))
+    assert data["exit_code"] == 0
+    assert (runs[0].parent / "report.html").is_file()
+    assert "harness_result_class" in xml.read_text(encoding="utf-8")
+
+
+def test_reference_plan_failure_produces_step_failure(pytester):
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "reference-failure.ahplan"
+    plan.write_text(
+        """name: reference-pytest-failure
+version: 1
+variables: {}
+objects: {}
+step_definitions: {}
+steps:
+  - id: failing-assertion
+    step: validation.equal
+    inputs: {name: fail, actual: 1, expected: 2}
+""", encoding="utf-8",
+    )
+    runs_dir = pytester.path / "harness-runs"
+    result = pytester.runpytest_subprocess(
+        "-p", "automation_harness.integrations.pytest.plugin",
+        "-q", str(plan), "--ah-backend=reference", "--ah-reference-mode=headless",
+        "--ah-runs-dir=" + str(runs_dir),
+    )
+    result.assert_outcomes(failed=1)
+    runs = list(runs_dir.glob("*/run.json"))
+    assert len(runs) == 1
+    assert json.loads(runs[0].read_text(encoding="utf-8"))["exit_code"] == 1
+
+
+def test_real_qualification_failure_has_distinct_junit_class(pytester):
+    """Invalid execution plans must not be mislabeled as step failures."""
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "invalid-execution.ahplan"
+    plan.write_text(
+        """name: qualification-check
+version: 1
+variables: {}
+objects: {}
+step_definitions: {}
+steps:
+  - id: missing-expected
+    step: validation.equal
+    inputs: {name: incomplete, actual: 1}
+""", encoding="utf-8",
+    )
+    runs_dir = pytester.path / "runs"
+    xml = pytester.path / "junit.xml"
+    result = pytester.runpytest_subprocess(
+        "-p", "automation_harness.integrations.pytest.plugin",
+        "-q", str(plan), "--ah-backend=reference", "--ah-reference-mode=headless",
+        "--ah-runs-dir=" + str(runs_dir), "--junitxml=" + str(xml),
+    )
+    result.assert_outcomes(failed=1)
+    records = list(runs_dir.glob("*/run.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text(encoding="utf-8"))["exit_code"] == 2
+    assert "qualification_failure" in xml.read_text(encoding="utf-8")
+
+
+def test_failed_teardown_does_not_change_successful_harness_result(pytester, monkeypatch):
+    """The item fails when cleanup fails, preserving the underlying run result."""
+    from types import SimpleNamespace
+    from automation_harness.integrations.pytest import plugin
+
+    monkeypatch.setattr(plugin, "LiveDesktopBackend", lambda: object())
+    monkeypatch.setattr(
+        plugin, "execute_plan",
+        lambda *args, **kwargs: SimpleNamespace(
+            exit_code=0, run_id="successful-plan", artifact_dir=pytester.path / "successful-plan",
+            validation_errors=[],
+        ),
+    )
+    pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
+    plan = pytester.path / "T1789.ahplan"
+    plan.write_text(PLAN, encoding="utf-8")
+    script = pytester.path / "teardown.py"
+    script.write_text("raise SystemExit(23)\n", encoding="utf-8")
+    xml = pytester.path / "junit.xml"
+    result = pytester.runpytest_inprocess(
+        "-q", str(plan),
+        "--ah-teardown-command=" + shlex.quote(sys.executable) + " " + shlex.quote(str(script)),
+        "--junitxml=" + str(xml),
+    )
+    result.assert_outcomes(failed=1)
+    recorded = xml.read_text(encoding="utf-8")
+    assert "harness_teardown" in recorded
+    assert "successful-plan" in recorded
+    assert "harness_result_class" in recorded

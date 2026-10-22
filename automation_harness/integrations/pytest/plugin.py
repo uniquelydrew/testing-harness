@@ -14,6 +14,7 @@ from automation_harness.authoring.project import AuthoringProject
 from automation_harness.backends.live_desktop import LiveDesktopBackend
 from automation_harness.backends.reference import ReferenceBackend
 from automation_harness.core.test_plan import load_plan
+from automation_harness.integrations.pytest.lifecycle import run_command
 from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.runner.plan_resources import resolve_plan_resources
 from automation_harness.runtime_paths import runtime_path
@@ -56,9 +57,17 @@ def pytest_addoption(parser):
         "--ah-reference-display", choices=("virtual", "native", "auto"), default="virtual",
         help="Display policy for reference GUI mode",
     )
+    group.addoption("--ah-setup-command", default=None, metavar="COMMAND",
+                    help="Optional executable and arguments run before each plan (no shell)")
+    group.addoption("--ah-teardown-command", default=None, metavar="COMMAND",
+                    help="Optional executable and arguments run after each plan, even on failure")
+    group.addoption("--ah-lifecycle-timeout", type=int, default=90, metavar="SECONDS",
+                    help="Timeout per lifecycle command (default: 90 seconds)")
 
 
 def pytest_configure(config):
+    if config.getoption("ah_lifecycle_timeout") < 1:
+        raise pytest.UsageError("--ah-lifecycle-timeout must be a positive number of seconds")
     config.addinivalue_line("markers", "ahplan: declarative Automation Harness TestPlan")
     config.addinivalue_line("markers", "gui: requires a graphical execution target")
     # A shared native desktop cannot safely service multiple xdist workers.
@@ -81,7 +90,11 @@ class HarnessPlanFile(pytest.File):
         except Exception as exc:
             raise pytest.Collector.CollectError("%s: %s: %s" % (plan_path, type(exc).__name__, exc))
         # File stem is stable even if a user edits the display name in the plan.
-        yield HarnessPlanItem.from_parent(self, name=plan_path.stem)
+        item = HarnessPlanItem.from_parent(self, name=plan_path.stem)
+        item.add_marker("ahplan")
+        if self.config.getoption("ah_backend") == "live-desktop":
+            item.add_marker("gui")
+        yield item
 
 
 def load_selected_project(project_option, plan_path):
@@ -92,6 +105,16 @@ def load_selected_project(project_option, plan_path):
     if Path(plan_path).resolve() not in project.test_plans:
         raise ValueError("plan %s is not a member of project %s" % (plan_path, project.name))
     return project
+
+
+def result_class(exit_code):
+    """Stable CI metadata without inventing pytest status semantics."""
+    return {
+        0: "passed",
+        1: "step_failure",
+        2: "qualification_failure",
+        3: "runtime_error",
+    }.get(exit_code, "unknown_failure")
 
 
 class HarnessPlanItem(pytest.Item):
@@ -112,25 +135,80 @@ class HarnessPlanItem(pytest.Item):
             backend = LiveDesktopBackend()
         configured_runs = options.getoption("ah_runs_dir")
         runs_dir = Path(configured_runs).expanduser().resolve() if configured_runs else runtime_path("runs")
-        result = execute_plan(
-            plan, backend, runs_dir=runs_dir,
-            variable_overrides=overrides, component_repository=resources.repository,
-            reusable_steps=resources.reusable_steps,
-        )
-        if result.artifact_dir is not None:
-            artifact_dir = Path(result.artifact_dir)
+
+        result = None
+        execution_error = None
+        teardown_error = None
+        cwd = Path(str(options.rootdir))
+        timeout = options.getoption("ah_lifecycle_timeout")
+        try:
+            setup = options.getoption("ah_setup_command")
+            if setup:
+                completed = run_command(setup, phase="setup", cwd=cwd, timeout=timeout)
+                if completed.stdout:
+                    self.add_report_section("call", "harness setup stdout", completed.stdout)
+                if completed.stderr:
+                    self.add_report_section("call", "harness setup stderr", completed.stderr)
+            result = execute_plan(
+                plan, backend, runs_dir=runs_dir,
+                variable_overrides=overrides, component_repository=resources.repository,
+                reusable_steps=resources.reusable_steps,
+            )
+        except Exception as exc:
+            execution_error = exc
+        finally:
+            # Independent of plan.step ordering and execute_plan()'s early-stop policy.
+            # This also runs if setup, backend execution, or an assertion fails.
+            teardown = options.getoption("ah_teardown_command")
+            if teardown:
+                try:
+                    completed = run_command(teardown, phase="teardown", cwd=cwd, timeout=timeout)
+                    if completed.stdout:
+                        self.add_report_section("call", "harness teardown stdout", completed.stdout)
+                    if completed.stderr:
+                        self.add_report_section("call", "harness teardown stderr", completed.stderr)
+                except Exception as exc:
+                    teardown_error = exc
+
+        if result is not None:
             self.user_properties.extend((
                 ("harness_run_id", result.run_id),
-                ("harness_artifact_dir", str(artifact_dir)),
-                ("harness_report_html", str(artifact_dir / "report.html")),
+                ("harness_exit_code", str(result.exit_code)),
+                ("harness_result_class", result_class(result.exit_code)),
             ))
-        if result.exit_code != 0:
+            if result.artifact_dir is not None:
+                artifact_dir = Path(result.artifact_dir)
+                self.user_properties.extend((
+                    ("harness_artifact_dir", str(artifact_dir)),
+                    ("harness_report_html", str(artifact_dir / "report.html")),
+                ))
+        else:
+            self.user_properties.append(("harness_result_class", "adapter_error"))
+        if teardown_error is not None:
+            self.user_properties.append(("harness_teardown", "failed"))
+
+        if execution_error is not None:
+            if teardown_error is not None:
+                raise PlanRunFailure(
+                    "Plan adapter error: %s: %s\nTeardown also failed: %s" % (
+                        type(execution_error).__name__, execution_error, teardown_error,
+                    )
+                ) from execution_error
+            raise execution_error
+        if result is not None and result.exit_code != 0:
             details = "\n".join(result.validation_errors) or "No further diagnostic was returned"
+            if teardown_error is not None:
+                details += "\nTeardown also failed: %s" % teardown_error
             raise PlanRunFailure(
-                "Harness plan %s failed (exit code %s)\n%s\nArtifacts: %s" % (
-                    path.name, result.exit_code, details, result.artifact_dir,
+                "Harness plan %s failed (%s, exit code %s)\n%s\nArtifacts: %s" % (
+                    path.name, result_class(result.exit_code), result.exit_code,
+                    details, result.artifact_dir,
                 )
             )
+        if teardown_error is not None:
+            raise PlanRunFailure("Harness teardown failed after plan %s: %s" % (
+                path.name, teardown_error,
+            ))
 
     def repr_failure(self, excinfo):
         if isinstance(excinfo.value, PlanRunFailure):
