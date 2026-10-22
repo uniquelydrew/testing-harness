@@ -44,6 +44,7 @@ def test_plan_round_trip_preserves_inline_objects_and_step_definitions(tmp_path:
         name="self-contained",
         objects={
             "submit": {
+                "object_id": "10000000-0000-0000-0000-000000000003",
                 "object_type": "button",
                 "actions": ["click"],
                 "strategies": [

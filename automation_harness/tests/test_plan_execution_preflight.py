@@ -91,7 +91,7 @@ def _component(name, object_id, owner=None):
     value = {
         "object_id": object_id,
         "object_type": "button",
-        "strategies": [{"type": "atspi", "options": {"identification": {"mandatory": {"name": name}}}}],
+        "strategies": [{"type": "atspi", "identification": {"mandatory": {"name": name}}}],
     }
     if owner is not None:
         value["owner_object_id"] = owner
