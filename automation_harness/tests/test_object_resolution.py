@@ -139,3 +139,57 @@ def test_verified_visual_projection_uses_resolved_bounds():
     visual = project_visual_target(result, operation="highlight")
     assert visual.bounds == (1, 2, 30, 40)
     assert visual.semantic is result
+
+
+@pytest.mark.parametrize("framework,native_class,role,expected", [
+    ("javafx", "javafx.scene.control.MenuButton", "push button", "menu"),
+    ("javafx", "javafx.scene.control.Menu", "menu", "menu"),
+    ("javafx", "javafx.scene.control.ChoiceBox", "button", "combo_box"),
+    ("javafx", "javafx.scene.control.ComboBox", "combo box", "combo_box"),
+    ("swing", "javax.swing.JMenu", "menu", "menu"),
+    ("swing", "javax.swing.JMenuBar", "unknown", "menu_bar"),
+    ("swing", "javax.swing.JMenuItem", "unknown", "menu_item"),
+    ("swing", "javax.swing.JComboBox", "unknown", "combo_box"),
+    ("swing", "javax.swing.JToggleButton", "unknown", "toggle_button"),
+    ("atspi", "GtkEntry", "entry", "text_field"),
+    ("atspi", "GtkCheckMenuItem", "check menu item", "check_menu_item"),
+    ("atspi", "GtkTextView", "text area", "text_area"),
+])
+def test_framework_native_identity_resolves_to_expected_semantic_type(
+        monkeypatch, framework, native_class, role, expected):
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    object_type = ObjectType(expected)
+    captured = CapturedComponent(
+        name="Target", role=role, description=None, accessible_id="target",
+        application="AUT", hierarchy=(), actions=("click",),
+        bounds=(1, 2, 30, 40), state=ComponentState(present=True),
+        native_class=native_class, framework=framework,
+    )
+    assert captured.semantic_type() == object_type
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: captured)
+    definition = ComponentDefinition(
+        "Target", object_type=object_type,
+        strategies=(ComponentStrategy(framework if framework != "swing" else "java_agent",
+            {"identification": {"mandatory": {"accessible_id": "target"}}}),),
+    )
+    assert resolve_repository_object(None,
+        ComponentRepository({"Target": definition}), definition).exists
+
+
+@pytest.mark.parametrize("expected,actual,allowed", [
+    ("menu_item", "menu_item", True),
+    ("menu_item", "check_menu_item", True),
+    ("menu_item", "radio_menu_item", True),
+    ("check_menu_item", "menu_item", False),
+    ("menu", "menu_item", False),
+    ("button", "toggle_button", False),
+    ("combo_box", "menu", False),
+    ("text_field", "label", False),
+    ("text_field", "text_area", False),
+    ("window", "dialog", True),
+])
+def test_semantic_family_allowlist_remains_fail_closed(expected, actual, allowed):
+    from automation_harness.core.object_resolution import semantic_type_compatible
+    from automation_harness.models.gui import ObjectType
+    assert semantic_type_compatible(ObjectType(expected), ObjectType(actual)) is allowed
