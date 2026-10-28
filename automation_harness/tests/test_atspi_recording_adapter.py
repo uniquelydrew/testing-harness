@@ -988,7 +988,8 @@ def test_timed_out_callback_completion_releases_lease_and_allows_new_recording(m
     adapter._pointer_worker.start()
     with adapter._callback_condition:
         adapter._active_callback_details[1] = {"kind": "text", "phase": "snapshot_source"}
-    actual_clock = module.time.monotonic\n    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110))
+    actual_clock = module.time.monotonic
+    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110))
     monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks, 114))
     with __import__("pytest").raises(RuntimeError, match="callback drain timed out"):
         adapter.stop()
