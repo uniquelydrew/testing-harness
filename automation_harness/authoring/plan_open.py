@@ -39,3 +39,29 @@ def inspect_plan_open(path):
         repository_path=assigned_repository_path(plan, path),
         legacy_names=legacy,
     )
+
+
+def qualify_migration_repository_selection(plan, plan_path, selected_path):
+    """Return True if an explicit missing-association recovery is required.
+
+    A healthy assigned repository may not be silently replaced by migration.
+    A genuinely missing assigned repository may be recovered only via the
+    operator-approved, reviewed, atomic embedded-object migration workflow.
+    Re-evaluate immediately before publication to guard against races.
+    """
+    selected = Path(selected_path).resolve()
+    if not selected.is_file():
+        raise ValueError("migration destination repository does not exist")
+    previous = assigned_repository_path(plan, Path(plan_path))
+    if previous is None:
+        return False
+    previous = previous.resolve()
+    if previous == selected:
+        return False
+    if previous.exists():
+        raise ValueError(
+            "This plan already owns an existing external repository (%s); "
+            "reconcile repositories before changing that assignment."
+            % previous
+        )
+    return True
