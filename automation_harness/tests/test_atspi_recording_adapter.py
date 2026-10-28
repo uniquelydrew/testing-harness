@@ -973,6 +973,13 @@ def test_timed_out_callback_retains_registry_lease(monkeypatch):
         assert False, "cannot reuse lease while callback remains active"
     except RuntimeError as exc:
         assert "not safely drained" in str(exc)
+    # Finish the deliberately stranded callback before the next test.
+    # The process-global safety gate must remain meaningful across adapters,
+    # not depend on garbage collection to eventually clear a stale lease.
+    adapter._end_callback(1)
+    assert closed == [True]
+    assert adapter._lease is None
+
 
 def test_timed_out_callback_completion_releases_lease_and_allows_new_recording(monkeypatch):
     """Timeout -> late callback returns -> lease closes -> new session starts."""
