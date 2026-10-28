@@ -42,6 +42,6 @@ def resolve_plan_resources(plan: TestPlan, plan_path: Path, project=None) -> Res
     # failures are reported uniformly as run validation errors.
     prepared = RepositoryResolver().resolve(
         plan, canonical_repository=canonical,
-        mode="canonical" if plan.execution_mode == "canonical" else "linked",
+        mode=plan.execution_mode,
     )
     return ResolvedPlanResources(repository=prepared.repository, reusable_steps=reusable)

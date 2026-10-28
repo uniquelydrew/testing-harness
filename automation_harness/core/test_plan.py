@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import yaml
 
 from automation_harness.core.step_registry import StepRegistry
-from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError, RepositoryFingerprint, repository_fingerprint
 from automation_harness.models.plan import ExecutionState, PlanVariableRef, StepCall, StepStatus, TestPlan
 
 
@@ -87,7 +87,9 @@ def load_plan(path: Path) -> TestPlan:
     )
 
 
-def save_plan(plan: TestPlan, path: Path) -> None:
+def save_plan(plan: TestPlan, path: Path, *,
+              expected_fingerprint: RepositoryFingerprint | None = None) -> None:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Verify the exact portable snapshot before replacing the existing plan.
     repository_from_plan(plan)
@@ -100,6 +102,8 @@ def save_plan(plan: TestPlan, path: Path) -> None:
             handle.write(document)
             handle.flush()
             os.fsync(handle.fileno())
+        if expected_fingerprint is not None and repository_fingerprint(path) != expected_fingerprint:
+            raise TestPlanError("test plan changed on disk since it was opened; reload before saving")
         os.replace(temporary_name, str(path))
     except BaseException:
         try:

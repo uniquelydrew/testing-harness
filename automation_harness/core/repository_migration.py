@@ -17,6 +17,9 @@ from automation_harness.core.component_repository import (
     repository_fingerprint,
 )
 from automation_harness.core.repository_preparation import SNAPSHOT_METADATA_KEY, definition_fingerprint
+from automation_harness.core.repository_reference_rewrite import (
+    rewrite_plan_object_references, validate_rewritten_plan_references,
+)
 from automation_harness.core.repository_reconciliation import _atomic_publish, _merge
 from automation_harness.core.test_plan import repository_from_plan, validate_plan_components
 from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
@@ -195,36 +198,22 @@ def prepare_embedded_migration(plan, plan_path: Path, canonical: ComponentReposi
         definition.component_id: remap[definition.object_id]
         for definition in embedded.components.values()
     })
-    # Legacy names on canonical objects also resolve to the surviving UUID.
     references.update({
         definition.component_id: definition.object_id
         for definition in result.components.values()
         if definition.component_id not in references
     })
-
-    def translate(value, key=None):
-        if key in _REFERENCE_KEYS and isinstance(value, str):
-            return references.get(value, value)
-        if isinstance(value, Mapping):
-            return {name: translate(item, name) for name, item in value.items()}
-        if isinstance(value, (tuple, list)):
-            return type(value)(translate(item) for item in value)
-        return value
-
-    steps = tuple(replace(
-        call, inputs=translate(call.inputs), completion=translate(call.completion),
-        scope=translate(call.scope),
-    ) for call in plan.steps)
+    # Reusable snapshots and direct steps must share the same UUID mapping.
+    # A canonical plan has no embedded object definitions, including snapshots.
     metadata = dict(plan.step_definitions)
     metadata.pop(SNAPSHOT_METADATA_KEY, None)
-    migrated = replace(plan, steps=steps, objects={}, step_definitions=metadata, execution_mode="canonical")
+    migrated = replace(plan, objects={}, step_definitions=metadata, execution_mode="canonical")
     migrated = assign_repositories(
         migrated, Path(plan_path),
         (RepositoryAssociation(Path(repository_path).resolve(), RepositoryScope.LOCAL),),
     )
-    issues = validate_plan_components(migrated, result)
-    if issues:
-        raise ComponentRepositoryError("migration leaves unresolved plan references: " + "; ".join(issues))
+    migrated = rewrite_plan_object_references(migrated, references, result)
+    validate_rewritten_plan_references(migrated, result)
     return MigrationProposal(result, migrated, remap, tuple(added), tuple(sorted(set(reused))))
 
 

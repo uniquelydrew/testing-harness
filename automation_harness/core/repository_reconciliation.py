@@ -10,6 +10,9 @@ from typing import Iterable, Mapping
 import yaml
 
 from automation_harness.core.component_repository import ComponentRepository, RepositoryFingerprint, repository_fingerprint
+from automation_harness.core.repository_reference_rewrite import (
+    rewrite_plan_object_references, validate_rewritten_plan_references,
+)
 from automation_harness.models.component import ComponentDefinition
 
 
@@ -145,9 +148,7 @@ class RepositoryReconciler:
 
 
 def _rewrite_plan(plan, remapped: Mapping[str, str], repository: ComponentRepository):
-    """Update UUID references, then regenerate a valid portable object closure."""
-    from automation_harness.core.test_plan import embed_plan_repository
-
+    """Rewrite direct and reusable-step references without changing plan ownership."""
     def contains_remapped(value):
         if isinstance(value, Mapping):
             return any(contains_remapped(item) for item in value.values())
@@ -157,23 +158,9 @@ def _rewrite_plan(plan, remapped: Mapping[str, str], repository: ComponentReposi
 
     if not contains_remapped(plan.to_dict()):
         return plan
-
-    def rewrite(value, key=None):
-        if key in {"component_id", "component", "object", "window", "owner_object_id"} and isinstance(value, str):
-            return remapped.get(value, value)
-        if isinstance(value, Mapping):
-            return {item_key: rewrite(item_value, item_key) for item_key, item_value in value.items()}
-        if isinstance(value, list):
-            return [rewrite(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(rewrite(item) for item in value)
-        return value
-
-    rewritten = replace(plan, steps=tuple(
-        replace(call, inputs=rewrite(call.inputs), completion=rewrite(call.completion), scope=rewrite(call.scope))
-        for call in plan.steps
-    ))
-    return embed_plan_repository(rewritten, repository)
+    rewritten = rewrite_plan_object_references(plan, remapped, repository)
+    validate_rewritten_plan_references(rewritten, repository)
+    return rewritten
 
 
 def _atomic_publish(targets: Mapping[Path, str], *,
@@ -243,9 +230,29 @@ def _merge(target: ComponentDefinition, source: ComponentDefinition) -> Componen
         if strategy not in strategies:
             strategies.append(strategy)
     actions = frozenset(set(target.actions) | set(source.actions))
+    def merge_nonconflicting(field, canonical, additional):
+        merged = dict(canonical)
+        for key, value in additional.items():
+            if key in merged and merged[key] != value:
+                raise ValueError(
+                    "cannot merge object %s: conflicting %s key %r; review both definitions explicitly"
+                    % (target.component_id, field, key)
+                )
+            merged[key] = value
+        return merged
+
     properties = dict(source.properties)
     properties.update(target.properties)
     scope = dict(source.scope)
     scope.update(target.scope)
-    return replace(target, strategies=tuple(strategies), actions=actions, properties=properties, scope=scope,
-                   object_type=object_type, revision=max(target.revision, source.revision) + 1)
+    subobjects = merge_nonconflicting("subobjects", target.subobjects, source.subobjects)
+    expected_states = merge_nonconflicting("expected_states", target.expected_states, source.expected_states)
+    action_completion = merge_nonconflicting("action_completion", target.action_completion, source.action_completion)
+    if target.visual and source.visual and target.visual != source.visual:
+        raise ValueError("cannot merge object %s: conflicting visual baselines" % target.component_id)
+    return replace(
+        target, strategies=tuple(strategies), actions=actions, properties=properties,
+        scope=scope, subobjects=subobjects, expected_states=expected_states,
+        action_completion=action_completion, visual=target.visual or source.visual,
+        object_type=object_type, revision=max(target.revision, source.revision) + 1,
+    )

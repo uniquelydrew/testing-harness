@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import socket
@@ -25,6 +26,58 @@ class JavaFxBridgeProtocolError(RuntimeError):
     pass
 
 
+class JavaFxBridgePayloadError(JavaFxBridgeProtocolError):
+    """Invalid local request; not an unavailable JavaFX agent endpoint."""
+
+
+def _bridge_transport_value(value: Any, *, operation: str, path: str = "$") -> Any:
+    """Copy nested frozen runtime metadata into JSON-compatible wire values.
+
+    Repository preparation intentionally freezes locator metadata. Shallow
+    dict() conversions leave MappingProxyType descendants that JSON cannot
+    encode. Normalize only at the JavaFX transport boundary, leaving the
+    authoritative runtime repository unchanged.
+    """
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise JavaFxBridgePayloadError(
+                    "JavaFX %s request field %s has non-string mapping key of type %s"
+                    % (operation, path, type(key).__name__)
+                )
+            result[key] = _bridge_transport_value(
+                item, operation=operation, path="%s.%s" % (path, key),
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _bridge_transport_value(item, operation=operation, path="%s[%d]" % (path, index))
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, (set, frozenset)):
+        # Deterministic array encoding for frozen set-valued properties.
+        items = [
+            _bridge_transport_value(item, operation=operation, path="%s[]" % path)
+            for item in value
+        ]
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise JavaFxBridgePayloadError(
+        "JavaFX %s request field %s has non-JSON value of type %s"
+        % (operation, path, type(value).__name__)
+    )
+
+
+def _bridge_request_json(operation: str, payload: Mapping[str, Any], *, compact: bool = False) -> str:
+    """Validate and encode bridge requests without leaking their field values."""
+    plain = _bridge_transport_value(payload, operation=operation)
+    return json.dumps(plain, separators=(",", ":") if compact else None, allow_nan=False)
+
+
 class JavaFxRecordingTransport(Protocol):
     def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
@@ -41,7 +94,7 @@ class HttpJavaFxBridgeTransport:
         if not self.endpoint.startswith(("http://127.0.0.1", "http://localhost")):
             raise ValueError("JavaFX agent endpoint must be loopback-only")
         request = Request(
-            f"{self.endpoint.rstrip('/')}/{operation}", data=json.dumps(dict(payload)).encode("utf-8"),
+            f"{self.endpoint.rstrip('/')}/{operation}", data=_bridge_request_json(operation, payload).encode("utf-8"),
             headers={"Content-Type": "application/json", "X-Automation-Harness-Token": self.token}, method="POST",
         )
         try:
@@ -74,6 +127,9 @@ class JavaFxBridgeEndpoint:
     def request(self, op: str, *, timeout: float = 5.0, **payload: Any) -> dict[str, Any]:
         request = {"token": self.token, "op": op}
         request.update(payload)
+        # Preflight before opening a socket: serialization faults should not
+        # masquerade as missing or unresponsive JavaFX bridge endpoints.
+        encoded_request = _bridge_request_json(op, request, compact=True)
         try:
             sock = socket.create_connection((self.host, self.port), timeout=timeout)
         except OSError as exc:
@@ -85,7 +141,7 @@ class JavaFxBridgeEndpoint:
             sock.settimeout(timeout)
             writer = sock.makefile("wb")
             reader = sock.makefile("rb")
-            writer.write((json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"))
+            writer.write((encoded_request + "\n").encode("utf-8"))
             writer.flush()
             raw = reader.readline()
             if not raw:
@@ -538,6 +594,11 @@ class JavaFxBridgeDriver:
         for endpoint in endpoints:
             try:
                 response = endpoint.request("find", timeout=3.0, identification=identity)
+            except JavaFxBridgePayloadError:
+                # Every endpoint receives the same local request. A malformed
+                # frozen locator is not an endpoint outage and cannot improve
+                # by trying a different JVM.
+                raise
             except Exception as exc:
                 errors.append("pid %s: %s" % (endpoint.pid, exc))
                 continue

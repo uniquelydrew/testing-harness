@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from automation_harness.core.reusable_step_snapshot import load_snapshotted_reusable_steps
 from automation_harness.authoring.plan_repository import assigned_repositories
 from automation_harness.authoring.step_registry import AuthoringStepRegistry
 from automation_harness.core.component_repository import ComponentRepository
@@ -37,7 +38,8 @@ def _refs(value, key=None):
 
 
 def _plan_usages(plan, artifact: Path, target: ComponentRepository, *,
-                 linked: bool, source: str):
+                 linked: bool, source: str, visited=None):
+    """Enumerate direct calls and nested portable reusable-step definitions."""
     snapshot = repository_from_plan(plan)
     shared_by_id = {item.object_id: item for item in target.components.values()}
     for call in plan.steps:
@@ -52,6 +54,15 @@ def _plan_usages(plan, artifact: Path, target: ComponentRepository, *,
                 continue
             yield ObjectUsage(resolved.object_id, resolved.component_id, artifact,
                               call.node_id, source, value)
+    visited = set() if visited is None else visited
+    for step_id, definition in load_snapshotted_reusable_steps(plan).items():
+        if step_id in visited:
+            continue
+        yield from _plan_usages(
+            definition.plan, artifact, target, linked=linked,
+            source="%s / snapshot: %s" % (source, step_id),
+            visited=visited | {step_id},
+        )
 
 
 def project_object_usages(project, repository_path: Path,
@@ -64,6 +75,16 @@ def project_object_usages(project, repository_path: Path,
     """
     repository_path = Path(repository_path).resolve()
     usages = []
+    # Owning a child is an actual repository relationship, not a disposable
+    # GUI arrangement. Prevent deleting the owner without explicit reparenting.
+    for child in repository.components.values():
+        if not child.owner_object_id:
+            continue
+        owner = repository.get(child.owner_object_id)
+        usages.append(ObjectUsage(
+            owner.object_id, owner.component_id, repository_path,
+            child.component_id, "repository child ownership", child.owner_object_id,
+        ))
     for path in project.test_plans:
         plan = load_plan(path)
         linked = any(

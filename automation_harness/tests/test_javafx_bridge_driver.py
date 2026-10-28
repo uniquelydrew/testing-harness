@@ -451,3 +451,130 @@ def test_window_activation_timeout_reports_last_response(monkeypatch):
     monkeypatch.setattr(driver, "_find_unique", lambda identification: (Endpoint(), {}, ()))
     with pytest.raises(RuntimeError, match="last_response"):
         driver.activate_window(identification={"mandatory": {"id": "cameraSelectorButton"}})
+
+
+def test_prepared_javafx_menu_identity_remains_immutable_but_executes_via_bridge(tmp_path, monkeypatch):
+    """Reproduce linked/canonical MappingProxyType transport regression end to end."""
+    from types import MappingProxyType
+    from uuid import uuid4
+
+    from automation_harness.core.component_repository import ComponentRepository
+    from automation_harness.core.menu_navigation import selectors_from_navigation
+    from automation_harness.core.repository_preparation import RepositoryResolver
+    from automation_harness.models.component import ComponentDefinition, ComponentStrategy
+    from automation_harness.models.gui import ObjectType
+    from automation_harness.models.plan import TestPlan
+
+    menu = ComponentDefinition(
+        "File Menu", object_id=str(uuid4()), object_type=ObjectType.MENU,
+        framework="javafx", native_class="javafx.scene.control.Menu",
+        actions=frozenset({"resolve", "activate", "select_menu_item"}),
+        strategies=(ComponentStrategy("javafx", {
+            "identification": {
+                "mandatory": {"class": "javafx.scene.control.Menu"},
+                "assistive": {"window": "ERSA Main Video Display",
+                              "lineage": [{"id": "topMenuBar", "class": "javafx.scene.control.MenuBar"}]},
+            },
+        }),),
+        subobjects={"cameraselectormenuitem": {
+            "kind": "menu_item",
+            "selector": {"kind": "menu_item", "criteria": {
+                "id": "cameraSelectorMenuItem", "text": "Select Site/Camera...",
+            }},
+        }},
+    )
+    canonical = ComponentRepository({menu.component_id: menu})
+    plan = TestPlan(name="file-menu", objects=canonical.to_document()["components"])
+    menu_node = dict(_NODE, **{"class": "javafx.scene.control.Menu", "text": "File"})
+    server = _BridgeServer(node=menu_node)
+    observed = []
+    original_response = server._response
+
+    def response(request):
+        observed.append(request)
+        operation = request.get("op")
+        if operation == "select_menu_path":
+            return {"ok": True, "terminal_bounds": [100, 50, 90, 20],
+                    "path": ["cameraselectormenuitem"], "click_token": "click1"}
+        if operation == "finish_menu_click":
+            return {"ok": True, "dispatch_token": "dispatch1",
+                    "pointer_action_observed": True, "fallback_fired": False}
+        if operation == "menu_dispatch_status":
+            return {"ok": True, "observed": True}
+        return original_response(request)
+
+    server._response = response
+    try:
+        _write_discovery(tmp_path, server)
+        monkeypatch.setattr(
+            "automation_harness.core.pointer_actions.click_bounds",
+            lambda bounds: {"clicked": True, "bounds": tuple(bounds)},
+        )
+        driver = JavaFxBridgeDriver(discovery_dir=tmp_path)
+        for mode in ("linked", "canonical"):
+            prepared = RepositoryResolver().resolve(
+                plan, canonical_repository=canonical, mode=mode,
+            ).repository.get(menu.object_id)
+            identity = prepared.strategies[0].options["identification"]
+            assert isinstance(identity["mandatory"], MappingProxyType)
+            selectors = selectors_from_navigation(
+                prepared.subobjects, ["cameraselectormenuitem"],
+            )
+            assert driver.resolve(menu.object_id, identification=identity).strategy == "javafx"
+            assert driver.activate_window(identification=identity)["focused"] is True
+            result = driver.select_menu_path(selectors, identification=identity)
+            assert result["execution"] == "visible_pointer_click"
+            assert result["pointer_action_observed"] is True
+            assert any(
+                item.get("op") == "select_menu_path"
+                and item["identification"]["mandatory"]["class"] == "javafx.scene.control.Menu"
+                and item["selectors"][0]["criteria"]["id"] == "cameraSelectorMenuItem"
+                for item in observed
+            )
+            # Serialization must not mutate the immutable repository.
+            with pytest.raises(TypeError):
+                identity["mandatory"]["class"] = "changed"
+    finally:
+        server.close()
+
+
+def test_bridge_serialization_error_names_bad_field_without_payload_value(monkeypatch):
+    from automation_harness.drivers.javafx_bridge import (
+        JavaFxBridgeEndpoint, JavaFxBridgeProtocolError,
+    )
+
+    endpoint = JavaFxBridgeEndpoint(
+        pid=1234, host="127.0.0.1", port=9418,
+        token="sensitive-token", discovery_file=Path("unused"),
+    )
+    attempts = []
+    monkeypatch.setattr(
+        "automation_harness.drivers.javafx_bridge.socket.create_connection",
+        lambda *_args, **_kwargs: attempts.append(True),
+    )
+    with pytest.raises(JavaFxBridgeProtocolError) as exc:
+        endpoint.request(
+            "find",
+            identification={"mandatory": {"id": {"nested": object()}}},
+        )
+    assert "$.identification.mandatory.id.nested" in str(exc.value)
+    assert "find" in str(exc.value)
+    assert "sensitive-token" not in str(exc.value)
+    assert attempts == []
+
+
+def test_bad_local_payload_is_not_misreported_as_unavailable_javafx_endpoint(monkeypatch):
+    from automation_harness.drivers.javafx_bridge import JavaFxBridgePayloadError
+
+    class Endpoint:
+        pid = 2313
+
+        def request(self, operation, **kwargs):
+            raise JavaFxBridgePayloadError(
+                "JavaFX find request field $.identification.mandatory.class has non-JSON value of type object"
+            )
+
+    driver = JavaFxBridgeDriver()
+    monkeypatch.setattr(driver, "endpoints", lambda: (Endpoint(),))
+    with pytest.raises(JavaFxBridgePayloadError, match="identification.mandatory.class"):
+        driver.resolve("File Menu", identification={"mandatory": {"class": object()}})

@@ -150,3 +150,73 @@ The Python 3.6 CI suite exercises
 `test_repository_preparation.py`, including cross-plan reconciliation,
 legacy references, locked execution provenance, and stale-artifact rejection.
 Passing CI does not replace qualification on the isolated RHEL desktop.
+
+## JavaFX bridge serialization and Menu execution
+
+Prepared repositories intentionally contain deeply frozen `MappingProxyType`
+locator and subobject metadata. The JavaFX driver now recursively converts
+these values to ordinary JSON-compatible **copies** at both socket and HTTP
+request boundaries, rather than weakening repository immutability or changing
+persisted Menu definitions. The conversion handles nested mappings, tuples,
+and frozen sets, and preserves identifiers, selectors, and owner lineage.
+
+Unsupported request fields fail before socket/HTTP transmission with a
+`JavaFxBridgePayloadError` naming the request operation, field path, and
+offending type (not the field's value). Driver discovery no longer wraps this
+local failure as `all JavaFX bridge endpoints failed`.
+
+Regression coverage includes frozen **linked** and **canonical** repository
+definitions of a JavaFX `File Menu`, menu selector compilation, owner
+resolution, window activation, and owner-scoped terminal dispatch through
+the real loopback bridge protocol. HTTP transport and malformed-input
+diagnostics have separate tests.
+
+This resolves the reproducible `mappingproxy is not JSON serializable`
+regression that affects historical, recaptured, and newly recorded Menu
+objects alike. It **does not** certify foreground-focus acceptance by the
+RHEL/X11 window manager or the lifecycle of real native menu popups.
+The existing bounded focus confirmation, delayed-bounds retry, semantic
+`MenuItem.fire()` fallback, and refusal of an unscoped click remain
+intact. Those native cases still require in-situ retesting against the
+real Swing/JavaFX AUT after the transport error is removed.
+
+## Reconciliation regression protections
+
+Repository reconciliation and embedded-to-canonical migration share one
+reference rewriting path for direct Plan steps and nested reusable-step
+snapshots. Snapshot object references are rewritten by UUID and their saved
+object closures are rebuilt from the resulting repository. The expanded
+reusable calls are checked before a migration or merge proposal may publish.
+
+A `canonical` plan must continue to have `objects: {}` through merge, save,
+reload, and execution. Its reusable-step snapshots are also external-only.
+A `portable` plan instead regenerates the full, owner-closed object set for
+both its direct calls **and transitive reusable-step dependencies**, ensuring
+that standalone execution needs no linked repository. In `locked` mode,
+repository discovery respects lock validation and does not quietly select
+linked definitions.
+
+Object merges preserve distinct Menu subobject routes, expected states,
+action completion contracts, and nonconflicting visual metadata. Conflicting
+values at the same semantic subobject ID, completion key, state key, or visual
+baseline fail closed and require explicit authoring reconciliation rather than
+overwriting a validated Menu route.
+
+Test Plan saves initiated by authoring windows use the fingerprint observed
+when the plan was loaded or last successfully saved. If another author
+modified that file, the save fails without overwriting their changes.
+This is optimistic concurrency protection, not a cross-process lock.
+
+Find Usages now traverses inline reusable-step snapshots in Project plans
+and includes ownership relationships between canonical objects. Deleting
+an owner with registered children or an object used by an inline reusable
+step is blocked in Project-scoped authoring. References from other Projects
+or dynamic/script-generated IDs are still not globally discoverable.
+
+Focused tests cover conflicting and nonconflicting Menu merges, nested UUID
+rewrites, transitive portable closures, locked-mode behavior, stale editor
+saves, reverse uses, and migration→reconciliation→save→reload→headless run
+(where the final native desktop action is mocked).
+
+RHEL/X11 foreground focus, live JavaFX popup geometry and dispatch, and
+multi-process crash-atomic publication remain outside headless CI coverage.

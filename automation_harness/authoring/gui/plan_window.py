@@ -19,7 +19,7 @@ from automation_harness.authoring.project_registry_service import save_plan_sele
 from automation_harness.authoring.plan_repository import assigned_repository_path, load_authoring_repository
 from automation_harness.authoring.step_registry import load_step_registry_resources
 from automation_harness.backends.live_desktop import LiveDesktopBackend
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.reusable_step_expansion import expand_reusable_steps
 from automation_harness.core.reusable_step_snapshot import load_snapshotted_reusable_steps, snapshot_reusable_dependencies
 from automation_harness.core.step_registry import default_step_registry
@@ -35,6 +35,7 @@ class TestPlanWindow(ArtifactWindow):
     def __init__(self, path, *, project_context=None, opener=None):
         super().__init__(path, project_context=project_context, opener=opener)
         self.plan = load_plan(self.path)
+        self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.runtime_registry = default_step_registry()
         self.project = AuthoringProject.load(self.project_context) if self.project_context else None
         self.registry_resources = load_step_registry_resources(self.project.step_registries) if self.project and self.project.step_registries else None
@@ -463,6 +464,8 @@ class TestPlanWindow(ArtifactWindow):
             metadata = dict(portable.step_definitions)
             metadata.pop(SNAPSHOT_METADATA_KEY, None)
             portable = replace(portable, objects={}, step_definitions=metadata)
+            from automation_harness.core.repository_reference_rewrite import rewrite_plan_object_references
+            portable = rewrite_plan_object_references(portable, {}, self.repository)
         else:
             complete_snapshot = embed_plan_repository(expanded, self.repository)
             portable = replace(
@@ -473,7 +476,8 @@ class TestPlanWindow(ArtifactWindow):
                                      reusable_steps=self.reusable, registry=self.runtime_registry)
         if issues:
             raise ValueError('plan qualification failed: ' + '; '.join(issues))
-        save_plan(portable, self.path)
+        save_plan(portable, self.path, expected_fingerprint=self._loaded_plan_fingerprint)
+        self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.plan = portable
         return portable
 
