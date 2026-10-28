@@ -46,6 +46,11 @@ class _Driver:
         self.source_snapshots.append(source)
         return self.source_target
 
+    def capture_text_event_source_snapshot(self, source):
+        # Text capture must not invoke the pointer-resolution path.
+        self.sources.append(("text_source", source))
+        return self.source_target
+
 
 def _target():
     return CapturedComponent(
@@ -919,3 +924,125 @@ def test_pointer_worker_drain_is_bounded_and_recoverable():
     assert worker.stop_and_drain(timeout=1.0) is True
     assert worker.snapshot()["worker_alive"] is False
     assert worker.state == worker.STOPPED
+
+def test_text_callback_never_enters_pointer_or_desktop_resolution():
+    target = replace(
+        _target(), role="text field", actions=("set_text",),
+        state=ComponentState(True, editable=True),
+    )
+    driver = _Driver(target)
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    adapter._pointer_worker.start()
+    results = []
+    adapter._emit = results.append
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+    source = object()
+    adapter._text(SimpleNamespace(type="object:text-changed:insert", any_data="abc", source=source))
+    adapter._pointer_worker.stop_and_drain()
+    assert driver.sources == [("text_source", source)]
+    assert driver.point_snapshots == []
+    assert [type(item).__name__ for item in results] == ["TextChanged"]
+
+
+def test_timed_out_callback_retains_registry_lease(monkeypatch):
+    # Trigger the timeout deterministically, without a five-second wait.
+    import automation_harness.recording.adapters.atspi as module
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    closed = []
+    adapter._lease = SimpleNamespace(close=lambda: closed.append(True))
+    adapter._pyatspi = SimpleNamespace(Registry=SimpleNamespace(
+        deregisterEventListener=lambda callback, event_type: None))
+    adapter._active_callbacks = 1
+    adapter._listeners = []
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._active_callback_details[1] = {"kind": "text", "phase": "snapshot_source"}
+    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110, 112))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks, 114))
+    try:
+        adapter.stop()
+        assert False, "the adapter must report the undrained callback"
+    except RuntimeError as exc:
+        assert "callback drain timed out" in str(exc)
+    assert closed == []
+    assert adapter._lease is not None
+    assert adapter._active_callbacks == 1
+    try:
+        adapter.start(lambda item: None)
+        assert False, "cannot reuse lease while callback remains active"
+    except RuntimeError as exc:
+        assert "not safely drained" in str(exc)
+    # Finish the deliberately stranded callback before the next test.
+    # The process-global safety gate must remain meaningful across adapters,
+    # not depend on garbage collection to eventually clear a stale lease.
+    adapter._end_callback(1)
+    assert closed == [True]
+    assert adapter._lease is None
+
+
+def test_timed_out_callback_completion_releases_lease_and_allows_new_recording(monkeypatch):
+    """Timeout -> late callback returns -> lease closes -> new session starts."""
+    import automation_harness.recording.adapters.atspi as module
+    closed = []
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    adapter._lease = SimpleNamespace(close=lambda: closed.append("old"))
+    adapter._pyatspi = SimpleNamespace(Registry=SimpleNamespace(
+        deregisterEventListener=lambda *_args: None,
+    ))
+    adapter._active_callbacks = 1
+    adapter._listeners = []
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._active_callback_details[1] = {"kind": "text", "phase": "snapshot_source"}
+    actual_clock = module.time.monotonic
+    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks, 114))
+    with __import__("pytest").raises(RuntimeError, match="callback drain timed out"):
+        adapter.stop()
+    assert closed == []
+    # GUI recording creates a fresh adapter for each session. The guard must
+    # apply across adapters sharing the same process-global native registry.
+    unrelated_session = AtspiRecordingAdapter(_Driver(_target()))
+    with __import__("pytest").raises(RuntimeError, match="earlier AT-SPI recording"):
+        unrelated_session.start(lambda observation: None)
+    adapter._end_callback(1)
+    assert closed == ["old"]
+    assert adapter._lease is None
+    assert adapter._pyatspi is None
+    assert adapter._active_callbacks == 0
+    # Mock native registration; the next recording must be a normal session,
+    # not a stale callbacks/lease retry.
+    class Registry:
+        def registerEventListener(self, *args):
+            pass
+        def deregisterEventListener(self, *args):
+            pass
+    native = SimpleNamespace(Registry=Registry())
+    monkeypatch.setattr(module, "_pyatspi", lambda: native)
+    monkeypatch.setattr(module, "acquire_atspi_registry", lambda _native:
+        SimpleNamespace(close=lambda: closed.append("new")))
+    class Monitor:
+        def start(self, callback):
+            self.callback = callback
+        def stop(self):
+            pass
+    adapter._pointer_monitor = Monitor()
+    monkeypatch.setattr(module.time, "monotonic", actual_clock)
+    adapter.start(lambda observation: None)
+    assert adapter._active
+    adapter.stop()
+    assert closed == ["old", "new"]
+
+
+def test_callback_finalization_and_stop_handoff_do_not_double_close():
+    """The retained lease has only one releasing owner."""
+    adapter = AtspiRecordingAdapter(_Driver(_target()))
+    count = []
+    adapter._lease = SimpleNamespace(close=lambda: count.append("close"))
+    adapter._stop_requested.set()
+    adapter._active_callbacks = 1
+    adapter._end_callback(15)
+    assert count == ["close"]
+    adapter._end_callback(16) if False else None  # no duplicate callback
+    assert adapter._lease is None

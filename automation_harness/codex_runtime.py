@@ -504,6 +504,12 @@ def _snapshot(args):
     os.makedirs(target)
     _write_json(os.path.join(target, "manifest.json"), manifest)
     _write_json(os.path.join(target, "environment.json"), _environment_summary())
+    authoring_events = os.path.join(session, "authoring-events.jsonl")
+    if os.path.isfile(authoring_events):
+        try:
+            shutil.copyfile(authoring_events, os.path.join(target, "authoring-events.jsonl"))
+        except IOError:
+            pass
     pid = manifest.get("application_pid")
     if pid:
         _write_json(os.path.join(target, "process-status.json"), _proc_status(pid))
@@ -552,6 +558,9 @@ def _report(args):
     print("stdout: %s" % os.path.join(session, "stdout.log"))
     print("stderr: %s" % os.path.join(session, "stderr.log"))
     print("runtime: %s" % os.path.join(session, "runtime.jsonl"))
+    authoring_events = os.path.join(session, "authoring-events.jsonl")
+    if os.path.isfile(authoring_events):
+        print("authoring events: %s" % authoring_events)
     return 0
 
 

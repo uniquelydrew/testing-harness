@@ -9,6 +9,8 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
+from automation_harness.authoring.plan_open import (\n    inspect_plan_open, PlanOpenState, qualify_migration_repository_selection,\n)
+from automation_harness.authoring.diagnostic_events import emit, artifact_fingerprint
 from automation_harness.authoring.gui.action_widgets import (
     create_action_input_widget,
     interaction_actions,
@@ -38,13 +40,21 @@ class TestPlanAuthoringWindow(TestPlanWindow):
     """Concrete test composition workflow layered on the Test Plan document window."""
 
     def __init__(self, *args, **kwargs):
+        path = args[0] if args else kwargs["path"]
+        inspected = inspect_plan_open(path)
+        self._legacy_pending = inspected.state is PlanOpenState.MIGRATION_REQUIRED
+        kwargs["preloaded_plan"] = inspected.plan
+        kwargs["defer_repository"] = self._legacy_pending
         super().__init__(*args, **kwargs)
         self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
-        if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
+        if (not self._legacy_pending and self.assigned_repository_path is not None
+                and self.assigned_repository_path.exists()):
             self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
+        if self._legacy_pending:
+            self.set_status("Legacy objects detected; use Objects > Migrate Embedded Objects before editing")
 
     def show_objects_menu(self):
         self.refresh_objects()
@@ -56,14 +66,14 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             item.connect("activate", lambda *_args: callback())
             menu.append(item)
 
-        add_item("Add Object Action", self.add_object_action)
+        add_item("Add Object Action", self.add_object_action, not self._legacy_pending)
         menu.append(Gtk.SeparatorMenuItem())
-        add_item("Assign Repository…", self.assign_object_repository)
+        add_item("Assign Repository…", self.assign_object_repository, not self._legacy_pending)
         add_item("Inspect Embedded Repository…", self.inspect_embedded_repository)
         add_item("Migrate Embedded Objects…", self.merge_assign_central_repository,
                  bool(self.plan.objects))
         add_item("Export Portable Snapshot…", self.export_portable_snapshot,
-                 self.plan.execution_mode == "canonical")
+                 self.plan.execution_mode == "canonical" and not self._legacy_pending)
         add_item(
             "Open Repository",
             self.open_assigned_repository,
@@ -116,11 +126,23 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not selected.is_file():
             return self.error("Migrate Embedded Objects", "The destination repository does not exist.")
         current_path = assigned_repository_path(self.plan, self.path)
-        if current_path is not None and current_path.resolve() != selected:
-            return self.error("Migrate Embedded Objects",
-                "This plan already owns an external repository (%s). Reconcile the existing "
-                "repositories first; embedded-only migration cannot safely replace that assignment."
-                % current_path)
+        try:
+            recovering_missing = qualify_migration_repository_selection(
+                self.plan, self.path, selected,
+            )
+        except ValueError as exc:
+            return self.error("Migrate Embedded Objects", str(exc))
+        if recovering_missing:
+            # A missing repository is not a license to arbitrarily reassign
+            # object identity. Require explicit recovery consent before the
+            # existing conflict-review and atomic publication gates.
+            if not self.confirm("Recover Missing Repository Assignment",
+                    "The plan's previous repository is missing:\\n%s\\n\\n"
+                    "Use %s as a replacement only through reviewed migration? "
+                    "Cancellation leaves all files and assignments unchanged."
+                    % (current_path, selected)):
+                emit("migration_cancelled", state="missing_repository_recovery")
+                return
         try:
             if repository_fingerprint(self.path) != self._loaded_plan_fingerprint:
                 raise ValueError("the plan changed on disk; reopen it before migration")
@@ -140,15 +162,20 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
         choices = review_embedded_repository(self.window, self.plan, canonical, migrate=True)
         if choices is None:
+            emit("migration_cancelled")
             return
         resolutions, renames, distinct = choices
         try:
+            emit("migration_prepare_started", plan_fingerprint=self._loaded_plan_fingerprint.__dict__
+                 if hasattr(self._loaded_plan_fingerprint, "__dict__") else artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             proposal = prepare_embedded_migration(
                 self.plan, self.path, canonical, selected,
                 resolutions=resolutions, renames=renames,
                 approved_distinct=distinct,
             )
         except Exception as exc:
+            emit("migration_prepare_failed", error_type=type(exc).__name__)
             return self.error("Migration Preview", "%s: %s" % (type(exc).__name__, exc))
         if not self.confirm("Publish Canonical Migration",
                 "Migrate %d embedded object(s) into %s?\\n"
@@ -160,18 +187,28 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                    len(proposal.added_ids), len(proposal.reused_ids))):
             return
         try:
+            # Fail closed if the previous missing repository appeared while
+            # the operator was reviewing collision decisions.
+            qualify_migration_repository_selection(self.plan, self.path, selected)
             baselines = {
                 selected: repository_baseline,
                 self.path: self._loaded_plan_fingerprint,
             }
             if self.project_context:
                 baselines[self.project_context] = project_baseline
+            emit("migration_publish_started", plan_fingerprint=artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             publish_embedded_migration(
                 proposal, repository_path=selected, plan_path=self.path,
                 expected_fingerprints=baselines,
                 project_path=self.project_context, project=projected_project,
             )
+            emit("migration_publish_completed", imported_count=len(proposal.added_ids),
+                 reused_count=len(proposal.reused_ids), plan_fingerprint=artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             self.plan = proposal.plan
+            self._legacy_pending = False
+            self._defer_repository_composition = False
             self._loaded_plan_fingerprint = repository_fingerprint(self.path)
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
@@ -179,6 +216,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 self.project = projected_project
             self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
+            emit("migration_publish_failed", error_type=type(exc).__name__)
             return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty(False)
         self.refresh_all()
@@ -222,6 +260,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
     def save(self):
         """Persist direct objects first, then add transitive Registry dependencies."""
+        if self._legacy_pending:
+            return self.error("Save Test Plan",
+                "Migrate embedded legacy objects before saving this plan.")
         try:
             portable = self._save_portable_plan()
             if self.project_context:
@@ -239,6 +280,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                         else "Saved portable test plan")
 
     def add_object_action(self, component_id=None, action_id=None):
+        if self._legacy_pending:
+            return self.error("Object Action",
+                "Migrate embedded legacy objects before editing this plan.")
         self.refresh_objects()
         if not self.repository.components:
             return self.info(

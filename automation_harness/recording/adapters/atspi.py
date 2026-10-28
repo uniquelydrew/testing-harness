@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+import weakref
 from typing import Any, Callable
 
 from automation_harness.drivers.atspi_driver import (
@@ -26,6 +27,12 @@ _STRUCTURAL_ROLES = frozenset({
 })
 _PRESENTATION_CONTAINER_ROLES = frozenset({"panel", "filler", "section", "unknown"})
 _PASSIVE_ROLES = frozenset({"label", "static", "paragraph", "icon", "image"})
+
+# Recording sessions create fresh adapters, but AT-SPI registry ownership is
+# process-global. An undrained native callback from a previous adapter must
+# block new native registration until it has released its lease.
+_PENDING_NATIVE_DRAINS = weakref.WeakSet()
+_PENDING_NATIVE_DRAINS_LOCK = threading.Lock()
 
 
 def _normalize_role(value) -> str:
@@ -296,6 +303,8 @@ class AtspiRecordingAdapter:
         self._callback_condition = threading.Condition()
         self._callbacks_accepting = False
         self._active_callbacks = 0
+        self._next_callback_id = 0
+        self._active_callback_details = {}
         self._stop_requested = threading.Event()
         self._diagnostic_sink = None
         self._pointer_worker = _PointerRecordingWorker(
@@ -323,6 +332,13 @@ class AtspiRecordingAdapter:
     def start(self, emit: Callable[[Observation], None]) -> None:
         if self._active:
             raise RuntimeError("AT-SPI recording adapter is already active")
+        # A prior timed-out native callback may still own the AT-SPI lease.
+        # Do not start another session before the old callback drains.
+        if self._lease is not None or self._active_callbacks:
+            raise RuntimeError("previous AT-SPI recording callback has not safely drained")
+        with _PENDING_NATIVE_DRAINS_LOCK:
+            if any(item._lease is not None for item in tuple(_PENDING_NATIVE_DRAINS)):
+                raise RuntimeError("an earlier AT-SPI recording has not safely drained")
         self._emit = emit
         atspi_available = bool(self.driver.available)
         try:
@@ -442,6 +458,7 @@ class AtspiRecordingAdapter:
                         self._diagnostic(
                             "atspi_stop_callback_drain_timeout",
                             active_callbacks=self._active_callbacks,
+                            callbacks=dict(self._active_callback_details),
                         )
                         break
                     self._callback_condition.wait(min(0.5, remaining))
@@ -473,10 +490,25 @@ class AtspiRecordingAdapter:
                     pointer_worker=self._pointer_worker.snapshot(),
                 )
             try:
+                # Ownership handoff and callback completion share the same
+                # condition. Otherwise a callback could finish between the
+                # count check and retention, stranding the lease forever.
+                with self._callback_condition:
+                    drained = self._active_callbacks == 0
+                    if not drained and lease is not None:
+                        self._lease = lease
+                        with _PENDING_NATIVE_DRAINS_LOCK:
+                            _PENDING_NATIVE_DRAINS.add(self)
+                        callbacks = dict(self._active_callback_details)
+                    else:
+                        callbacks = {}
                 if lease is not None:
-                    self._diagnostic("atspi_stop_lease_closing")
-                    lease.close()
-                    self._diagnostic("atspi_stop_lease_closed")
+                    if drained:
+                        self._diagnostic("atspi_stop_lease_closing")
+                        lease.close()
+                        self._diagnostic("atspi_stop_lease_closed")
+                    else:
+                        self._diagnostic("atspi_stop_lease_retained", callbacks=callbacks)
             finally:
                 self._listeners = []
                 # Preserve callback-owned state if a native callback did not
@@ -550,12 +582,13 @@ class AtspiRecordingAdapter:
             return None
 
     def _pointer(self, event: Any) -> None:
-        if not self._begin_callback():
+        callback_id = self._begin_callback(event_type=str(getattr(event, "type", "")), callback_kind="pointer")
+        if callback_id is None:
             return
         try:
             self._handle_pointer(event)
         finally:
-            self._end_callback()
+            self._end_callback(callback_id)
 
     def _handle_pointer(self, event: Any) -> None:
         event_type = str(getattr(event, "type", "")).casefold()
@@ -577,7 +610,8 @@ class AtspiRecordingAdapter:
 
     def _physical_pointer(self, event_type, coordinates, timestamp, owner_pid=None) -> None:
         """Handle an X11 transition without waiting for AT-SPI device events."""
-        if not self._begin_callback():
+        callback_id = self._begin_callback(event_type=str(event_type), callback_kind="physical_pointer")
+        if callback_id is None:
             return
         try:
             self._diagnostic(
@@ -595,7 +629,7 @@ class AtspiRecordingAdapter:
                 event_type, coordinates, timestamp, target,
             )
         finally:
-            self._end_callback()
+            self._end_callback(callback_id)
 
     def _resolve_physical_pointer_target(self, coordinates, owner_pid=None):
         # X11 owns z-order arbitration. Query only a bridge belonging to the
@@ -706,18 +740,52 @@ class AtspiRecordingAdapter:
             SimplePointerEvent("mouse:button:1p", coordinates), coordinates,
         )
 
-    def _begin_callback(self):
+    def _begin_callback(self, *, event_type="", callback_kind="native"):
         with self._callback_condition:
             if not self._callbacks_accepting:
-                return False
+                return None
+            self._next_callback_id += 1
+            callback_id = self._next_callback_id
             self._active_callbacks += 1
-            return True
+            self._active_callback_details[callback_id] = {
+                "kind": callback_kind, "event_type": event_type,
+                "phase": "entered", "started": time.monotonic(),
+            }
+            return callback_id
 
-    def _end_callback(self):
+    def _callback_phase(self, callback_id, phase):
         with self._callback_condition:
+            if callback_id in self._active_callback_details:
+                self._active_callback_details[callback_id]["phase"] = phase
+
+    def _end_callback(self, callback_id):
+        deferred_lease = None
+        with self._callback_condition:
+            self._active_callback_details.pop(callback_id, None)
             self._active_callbacks -= 1
             if not self._active_callbacks:
                 self._callback_condition.notify_all()
+                # stop() transfers an undrained lease into self._lease.
+                # A later callback completion reclaims it exactly once.
+                # AtspiRegistryLease.close() releases a client count but
+                # deliberately does not stop the native Registry.start loop.
+                if not self._active and self._lease is not None and self._stop_requested.is_set():
+                    deferred_lease = self._lease
+                    self._lease = None
+                    self._emit = None
+                    self._pyatspi = None
+        if deferred_lease is not None:
+            try:
+                deferred_lease.close()
+            except Exception as exc:
+                # Do not hide cleanup failures from subsequent recording.
+                with self._callback_condition:
+                    self._lease = deferred_lease
+                self._diagnostic("atspi_deferred_lease_release_failed", error_type=type(exc).__name__)
+            else:
+                with _PENDING_NATIVE_DRAINS_LOCK:
+                    _PENDING_NATIVE_DRAINS.discard(self)
+                self._diagnostic("atspi_deferred_lease_released")
 
     def _capture_scoped_point(self, coordinates):
         snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
@@ -792,7 +860,8 @@ class AtspiRecordingAdapter:
         return _filter_captured_target(captured, self._excluded_application_prefixes)
 
     def _action(self, event: Any) -> None:
-        if not self._begin_callback():
+        callback_id = self._begin_callback(event_type=str(getattr(event, "type", "")), callback_kind="action")
+        if callback_id is None:
             return
         try:
             event_type = str(getattr(event, "type", ""))
@@ -802,22 +871,36 @@ class AtspiRecordingAdapter:
                 property_name, selected, event_type, time.monotonic(),
             )
         finally:
-            self._end_callback()
+            self._end_callback(callback_id)
 
     def _text(self, event: Any) -> None:
-        if not self._begin_callback():
+        callback_id = self._begin_callback(event_type=str(getattr(event, "type", "")), callback_kind="text")
+        if callback_id is None:
             return
         try:
-            # Resolve the thread-bound source here. Only the immutable capture
-            # crosses to the worker; a prior pointer target is never reused.
+            # Text events identify their own source. Do not hit-test or walk
+            # the desktop in the native callback, and never reuse a prior
+            # pointer target for an unrelated text event.
+            self._callback_phase(callback_id, "read_event")
             after = getattr(event, "any_data", None)
-            if after is not None:
-                target = self._target(event)
-                self._pointer_worker.accept_text(
-                    str(after), str(getattr(event, "type", "")), time.monotonic(), target,
-                )
+            if after is not None and not self._stop_requested.is_set():
+                target = None
+                source = getattr(event, "source", None)
+                if source is not None:
+                    try:
+                        self._callback_phase(callback_id, "snapshot_source")
+                        captured = self.driver.capture_text_event_source_snapshot(source)
+                        if _is_recordable_target(captured) and _is_editable_text_target(captured):
+                            target = captured
+                    except Exception as exc:
+                        self._diagnostic("atspi_text_source_capture_failed", error_type=type(exc).__name__, error=str(exc))
+                if target is not None and not self._stop_requested.is_set():
+                    self._callback_phase(callback_id, "enqueue")
+                    self._pointer_worker.accept_text(
+                        str(after), str(getattr(event, "type", "")), time.monotonic(), target,
+                    )
         finally:
-            self._end_callback()
+            self._end_callback(callback_id)
 
     def _publish(self, observation: Observation) -> None:
         self._diagnostic("normalized_observation", observation=observation)
