@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import socket
@@ -25,6 +26,58 @@ class JavaFxBridgeProtocolError(RuntimeError):
     pass
 
 
+class JavaFxBridgePayloadError(JavaFxBridgeProtocolError):
+    """Invalid local request; not an unavailable JavaFX agent endpoint."""
+
+
+def _bridge_transport_value(value: Any, *, operation: str, path: str = "$") -> Any:
+    """Copy nested frozen runtime metadata into JSON-compatible wire values.
+
+    Repository preparation intentionally freezes locator metadata. Shallow
+    dict() conversions leave MappingProxyType descendants that JSON cannot
+    encode. Normalize only at the JavaFX transport boundary, leaving the
+    authoritative runtime repository unchanged.
+    """
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise JavaFxBridgePayloadError(
+                    "JavaFX %s request field %s has non-string mapping key of type %s"
+                    % (operation, path, type(key).__name__)
+                )
+            result[key] = _bridge_transport_value(
+                item, operation=operation, path="%s.%s" % (path, key),
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _bridge_transport_value(item, operation=operation, path="%s[%d]" % (path, index))
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, (set, frozenset)):
+        # Deterministic array encoding for frozen set-valued properties.
+        items = [
+            _bridge_transport_value(item, operation=operation, path="%s[]" % path)
+            for item in value
+        ]
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise JavaFxBridgePayloadError(
+        "JavaFX %s request field %s has non-JSON value of type %s"
+        % (operation, path, type(value).__name__)
+    )
+
+
+def _bridge_request_json(operation: str, payload: Mapping[str, Any], *, compact: bool = False) -> str:
+    """Validate and encode bridge requests without leaking their field values."""
+    plain = _bridge_transport_value(payload, operation=operation)
+    return json.dumps(plain, separators=(",", ":") if compact else None, allow_nan=False)
+
+
 class JavaFxRecordingTransport(Protocol):
     def request(self, operation: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
@@ -41,7 +94,7 @@ class HttpJavaFxBridgeTransport:
         if not self.endpoint.startswith(("http://127.0.0.1", "http://localhost")):
             raise ValueError("JavaFX agent endpoint must be loopback-only")
         request = Request(
-            f"{self.endpoint.rstrip('/')}/{operation}", data=json.dumps(dict(payload)).encode("utf-8"),
+            f"{self.endpoint.rstrip('/')}/{operation}", data=_bridge_request_json(operation, payload).encode("utf-8"),
             headers={"Content-Type": "application/json", "X-Automation-Harness-Token": self.token}, method="POST",
         )
         try:
@@ -70,10 +123,14 @@ class JavaFxBridgeEndpoint:
     discovery_file: Path
     command: str | None = None
     java_version: str | None = None
+    agent_sha256: str | None = None
 
     def request(self, op: str, *, timeout: float = 5.0, **payload: Any) -> dict[str, Any]:
         request = {"token": self.token, "op": op}
         request.update(payload)
+        # Preflight before opening a socket: serialization faults should not
+        # masquerade as missing or unresponsive JavaFX bridge endpoints.
+        encoded_request = _bridge_request_json(op, request, compact=True)
         try:
             sock = socket.create_connection((self.host, self.port), timeout=timeout)
         except OSError as exc:
@@ -85,7 +142,7 @@ class JavaFxBridgeEndpoint:
             sock.settimeout(timeout)
             writer = sock.makefile("wb")
             reader = sock.makefile("rb")
-            writer.write((json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"))
+            writer.write((encoded_request + "\n").encode("utf-8"))
             writer.flush()
             raw = reader.readline()
             if not raw:
@@ -267,23 +324,53 @@ class JavaFxBridgeDriver:
             "stages": [stage.to_dict() for stage in trace],
             "bridge_pid": endpoint.pid,
             "bridge_port": endpoint.port,
+            "agent_sha256": getattr(endpoint, "agent_sha256", None),
         }
         return ResolvedComponent(component_id=component_id, strategy="javafx", metadata=metadata)
 
     def state(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> ComponentState:
         return self.inspect(identification=identification).state
 
-    def activate_window(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
-        endpoint, _node, _trace = self._find_unique(identification)
-        import time
+    def activate_window(
+        self,
+        *,
+        identification: Mapping[str, Any] | None = None,
+        window: str | None = None,
+        process_id: int | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Activate the owning Stage independently of the target component.
+
+        This applies to any JavaFX component (including controls not yet in
+        the scene graph), not just transient logical menus. A durable window
+        hint is mandatory for independent activation: never guess a window.
+        """
+        window_hint = _explicit_window_hint(identification, window)
+        if window_hint is not None:
+            endpoint = self._endpoint_for_window(window_hint, process_id=process_id)
+            request = {"window": window_hint}
+        else:
+            # Compatibility for legacy identities without owning-window
+            # evidence. Do not activate an arbitrary Stage.
+            if process_id is None:
+                endpoint, _node, _trace = self._find_unique(identification)
+            else:
+                endpoint, _node, _trace = self._find_unique(
+                    identification, process_id=process_id,
+                )
+            request = {"identification": dict(identification or {})}
+
         deadline = time.monotonic() + 2.0
         attempts = 0
         response = {}
         while True:
             attempts += 1
-            response = endpoint.request(
-                "activate_window", timeout=5.0, identification=dict(identification or {}),
-            )
+            response = endpoint.request("activate_window", timeout=5.0, **request)
+            if window_hint is not None and response.get("window") != window_hint:
+                raise RuntimeError(
+                    "JavaFX agent activated unexpected window %r (expected %r, pid=%s)"
+                    % (response.get("window"), window_hint, endpoint.pid)
+                )
             if response.get("focused") is True:
                 return {
                     "operation": "activate_window",
@@ -291,6 +378,8 @@ class JavaFxBridgeDriver:
                     "window": response.get("window"),
                     "focused": True,
                     "activation_attempts": attempts,
+                    "selection": "owning_window" if window_hint else "resolved_component",
+                    "agent_sha256": getattr(endpoint, "agent_sha256", None),
                 }
             if time.monotonic() >= deadline:
                 raise RuntimeError(
@@ -299,6 +388,56 @@ class JavaFxBridgeDriver:
                     "last_response=%r)" % (attempts, endpoint.pid, response.get("window"), response)
                 )
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    def _endpoint_for_window(self, window: str, *, process_id: int | None = None) -> JavaFxBridgeEndpoint:
+        """Find one showing owning window across JVMs without resolving its child."""
+        endpoints = tuple(
+            endpoint for endpoint in self.endpoints()
+            if process_id is None or endpoint.pid == process_id
+        )
+        if not endpoints:
+            raise JavaFxBridgeUnavailable(
+                "no active JavaFX bridge endpoints were discovered"
+                + (" for pid %s" % process_id if process_id is not None else "")
+            )
+        owners = []
+        failures = []
+        observed = []
+        for endpoint in endpoints:
+            try:
+                response = endpoint.request("windows", timeout=3.0)
+                windows = response.get("windows", ())
+                if not isinstance(windows, list):
+                    raise JavaFxBridgeProtocolError("windows response is not a list")
+            except Exception as exc:
+                failures.append("pid %s: %s: %s" % (endpoint.pid, type(exc).__name__, exc))
+                continue
+            for item in windows:
+                if not isinstance(item, Mapping):
+                    continue
+                title = item.get("title")
+                if not isinstance(title, str):
+                    continue
+                observed.append((endpoint.pid, title))
+                if title == window and item.get("showing") is True:
+                    owners.append(endpoint)
+        if len(owners) > 1:
+            raise LookupError(
+                "JavaFX owning window %r is ambiguous across endpoints: %s"
+                % (window, [endpoint.pid for endpoint in owners])
+            )
+        if not owners:
+            raise LookupError(
+                "JavaFX owning window %r is not showing (windows=%r; endpoint_errors=%r)"
+                % (window, observed, failures)
+            )
+        if failures:
+            # We cannot prove uniqueness if another JVM was unavailable.
+            raise JavaFxBridgeUnavailable(
+                "cannot safely activate %r: other JavaFX endpoints did not respond: %s"
+                % (window, "; ".join(failures))
+            )
+        return owners[0]
 
     def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
@@ -512,7 +651,10 @@ class JavaFxBridgeDriver:
                 raise LookupError("JavaFX ordinal %s is outside %s matches" % (ordinal, len(matches)))
             matches = [matches[ordinal]]
         if not matches:
-            raise LookupError("JavaFX component not found: %r" % (identification,))
+            raise LookupError(
+                "JavaFX component not found: %r (resolution_stages=%r)"
+                % (identification, [stage.to_dict() for stage in trace])
+            )
         if len(matches) > 1:
             raise LookupError("JavaFX component is ambiguous: %r (%s matches)" % (identification, len(matches)))
         endpoint, node = matches[0]
@@ -524,29 +666,47 @@ class JavaFxBridgeDriver:
         *,
         process_id: int | None = None,
     ) -> tuple[list[tuple[JavaFxBridgeEndpoint, Mapping[str, Any]]], tuple[JavaFxResolutionStage, ...]]:
-        endpoints = tuple(
-            endpoint for endpoint in self.endpoints()
-            if process_id is None or endpoint.pid == process_id
-        )
+        identity = dict(identification or {})
+        window_hint = _explicit_window_hint(identification)
+        if window_hint is not None:
+            # Endpoint ownership is part of all JavaFX object resolution, not
+            # only menu/window preparation. Never fan out a scoped locator to
+            # unrelated JVMs or allow a unique ID in another Stage to win.
+            endpoints = (self._endpoint_for_window(window_hint, process_id=process_id),)
+        else:
+            endpoints = tuple(
+                endpoint for endpoint in self.endpoints()
+                if process_id is None or endpoint.pid == process_id
+            )
         if not endpoints:
             suffix = " for pid %s" % process_id if process_id is not None else ""
             raise JavaFxBridgeUnavailable("no active JavaFX bridge endpoints were discovered" + suffix)
-        identity = dict(identification or {})
         matches = []
         stage_totals = []
         errors = []
         for endpoint in endpoints:
             try:
                 response = endpoint.request("find", timeout=3.0, identification=identity)
+            except JavaFxBridgePayloadError:
+                # Every endpoint receives the same local request. A malformed
+                # frozen locator is not an endpoint outage and cannot improve
+                # by trying a different JVM.
+                raise
             except Exception as exc:
                 errors.append("pid %s: %s" % (endpoint.pid, exc))
                 continue
             for node in response.get("matches", []):
-                if isinstance(node, Mapping):
+                if isinstance(node, Mapping) and (
+                    window_hint is None or node.get("window") == window_hint
+                ):
                     matches.append((endpoint, node))
             stage_totals.append(response.get("stages", []))
-        if errors and not stage_totals:
-            raise JavaFxBridgeUnavailable("all JavaFX bridge endpoints failed: " + "; ".join(errors))
+        if errors:
+            # Successful responses from other JVMs do not establish a unique
+            # identity when one endpoint could not be inspected.
+            raise JavaFxBridgeUnavailable(
+                "JavaFX resolution incomplete; endpoint failures: " + "; ".join(errors)
+            )
         trace = _merge_stages(stage_totals)
         return matches, trace
 
@@ -591,6 +751,7 @@ def discover_javafx_endpoints(discovery_dir: Path | None = None) -> tuple[JavaFx
                 discovery_file=path,
                 command=_optional_str(payload.get("command")),
                 java_version=_optional_str(payload.get("java_version")),
+                agent_sha256=_optional_str(payload.get("agent_sha256")),
             )
             response = endpoint.request("ping", timeout=0.5)
             if response.get("javafx_available", False):
@@ -598,6 +759,24 @@ def discover_javafx_endpoints(discovery_dir: Path | None = None) -> tuple[JavaFx
         except Exception:
             continue
     return tuple(values)
+
+
+def _explicit_window_hint(
+    identification: Mapping[str, Any] | None,
+    window: str | None = None,
+) -> str | None:
+    """Extract only explicit, exact window evidence; never infer from a name."""
+    raw = dict(identification or {})
+    mandatory = raw.get("mandatory")
+    assistive = raw.get("assistive")
+    values = [window]
+    for source in (mandatory, assistive, raw):
+        if isinstance(source, Mapping):
+            values.append(source.get("window"))
+    hints = {value for value in values if isinstance(value, str) and value.strip()}
+    if len(hints) > 1:
+        raise ValueError("conflicting JavaFX owning-window identity evidence: %r" % sorted(hints))
+    return next(iter(hints), None)
 
 
 def _default_discovery_dir() -> Path:

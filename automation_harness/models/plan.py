@@ -53,6 +53,9 @@ class TestPlan:
     steps: tuple[StepCall, ...] = ()
     objects: Mapping[str, Any] = field(default_factory=dict)
     step_definitions: Mapping[str, Any] = field(default_factory=dict)
+    # Persisted preferred repository selection.  Callers may override it for a
+    # one-off run without rewriting a portable plan.
+    execution_mode: str = "linked"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +64,7 @@ class TestPlan:
             "variables": _encode_refs(dict(self.variables)),
             "objects": _encode_refs(dict(self.objects)),
             "step_definitions": _encode_refs(dict(self.step_definitions)),
+            "execution_mode": self.execution_mode,
             "steps": [step.to_dict() for step in self.steps],
         }
 

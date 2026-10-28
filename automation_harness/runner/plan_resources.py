@@ -9,7 +9,7 @@ from automation_harness.authoring.step_registry import load_step_registry_resour
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.reusable_step_snapshot import load_snapshotted_reusable_steps
 from automation_harness.core.reusable_steps import ReusableStepDefinition
-from automation_harness.core.test_plan import repository_from_plan
+from automation_harness.core.repository_preparation import RepositoryResolver, compose_canonical_repositories
 from automation_harness.models.plan import TestPlan
 
 
@@ -32,9 +32,16 @@ def resolve_plan_resources(plan: TestPlan, plan_path: Path, project=None) -> Res
         if project is not None and project.step_registries else None
     )
     reusable = dict(resources.steps) if resources is not None else load_snapshotted_reusable_steps(plan)
-    repository = repository_from_plan(plan)
-    if assigned_repositories(plan, plan_path):
-        repository = repository.overlay(load_repository_set(plan, plan_path).compose())
+    canonical = load_repository_set(plan, plan_path).compose() if assigned_repositories(plan, plan_path) else None
     if resources is not None:
-        repository = repository.overlay(resources.repository)
-    return ResolvedPlanResources(repository=repository, reusable_steps=reusable)
+        canonical = compose_canonical_repositories(
+            (resources.repository,) if canonical is None else (canonical, resources.repository)
+        )
+    # This layer discovers available canonical inputs.  The execution boundary
+    # applies the plan's linked/portable/locked preference so qualification
+    # failures are reported uniformly as run validation errors.
+    prepared = RepositoryResolver().resolve(
+        plan, canonical_repository=canonical,
+        mode=plan.execution_mode,
+    )
+    return ResolvedPlanResources(repository=prepared.repository, reusable_steps=reusable)

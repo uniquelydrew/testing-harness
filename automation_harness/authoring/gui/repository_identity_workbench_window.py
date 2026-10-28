@@ -12,7 +12,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
@@ -51,6 +51,7 @@ class _RepositoryWorkbenchHost:
                     "%s; recovery could not parse it: %s" % (load_error, recovery_error),
                 ),)
         self.migration_report = repository_migration_report(self.repository)
+        self._loaded_fingerprint = repository_fingerprint(self.path)
         self.capture = HybridObjectCaptureService()
         self.window = Gtk.Window()
         self.window.set_decorated(False)
@@ -122,7 +123,10 @@ class _RepositoryWorkbenchHost:
         try:
             shutil.copy2(self.path, backup)
             self.repository.validate_persistence()
-            self.repository.save(self.path)
+            saved_fingerprint = self.repository.save(
+                self.path, expected_fingerprint=self._loaded_fingerprint,
+            )
+            self._loaded_fingerprint = saved_fingerprint
             removed = len(self.recovery_issues)
             self.recovery_issues = ()
             self._mark_repository_dirty(False)
@@ -306,11 +310,13 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         def worker():
             try:
                 captured = self.app.capture.capture_next_click(click_count=click_count, timeout=30.0)
-                proposed, comparison = self.app.capture.recapture_definition(definition, captured)
+                candidate = self.app.capture.stage_recapture(
+                    self._repository_host.repository, definition, captured,
+                )
             except Exception as exc:
                 GLib.idle_add(self._recapture_finished, node.key, None, None, None, exc)
             else:
-                GLib.idle_add(self._recapture_finished, node.key, proposed, comparison, captured, None)
+                GLib.idle_add(self._recapture_finished, node.key, candidate, candidate.comparison, captured, None)
 
         import threading
         threading.Thread(target=worker, name="repository-object-recapture", daemon=True).start()
@@ -333,9 +339,10 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             self._finish_recapture_review(key, proposed, comparison, captured)
         return False
 
-    def _finish_recapture_review(self, key, proposed, comparison, captured=None):
+    def _finish_recapture_review(self, key, candidate, comparison, captured=None):
         if self._closed:
             return False
+        proposed = candidate.proposed
         self._repository_host._clear_highlight()
         self.window.show_all()
         self.window.present()
@@ -373,7 +380,12 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         definition = self._definition_by_key.get(key)
         if definition is None:
             return False
-        updated = self._repository_host.repository.with_component(proposed)
+        try:
+            updated = self.app.capture.apply_recapture_candidate(
+                self._repository_host.repository, candidate,
+            )
+        except Exception as exc:
+            return self.app._error("Recapture object", "%s: %s" % (type(exc).__name__, exc))
         self._repository_host.repository = updated
         self.app.repository = updated
         self._definition_by_key[key] = proposed
@@ -521,8 +533,15 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 errors.append("%s: %s" % (definition.component_id, exc))
         if errors:
             return self.app._error("Save repository", "Repository was not saved.\n\n%s" % "\n".join(errors[:12]))
-        self._repository_host.repository.validate_persistence()
-        self._repository_host.repository.save(self._repository_host.path)
+        try:
+            self._repository_host.repository.validate_persistence()
+            saved_fingerprint = self._repository_host.repository.save(
+                self._repository_host.path,
+                expected_fingerprint=self._repository_host._loaded_fingerprint,
+            )
+        except Exception as exc:
+            return self.app._error("Save repository", "%s: %s" % (type(exc).__name__, exc))
+        self._repository_host._loaded_fingerprint = saved_fingerprint
         self.app.repository = self._repository_host.repository
         self.app._mark_repository_dirty(False)
         self._set_status("Saved repository%s" % (" — %d object(s) updated" % saved if saved else ""))

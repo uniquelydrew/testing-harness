@@ -20,6 +20,7 @@ from automation_harness.core.test_plan import derive_execution_state, load_plan,
 from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.core.repository_preparation import compose_canonical_repositories
 from automation_harness.runner.validator import validate_bundle
 from automation_harness.runtime_paths import runtime_path
 
@@ -139,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_run.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
+    plan_run.add_argument("--repository-mode", choices=("linked", "portable", "locked", "canonical"),
+                          help="override the TestPlan repository execution mode")
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
 
@@ -285,14 +288,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
         registry = default_step_registry()
-        component_repository = repository_from_plan(test_plan)
+        from automation_harness.authoring.plan_repository import assigned_repositories, load_repository_set
+        from automation_harness.core.repository_scope import RepositoryScope
+        from automation_harness.core.repository_preparation import RepositoryQualifier
         selected_components = getattr(args, "components", None)
+        associations = tuple(a for a in assigned_repositories(test_plan, args.path)
+                             if a.scope is not RepositoryScope.RECORDING)
+        canonical_repository = load_repository_set(test_plan, args.path).compose() if associations else None
         if selected_components is not None:
-            component_repository = component_repository.overlay(ComponentRepository.load([selected_components.resolve()]))
+            explicit = ComponentRepository.load([selected_components.resolve()])
+            canonical_repository = (explicit if canonical_repository is None else
+                                    compose_canonical_repositories((canonical_repository, explicit)))
+        component_repository = canonical_repository or repository_from_plan(test_plan)
 
         if args.plan_command == "compile":
             try:
-                artifact = compile_test(test_plan, registry, component_repository)
+                qualified = RepositoryQualifier().qualify(
+                    test_plan, canonical_repository=canonical_repository, registry=registry,
+                )
+                if qualified.issues:
+                    raise ValueError("; ".join(qualified.issues))
+                artifact = compile_test(qualified.plan, registry, qualified.repository)
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(artifact.to_json(), encoding="utf-8")
                 print(f"COMPILED: {args.output} sha256={artifact.digest}")
@@ -301,8 +317,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return 2
 
-        issues = validate_plan(test_plan, registry)
-        issues.extend(validate_plan_components(test_plan, component_repository))
+        try:
+            prepared = RepositoryQualifier().qualify(
+                test_plan, canonical_repository=canonical_repository, registry=registry,
+            )
+            issues = list(prepared.issues)
+            component_repository = prepared.repository
+            test_plan = prepared.plan
+        except Exception as exc:
+            issues = ["repository qualification: %s: %s" % (type(exc).__name__, exc)]
         if args.plan_command == "validate":
             if args.backend:
                 try:
@@ -342,10 +365,8 @@ def main(argv: list[str] | None = None) -> int:
                 backend,
                 runs_dir=args.runs_dir.resolve(),
                 variable_overrides=variable_overrides,
-                component_repository=(
-                    ComponentRepository.load([selected_components.resolve()])
-                    if selected_components is not None else None
-                ),
+                component_repository=canonical_repository,
+                execution_mode=args.repository_mode,
             )
             print(json.dumps(result.to_dict(), indent=2, default=str))
             return int(result.exit_code or 0)

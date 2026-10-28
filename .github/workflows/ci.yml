@@ -6,6 +6,8 @@ on:
     branches:
       - main
       - 'codex/pytest-*'
+      - 'codex/repository-*'
+      - 'codex/object-*'
   workflow_dispatch:
 
 permissions:

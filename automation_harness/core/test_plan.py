@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import yaml
 
 from automation_harness.core.step_registry import StepRegistry
-from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError, RepositoryFingerprint, repository_fingerprint
 from automation_harness.models.plan import ExecutionState, PlanVariableRef, StepCall, StepStatus, TestPlan
 
 
@@ -33,10 +33,13 @@ def load_plan(path: Path) -> TestPlan:
         raise TestPlanError("test plan variables must be a mapping")
     objects = raw.get("objects")
     step_definitions = raw.get("step_definitions")
+    execution_mode = raw.get("execution_mode", "linked")
     if not isinstance(objects, Mapping):
         raise TestPlanError("test plan objects must be a mapping")
     if not isinstance(step_definitions, Mapping):
         raise TestPlanError("test plan step_definitions must be a mapping")
+    if execution_mode not in {"linked", "portable", "locked", "canonical"}:
+        raise TestPlanError("test plan execution_mode must be 'linked', 'portable', 'locked', or 'canonical'")
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list):
         raise TestPlanError("test plan steps must be a list")
@@ -80,10 +83,13 @@ def load_plan(path: Path) -> TestPlan:
         steps=tuple(steps),
         objects=_decode_refs(dict(objects)),
         step_definitions=_decode_refs(dict(step_definitions)),
+        execution_mode=execution_mode,
     )
 
 
-def save_plan(plan: TestPlan, path: Path) -> None:
+def save_plan(plan: TestPlan, path: Path, *,
+              expected_fingerprint: RepositoryFingerprint | None = None) -> None:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Verify the exact portable snapshot before replacing the existing plan.
     repository_from_plan(plan)
@@ -96,6 +102,8 @@ def save_plan(plan: TestPlan, path: Path) -> None:
             handle.write(document)
             handle.flush()
             os.fsync(handle.fileno())
+        if expected_fingerprint is not None and repository_fingerprint(path) != expected_fingerprint:
+            raise TestPlanError("test plan changed on disk since it was opened; reload before saving")
         os.replace(temporary_name, str(path))
     except BaseException:
         try:
@@ -139,7 +147,11 @@ def embed_plan_repository(plan: TestPlan, repository: ComponentRepository) -> Te
         include_with_owners(reference)
     # Verify that ownership closure survives the serialized schema boundary.
     ComponentRepository.from_document({"version": 3, "components": embedded})
-    return replace(plan, objects=embedded)
+    definitions = dict(plan.step_definitions)
+    from automation_harness.core.repository_preparation import SNAPSHOT_METADATA_KEY, snapshot_provenance
+    snapshot = ComponentRepository.from_document({"version": 3, "components": embedded})
+    definitions[SNAPSHOT_METADATA_KEY] = {"version": 1, "objects": snapshot_provenance(snapshot)}
+    return replace(plan, objects=embedded, step_definitions=definitions)
 
 
 def validate_plan(plan: TestPlan, registry: StepRegistry) -> list[str]:

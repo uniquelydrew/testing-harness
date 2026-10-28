@@ -272,19 +272,8 @@ def _runtime_only_solipsys_definition(
 
 
 def matching_component_ids(repository: ComponentRepository, capture: CapturedComponent) -> list[str]:
-    result = []
-    candidate = capture.candidate_strategy()
-    for component_id, definition in repository.components.items():
-        if definition.object_type != capture.semantic_type() and definition.object_type.value != "custom":
-            continue
-        if candidate in definition.strategies:
-            result.append(definition.object_id)
-            continue
-        for strategy in definition.strategies:
-            if strategy.type == candidate.type and strategy.options == candidate.options:
-                result.append(definition.object_id)
-                break
-    return result
+    from automation_harness.core.repository_preparation import IdentityAssessment
+    return list(IdentityAssessment.assess(repository, capture).matches)
 
 
 def definition_from_capture(component_id: str, capture: CapturedComponent) -> ComponentDefinition:
@@ -335,27 +324,8 @@ def merge_repository_or(target: ComponentRepository, source: ComponentRepository
 
 
 def merge_objects_or(repository: ComponentRepository, target_id: str, source_ids: Iterable[str]) -> ComponentRepository:
-    target = repository.get(target_id)
-    sources = [repository.get(value) for value in source_ids if value != target_id]
-    if not sources:
-        return repository
-    merged = target
-    for source in sources:
-        merged = _merge_definition_or(merged, source)
-    result = repository.with_component(merged)
-    # Preserve object hierarchy when a duplicate parent is folded into its
-    # canonical object.  The old implementation removed the duplicate before
-    # repairing its children, leaving deduplication unable to complete for a
-    # perfectly ordinary captured subtree.
-    source_object_ids = {source.object_id for source in sources}
-    for definition in tuple(result.components.values()):
-        if definition.owner_object_id in source_object_ids:
-            result = result.with_component(replace(
-                definition, owner_object_id=target.object_id,
-            ))
-    for source in sources:
-        result = result.without_component(source.component_id)
-    return result
+    from automation_harness.core.repository_reconciliation import RepositoryReconciler
+    return RepositoryReconciler().reconcile(repository, target_id, source_ids)
 
 
 def _canonical_target_name(repository: ComponentRepository, source: ComponentDefinition) -> str | None:

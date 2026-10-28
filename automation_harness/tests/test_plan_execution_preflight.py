@@ -117,12 +117,12 @@ def test_execution_composition_rejects_same_name_different_uuid():
         compose_execution_repository(plan, live)
 
 
-def test_execution_composition_rejects_uuid_reuse_under_different_name():
+def test_execution_composition_accepts_uuid_reuse_under_renamed_label():
     shared_id = str(uuid4())
     live = ComponentRepository.from_document({"version": 3, "components": {"Live": _component("Live", shared_id)}})
     plan = TestPlan(name="conflict", objects={"Embedded": _component("Embedded", shared_id)})
-    with pytest.raises(ComponentRepositoryError, match="reuses live object_id"):
-        compose_execution_repository(plan, live)
+    result = compose_execution_repository(plan, live)
+    assert result.get(shared_id).component_id == "Live"
 
 
 def test_execution_composition_requires_owner_when_no_live_repository():

@@ -15,19 +15,23 @@ from automation_harness.authoring.gui.action_widgets import (
     read_action_input,
 )
 from automation_harness.authoring.gui.plan_window import TestPlanWindow, _next_node_id
+from automation_harness.authoring.gui.embedded_repository_dialog import review_embedded_repository
 from automation_harness.authoring.plan_repository import (
     assign_repositories,
     assigned_repository_path,
     load_repository_set,
-    merge_repository_or,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.step_order import insert_calls
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
+from automation_harness.core.repository_migration import (
+    prepare_embedded_migration, publish_embedded_migration,
+)
 from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
 from automation_harness.formats import REPOSITORY_SUFFIX
+from automation_harness.runner.plan_resources import resolve_plan_resources
 
 
 class TestPlanAuthoringWindow(TestPlanWindow):
@@ -35,12 +39,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
         if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
-            assigned = load_repository_set(self.plan, self.path).compose()
-            self.repository = assigned
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
 
@@ -57,7 +59,11 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         add_item("Add Object Action", self.add_object_action)
         menu.append(Gtk.SeparatorMenuItem())
         add_item("Assign Repository…", self.assign_object_repository)
-        add_item("Merge Repository…", self.merge_assign_central_repository)
+        add_item("Inspect Embedded Repository…", self.inspect_embedded_repository)
+        add_item("Migrate Embedded Objects…", self.merge_assign_central_repository,
+                 bool(self.plan.objects))
+        add_item("Export Portable Snapshot…", self.export_portable_snapshot,
+                 self.plan.execution_mode == "canonical")
         add_item(
             "Open Repository",
             self.open_assigned_repository,
@@ -80,81 +86,133 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = assigned
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_object_repository(selected)
                 save_authoring_project(self.project_context, project)
                 self.project = project
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
             return self.error("Assign Object Repository", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty()
         self.refresh_all()
         self.set_status("Assigned object repository: %s" % selected.name)
 
+    def inspect_embedded_repository(self):
+        """Inspect the plan snapshot independently of the effective repository."""
+        return review_embedded_repository(self.window, self.plan)
+
     def merge_assign_central_repository(self):
-        selected = self.choose_file(title="Merge into Central Object Repository", suffix=REPOSITORY_SUFFIX)
+        """Promote embedded definitions into the chosen repository by UUID."""
+        if self.dirty:
+            return self.info("Migrate Embedded Objects",
+                "Save your current Test Plan changes before migration.")
+        if not self.plan.objects:
+            return self.info("Migrate Embedded Objects",
+                "This plan has no embedded objects to migrate.")
+        selected = self.choose_file(title="Choose Canonical Object Repository", suffix=REPOSITORY_SUFFIX)
         if selected is None:
             return
+        selected = selected.resolve()
+        if not selected.is_file():
+            return self.error("Migrate Embedded Objects", "The destination repository does not exist.")
+        current_path = assigned_repository_path(self.plan, self.path)
+        if current_path is not None and current_path.resolve() != selected:
+            return self.error("Migrate Embedded Objects",
+                "This plan already owns an external repository (%s). Reconcile the existing "
+                "repositories first; embedded-only migration cannot safely replace that assignment."
+                % current_path)
         try:
-            selected = selected.resolve()
-            if not selected.is_file():
-                raise ValueError("central object repository does not exist")
-
-            current_path = assigned_repository_path(self.plan, self.path)
-            if current_path is not None and current_path.exists() and current_path.resolve() != selected:
-                source = ComponentRepository.load((current_path.resolve(),))
-                source_label = current_path.name
-            elif current_path is None:
-                # An older/standalone plan may have portable embedded objects
-                # without an authoring repository assignment. Those objects are
-                # its effective local OR and must not be lost during migration.
-                source = repository_from_plan(self.plan)
-                source_label = "%s embedded objects" % self.path.name
-            else:
-                source = ComponentRepository({})
-                source_label = selected.name
-
-            central = ComponentRepository.load((selected,))
-            if source.components:
-                if not self.confirm(
-                    "Merge and Assign Repository",
-                    "Merge %d object(s) from %s into %s, then make %s the Test Plan's authoring repository?\n\n"
-                    "Compatible definitions are combined as OR resolver alternatives. The source repository is not deleted."
-                    % (len(source.components), source_label, selected.name, selected.name),
-                ):
-                    return
-                central, stats = merge_repository_or(central, source)
-                central.save(selected)
-            else:
-                stats = {"added": 0, "merged": 0, "unchanged": 0}
-
-            # Assignment happens only after a successful merge/save. From this
-            # point onward recording's assigned_repository_path lookup resolves
-            # to the central file, making it the destination for new captures.
-            self.plan = assign_repositories(self.plan, self.path, (
-                RepositoryAssociation(selected, RepositoryScope.LOCAL),
-            ))
+            if repository_fingerprint(self.path) != self._loaded_plan_fingerprint:
+                raise ValueError("the plan changed on disk; reopen it before migration")
+            repository_baseline = repository_fingerprint(selected)
+            canonical = ComponentRepository.load((selected,))
+            if repository_fingerprint(selected) != repository_baseline:
+                raise ValueError("repository changed during migration inspection")
+            project_baseline = None
+            projected_project = None
+            if self.project_context:
+                project_baseline = repository_fingerprint(self.project_context)
+                projected_project = AuthoringProject.load(self.project_context)
+                if repository_fingerprint(self.project_context) != project_baseline:
+                    raise ValueError("Project changed during migration inspection")
+                projected_project = projected_project.with_object_repository(selected).with_test_plan(self.path)
+        except Exception as exc:
+            return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
+        choices = review_embedded_repository(self.window, self.plan, canonical, migrate=True)
+        if choices is None:
+            return
+        resolutions, renames, distinct = choices
+        try:
+            proposal = prepare_embedded_migration(
+                self.plan, self.path, canonical, selected,
+                resolutions=resolutions, renames=renames,
+                approved_distinct=distinct,
+            )
+        except Exception as exc:
+            return self.error("Migration Preview", "%s: %s" % (type(exc).__name__, exc))
+        if not self.confirm("Publish Canonical Migration",
+                "Migrate %d embedded object(s) into %s?\\n"
+                "%d added, %d reused. The plan will reference canonical UUIDs "
+                "and will no longer contain embedded object definitions. "
+                "Portable execution will require an explicit export/snapshot.\\n\\n"
+                "This updates both the Test Plan and its Object Repository."
+                % (len(self.plan.objects), selected.name,
+                   len(proposal.added_ids), len(proposal.reused_ids))):
+            return
+        try:
+            baselines = {
+                selected: repository_baseline,
+                self.path: self._loaded_plan_fingerprint,
+            }
+            if self.project_context:
+                baselines[self.project_context] = project_baseline
+            publish_embedded_migration(
+                proposal, repository_path=selected, plan_path=self.path,
+                expected_fingerprints=baselines,
+                project_path=self.project_context, project=projected_project,
+            )
+            self.plan = proposal.plan
+            self._loaded_plan_fingerprint = repository_fingerprint(self.path)
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = central
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
-
             if self.project_context:
-                project = AuthoringProject.load(self.project_context).with_object_repository(selected)
-                save_authoring_project(self.project_context, project)
-                self.project = project
+                self.project = projected_project
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
-            return self.error("Merge / Assign Central Repository", "%s: %s" % (type(exc).__name__, exc))
-
-        self.mark_dirty()
+            return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
+        self.mark_dirty(False)
         self.refresh_all()
-        self.set_status(
-            "Central repository assigned: %s — %d added, %d OR-merged, %d already equivalent; new recordings write here"
-            % (selected.name, stats["added"], stats["merged"], stats["unchanged"])
-        )
+        self.set_status("Migrated to canonical repository %s: %d objects imported"
+                        % (selected.name, len(proposal.added_ids)))
+
+    def export_portable_snapshot(self):
+        """Create a separate self-contained plan without changing ownership."""
+        if self.plan.execution_mode != "canonical":
+            return self.info("Export Portable Snapshot",
+                "This command exports canonical-only plans. Other plans already contain snapshots.")
+        if self.dirty:
+            return self.info("Export Portable Snapshot",
+                "Save Test Plan changes before creating a portable copy.")
+        selected = self.choose_file(title="Export Portable Plan Copy", save=True, suffix=".ahplan")
+        if selected is None:
+            return
+        selected = selected.resolve()
+        if selected == self.path:
+            return self.error("Export Portable Snapshot",
+                "Choose a different output path; the canonical plan will not be overwritten.")
+        try:
+            from automation_harness.core.reusable_step_expansion import expand_reusable_steps
+            portable = replace(self.plan, execution_mode="portable")
+            if self.reusable:
+                portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
+            expanded = expand_reusable_steps(portable, self.reusable) if self.reusable else portable
+            embedded = embed_plan_repository(expanded, self.repository)
+            portable = replace(portable, objects=embedded.objects,
+                               step_definitions=embedded.step_definitions)
+            save_plan(portable, selected)
+        except Exception as exc:
+            return self.error("Export Portable Snapshot", "%s: %s" % (type(exc).__name__, exc))
+        self.set_status("Exported portable snapshot: %s" % selected.name)
 
     def open_assigned_repository(self):
         path = assigned_repository_path(self.plan, self.path)
@@ -175,8 +233,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 self.project = project
         except Exception as exc:
             return self.error("Save Test Plan", "%s: %s" % (type(exc).__name__, exc))
+        self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.mark_dirty(False)
-        self.set_status("Saved portable test plan")
+        self.set_status("Saved canonical test plan" if self.plan.execution_mode == "canonical"
+                        else "Saved portable test plan")
 
     def add_object_action(self, component_id=None, action_id=None):
         self.refresh_objects()
@@ -277,7 +337,10 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                         raise ValueError("missing required input %s" % name)
                     continue
                 values[name] = value
-            call = replace(definition.to_step_call(_next_node_id(self.plan.steps), component_id, values), group=group)
+            canonical_object_id = self.repository.get(component_id).object_id
+            call = replace(definition.to_step_call(
+                _next_node_id(self.plan.steps), canonical_object_id, values,
+            ), group=group)
             self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1))
         except Exception as exc:
             dialog.destroy()

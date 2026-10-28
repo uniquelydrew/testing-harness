@@ -24,54 +24,24 @@ from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.reporting.artifacts import RunArtifacts
 from automation_harness.reporting.html_report import render_html_report
 from automation_harness.runner.pre_step_evidence import collect_pre_step_evidence
+from automation_harness.core.repository_preparation import RepositoryQualifier, RepositoryResolver
 
 
 def compose_execution_repository(
     plan: TestPlan, live_repository: ComponentRepository | None = None,
 ) -> ComponentRepository:
-    """Resolve legacy portable snapshots without hiding immutable-ID conflicts."""
-    if live_repository is None:
-        return repository_from_plan(plan)
-    live = live_repository.to_document()["components"]
-    merged = dict(live)
-    live_ids = {definition.object_id: name for name, definition in live_repository.components.items()}
-    for name, snapshot in plan.objects.items():
-        if not isinstance(snapshot, Mapping):
-            raise ComponentRepositoryError("embedded component %r must be a mapping" % name)
-        object_id = snapshot.get("object_id")
-        if name in live:
-            if object_id != live[name]["object_id"]:
-                raise ComponentRepositoryError(
-                    "embedded component %r has object_id %r but live repository has %r"
-                    % (name, object_id, live[name]["object_id"])
-                )
-            continue  # Live revision is authoritative for the same immutable object.
-        if object_id in live_ids:
-            raise ComponentRepositoryError(
-                "embedded component %r reuses live object_id %r owned by %r"
-                % (name, object_id, live_ids[object_id])
-            )
-        merged[name] = snapshot
-    return ComponentRepository.from_document(
-        {"version": 3, "components": merged}, source="execution repository composition",
-    )
+    """Compatibility facade for canonical linked repository preparation."""
+    return RepositoryResolver().resolve(plan, canonical_repository=live_repository).repository
 
 
 def qualify_plan(plan, *, component_repository=None, reusable_steps=None, registry=None,
                  backend_capabilities=None, allowed_step_risks=None):
     """Shared authoring/runtime plan and repository qualification contract."""
-    registry = registry or default_step_registry()
-    expanded = expand_reusable_steps(plan, reusable_steps) if reusable_steps else plan
-    components = compose_execution_repository(plan, component_repository)
-    issues = validate_plan(expanded, registry)
-    issues.extend(validate_plan_components(expanded, components))
-    if backend_capabilities is not None and allowed_step_risks is not None:
-        issues.extend(validate_plan_execution(
-            expanded, registry,
-            backend_capabilities=backend_capabilities,
-            allowed_step_risks=allowed_step_risks,
-        ))
-    return expanded, components, issues
+    prepared = RepositoryQualifier().qualify(
+        plan, canonical_repository=component_repository, reusable_steps=reusable_steps, registry=registry,
+        backend_capabilities=backend_capabilities, allowed_step_risks=allowed_step_risks,
+    )
+    return prepared.plan, prepared.repository, list(prepared.issues)
 
 
 def execute_plan(
@@ -83,6 +53,7 @@ def execute_plan(
     component_repository: ComponentRepository | None = None,
     compiled_artifact: "CompiledTest | None" = None,
     reusable_steps: Mapping[str, ReusableStepDefinition] | None = None,
+    execution_mode: str | None = None,
 ) -> RunResult:
     """Execute a validated declarative or compiled TestPlan using installed steps.
 
@@ -118,6 +89,7 @@ def execute_plan(
         steps=plan.steps,
         objects=plan.objects,
         step_definitions=plan.step_definitions,
+        execution_mode=plan.execution_mode,
     )
     try:
         runtime_plan = expand_reusable_steps(runtime_plan, reusable_steps) if reusable_steps else runtime_plan
@@ -129,13 +101,23 @@ def execute_plan(
                 reusable_step_ids=sorted(reusable_steps),
             )
         if compiled_artifact is None:
-            _, components, issues = qualify_plan(
+            prepared = RepositoryQualifier().qualify(
                 runtime_plan,
-                component_repository=component_repository,
+                canonical_repository=component_repository,
+                reusable_steps=None,
                 registry=registry,
                 backend_capabilities=backend.capabilities,
                 allowed_step_risks=backend.allowed_step_risks,
+                mode=execution_mode,
             )
+            components, issues = prepared.repository, list(prepared.issues)
+        else:
+            prepared = RepositoryQualifier().qualify(
+                runtime_plan, canonical_repository=compiled_artifact.component_repository(), registry=registry,
+                backend_capabilities=backend.capabilities, allowed_step_risks=backend.allowed_step_risks,
+                mode="portable",
+            )
+            components, issues = prepared.repository, list(prepared.issues)
     except Exception as exc:
         result.validation_errors = ["plan qualification: %s: %s" % (type(exc).__name__, exc)]
         result.exit_code = 2
@@ -144,15 +126,7 @@ def execute_plan(
                          initial_variables, registry=registry, compiled_artifact=compiled_artifact)
 
     if compiled_artifact is not None:
-        components = compiled_artifact.component_repository()
-        issues = validate_plan(runtime_plan, registry)
-        issues.extend(validate_plan_components(runtime_plan, components))
         issues.extend(compiled_artifact.validate_runtime(registry))
-        issues.extend(validate_plan_execution(
-            runtime_plan, registry,
-            backend_capabilities=backend.capabilities,
-            allowed_step_risks=backend.allowed_step_risks,
-        ))
     preflight = backend.preflight_issues()
     if issues or preflight:
         result.validation_errors = [*issues, *[f"backend preflight: {item}" for item in preflight]]
@@ -172,7 +146,10 @@ def execute_plan(
     queue = ManagedExecutionQueue(runtime_plan)
     plan_hash = _plan_hash(runtime_plan)
     catalog_hash = _catalog_hash(registry)
-    recorder.record("plan_qualified", plan_hash=plan_hash, step_catalog_hash=catalog_hash)
+    recorder.record("plan_qualified", plan_hash=plan_hash, step_catalog_hash=catalog_hash,
+                    repository_mode=("portable" if compiled_artifact is not None else (execution_mode or runtime_plan.execution_mode)),
+                    repository_fingerprint=prepared.fingerprint,
+                    repository_provenance=prepared.provenance)
     context: TestContext | None = None
 
     try:
@@ -378,6 +355,7 @@ def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, 
                 "step_catalog_hash": _catalog_hash(registry),
                 "allowed_step_risks": sorted(backend.allowed_step_risks),
                 "compiled_artifact_sha256": compiled_artifact.digest if compiled_artifact else None,
+                "repository_execution_mode": getattr(plan, "execution_mode", "linked"),
             },
             indent=2,
             sort_keys=True,
