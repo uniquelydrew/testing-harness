@@ -167,7 +167,8 @@ public final class AutomationHarnessJavaFxAgent {
             return ok(singleton("node", FxRuntime.findUnique(mapValue(request.get("identification")))));
         }
         if ("activate_window".equals(op)) {
-            return ok(FxRuntime.activateWindow(mapValue(request.get("identification"))));
+            return ok(FxRuntime.activateWindow(
+                    mapValue(request.get("identification")), stringValue(request.get("window"))));
         }
         if ("focus".equals(op)) {
             return ok(FxRuntime.focus(mapValue(request.get("identification"))));
@@ -588,14 +589,46 @@ public final class AutomationHarnessJavaFxAgent {
             });
         }
 
-        static Map<String, Object> activateWindow(final Map<String, Object> identification) throws Exception {
+        static Map<String, Object> activateWindow(
+                final Map<String, Object> identification, final String ownerTitle) throws Exception {
             return onFx(() -> {
-                NodeMatch match = unique(resolve(identification, true), identification);
-                Object owner = match.window;
-                for (int depth = 0; depth < 8 && isInstance("javafx.stage.PopupWindow", owner); depth++) {
-                    Object parent = call(owner, "getOwnerWindow");
-                    if (parent == null) break;
-                    owner = parent;
+                final Object owner;
+                if (ownerTitle != null && !ownerTitle.trim().isEmpty()) {
+                    // A Stage may exist before any child control or logical menu
+                    // has been added to its scene graph. Window preparation must
+                    // therefore not require resolution of an arbitrary child.
+                    List<Object> eligible = new ArrayList<Object>();
+                    for (Object candidate : windows()) {
+                        if (isInstance("javafx.stage.PopupWindow", candidate)
+                                || !boolCall(candidate, "isShowing", false)) {
+                            continue;
+                        }
+                        if (ownerTitle.equals(windowTitle(candidate))) {
+                            eligible.add(candidate);
+                        }
+                    }
+                    if (eligible.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "JavaFX owning window is not showing: " + ownerTitle);
+                    }
+                    if (eligible.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "JavaFX owning window is ambiguous: " + ownerTitle
+                                        + " (" + eligible.size() + " matches)");
+                    }
+                    owner = eligible.get(0);
+                } else {
+                    // Backward compatibility for unscoped legacy locators:
+                    // strict target resolution is safer than guessing a Stage.
+                    NodeMatch match = unique(resolve(identification, true), identification);
+                    Object resolvedOwner = match.window;
+                    for (int depth = 0; depth < 8
+                            && isInstance("javafx.stage.PopupWindow", resolvedOwner); depth++) {
+                        Object parent = call(resolvedOwner, "getOwnerWindow");
+                        if (parent == null) break;
+                        resolvedOwner = parent;
+                    }
+                    owner = resolvedOwner;
                 }
                 Method toFront = findMethod(owner.getClass(), "toFront");
                 Method requestFocus = findMethod(owner.getClass(), "requestFocus");

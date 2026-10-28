@@ -129,9 +129,15 @@ def test_runner_contains_no_attached_application_selector():
 
 def test_component_resolution_cannot_inject_global_application_scope():
     source = (Path(__file__).resolve().parents[1] / "core" / "component_handle.py").read_text(encoding="utf-8")
-    assert "_scoped_identification" not in source
+    # A global attached application must not overwrite durable object identity.
+    # Per-object ownership persisted in the verified OR is different: applying
+    # it to a *copy* of the locator prevents a matching ID in another window
+    # from satisfying a test without modifying the canonical strategy.
     assert "target_application" not in source
     assert "attached target" not in source
+    assert 'self.definition.scope.get("ownership")' in source
+    assert 'identity = dict(identification)' in source
+    assert 'scoped["window"] = window' in source
 
 
 def test_java_accessibility_driver_has_no_application_presence_gate():

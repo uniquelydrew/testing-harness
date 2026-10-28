@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import builtins
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from automation_harness.core.pointer_actions import click_bounds
 from automation_harness.core.interaction_preparation import (
@@ -235,6 +235,39 @@ class ComponentHandle:
         )
         return result
 
+    def _scoped_identification(
+        self, strategy_type: str, identification: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any] | None:
+        """Apply persisted owning-window scope without mutating a canonical OR.
+
+        The same scoped identity is used for preparation and *all* JavaFX
+        actions, assertions and direct resolution. A duplicated control ID in
+        a different Stage must never silently satisfy a repository reference.
+        """
+        if strategy_type != "javafx":
+            return identification
+        ownership = self.definition.scope.get("ownership")
+        window = ownership.get("window") if isinstance(ownership, Mapping) else None
+        if not isinstance(window, str) or not window.strip() or not identification:
+            return identification
+        identity = dict(identification)
+        if "mandatory" not in identity:
+            # Preserve legacy flat locators by normalizing the container
+            # before adding assistive ownership evidence.
+            legacy = {key: value for key, value in identity.items()
+                      if key not in {"assistive", "ordinal"}}
+            identity = {"mandatory": legacy, "assistive": identity.get("assistive", {})}
+        mandatory = identity.get("mandatory")
+        assistive = identity.get("assistive")
+        if isinstance(mandatory, Mapping) and mandatory.get("window") not in (None, window):
+            raise ComponentResolutionError("conflicting JavaFX window identity and ownership scope")
+        scoped = dict(assistive) if isinstance(assistive, Mapping) else {}
+        if scoped.get("window") not in (None, window):
+            raise ComponentResolutionError("conflicting JavaFX window locator and ownership scope")
+        scoped["window"] = window
+        identity["assistive"] = scoped
+        return identity
+
     def prepare_for_interaction(
         self,
         action: GuiAction | ActionType | str | dict,
@@ -297,7 +330,16 @@ class ComponentHandle:
                 driver = JavaAgentDriver(self.context)
             else:
                 driver = JavaFxBridgeDriver(self.context)
-            kwargs = {"identification": identification}
+            kwargs = {"identification": self._scoped_identification(selected.type, identification)}
+            if selected.type == "javafx":
+                # Authored ownership is independent of target locator details.
+                # This covers every JavaFX control type, including logical menus
+                # and dialog controls whose locators omit the window qualifier.
+                ownership = self.definition.scope.get("ownership")
+                if isinstance(ownership, Mapping):
+                    owner_window = ownership.get("window")
+                    if isinstance(owner_window, str) and owner_window.strip():
+                        kwargs["window"] = owner_window
 
         window = PreparationOutcome.skipped("activate_window", "not required")
         focus = PreparationOutcome.skipped("focus", "not required")
@@ -468,7 +510,9 @@ class ComponentHandle:
                     driver = JavaAgentDriver(self.context)
                 else:
                     driver = JavaFxBridgeDriver(self.context)
-                identification = strategy.options.get("identification")
+                identification = self._scoped_identification(
+                    strategy.type, strategy.options.get("identification"),
+                )
                 result = getattr(driver, method)(*args, identification=identification)
                 self.context.evidence.record(
                     "component_accessibility_operation",
@@ -487,6 +531,11 @@ class ComponentHandle:
 
     def _resolve_strategy(self, strategy_type: str, options: dict[str, Any]) -> ResolvedComponent:
         if strategy_type in {"atspi", "java_accessibility", "java_agent", "javafx"}:
+            if strategy_type == "javafx":
+                options = dict(options)
+                options["identification"] = self._scoped_identification(
+                    strategy_type, options.get("identification"),
+                )
             captured = resolve_live_capture(strategy_type, options, context=self.context)
             metadata = captured.to_dict()
             metadata["bounds"] = list(captured.bounds) if captured.bounds else None
@@ -544,7 +593,9 @@ class ComponentHandle:
         if strategy_type == "java_agent":
             return JavaAgentDriver(self.context).state(identification=options.get("identification"))
         if strategy_type == "javafx":
-            return JavaFxBridgeDriver(self.context).state(identification=options.get("identification"))
+            return JavaFxBridgeDriver(self.context).state(
+                identification=self._scoped_identification(strategy_type, options.get("identification")),
+            )
         if strategy_type == "anchored_visual":
             if self.definition.owner_object_id:
                 resolved = self._resolve_strategy(strategy_type, options)
@@ -598,7 +649,9 @@ class ComponentHandle:
         if strategy_type == "java_agent":
             return JavaAgentDriver(self.context).activate(identification=options.get("identification"))
         if strategy_type == "javafx":
-            return JavaFxBridgeDriver(self.context).activate(identification=options.get("identification"))
+            return JavaFxBridgeDriver(self.context).activate(
+                identification=self._scoped_identification(strategy_type, options.get("identification")),
+            )
         if strategy_type == "reference_inspection":
             raise UnsupportedComponentAction(
                 "reference_inspection is read-only and cannot activate UI components"
