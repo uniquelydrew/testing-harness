@@ -102,7 +102,7 @@ def test_native_identity_can_resolve_without_visual_geometry(monkeypatch):
     captured = CapturedComponent(
         name="Search", role="text field", description=None, accessible_id="search",
         application="Demo", hierarchy=(), actions=("set_text",),
-        bounds=None, state=ComponentState(present=True),
+        bounds=None, state=ComponentState(present=True), object_type=ObjectType.TEXT_FIELD,
     )
     monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: captured)
     definition = ComponentDefinition(
