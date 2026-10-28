@@ -48,7 +48,7 @@ def pytest_addoption(parser):
     group.addoption("--ah-project", default=None, metavar="PATH", help="Optional .ahproject owning the collected plans")
     group.addoption("--ah-runs-dir", default=None, metavar="PATH", help="Directory for authoritative harness run artifacts")
     group.addoption("--ah-var", action="append", default=[], metavar="NAME=VALUE", help="Override a top-level plan variable (JSON values accepted)")
-    group.addoption("--ah-repository-mode", choices=("linked", "portable", "locked"), default=None,
+    group.addoption("--ah-repository-mode", choices=("linked", "portable", "locked", "canonical"), default=None,
                     help="Override the TestPlan repository execution mode")
     group.addoption(
         "--ah-reference-mode", choices=("gui", "headless"), default="gui",

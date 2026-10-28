@@ -12,6 +12,7 @@ from automation_harness.authoring.project import AuthoringProject
 from automation_harness.authoring.step_registry import AuthoringStepRegistry
 from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.repository_reconciliation import RepositoryReconciler
+from automation_harness.core.repository_usage import project_object_usages
 from automation_harness.core.test_plan import load_plan
 from automation_harness.core.component_naming import unique_component_name
 from automation_harness.core.repository_hierarchy import (
@@ -41,6 +42,7 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self.button("Refresh", self.reload)
         self.button("Duplicate", self.duplicate_selected)
         self.button("Merge / Deduplicate", self.merge_deduplicate)
+        self.button("Find Usages", self.show_selected_usages)
         self.button("Delete Object", self.delete_selected)
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -520,13 +522,67 @@ class ObjectRepositoryWindow(ArtifactWindow):
         self.set_status("Merged %s into %s; updated %d plan(s), %d Step Registry file(s)"
                         % (source, target, len(plan_paths), len(affected_registries)))
 
+    def _selected_object_usages(self, component_id):
+        if self.project_context is None:
+            return None
+        project = AuthoringProject.load(self.project_context)
+        object_id = self.repository.get(component_id).object_id
+        return tuple(item for item in project_object_usages(project, self.path, self.repository)
+                     if item.object_id == object_id)
+
+    def show_selected_usages(self):
+        component_id = self.selected(self.tree)
+        if not component_id:
+            return self.info("Object Usages", "Select an object first.")
+        if self.project_context is None:
+            return self.info("Object Usages",
+                "Open this repository from a Project to inspect its plan and reusable-step references.")
+        try:
+            usages = self._selected_object_usages(component_id)
+        except Exception as exc:
+            return self.error("Object Usages", "%s: %s" % (type(exc).__name__, exc))
+        dialog = Gtk.Dialog(title="References to %s" % component_id, transient_for=self.window, modal=True)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(900, 470)
+        pane = dialog.get_content_area()
+        pane.set_border_width(10)
+        pane.set_spacing(6)
+        note = Gtk.Label(label="%d reference(s) found in this Project. Other Projects are not scanned."
+                         % len(usages))
+        note.set_xalign(0)
+        pane.pack_start(note, False, False, 0)
+        result = Gtk.TextView()
+        result.set_monospace(True)
+        result.set_editable(False)
+        result.get_buffer().set_text("\\n".join(
+            "%s | %s | %s | %s" % (entry.artifact.name, entry.source,
+                                   entry.invocation, entry.reference)
+            for entry in usages
+        ) or "No references in this Project.")
+        pane.pack_start(self.scrolled(result), True, True, 0)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def delete_selected(self):
         component_id = self.selected(self.tree)
         if not component_id:
             return self.info("Delete Object", "Select an object first.")
+        try:
+            usages = self._selected_object_usages(component_id)
+        except Exception as exc:
+            return self.error("Delete Object", "Cannot verify references: %s: %s"
+                              % (type(exc).__name__, exc))
+        if usages:
+            return self.error("Delete Object",
+                "%s is referenced by %d Project step(s). Reconcile or remove those "
+                "references before deleting the object. Use Find Usages for details."
+                % (component_id, len(usages)))
+        warning = ("No Project context is available; external references cannot be verified.\\n\\n"
+                   if usages is None else "")
         if not self.confirm(
             "Delete Object",
-            "Delete %s? Child objects will be reparented to its parent." % component_id,
+            warning + "Delete %s? Child objects will be reparented to its parent." % component_id,
         ):
             return
         try:

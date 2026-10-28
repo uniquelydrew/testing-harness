@@ -22,6 +22,7 @@ class ExecutionMode(str, Enum):
     LINKED = "linked"
     PORTABLE = "portable"
     LOCKED = "locked"
+    CANONICAL = "canonical"
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,11 @@ class RepositoryResolver:
         selected = ExecutionMode(mode or getattr(plan, "execution_mode", None) or ExecutionMode.LINKED.value)
         snapshot = self._snapshot_with_owners(plan, canonical_repository)
         metadata = _snapshot_metadata(plan)
-        if selected is ExecutionMode.PORTABLE or canonical_repository is None:
+        if selected is ExecutionMode.CANONICAL:
+            if canonical_repository is None:
+                raise ComponentRepositoryError("canonical execution requires an assigned external object repository")
+            effective = canonical_repository
+        elif selected is ExecutionMode.PORTABLE or canonical_repository is None:
             effective = snapshot
         else:
             effective = self._linked(snapshot, canonical_repository)

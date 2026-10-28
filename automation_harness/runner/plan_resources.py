@@ -40,5 +40,8 @@ def resolve_plan_resources(plan: TestPlan, plan_path: Path, project=None) -> Res
     # This layer discovers available canonical inputs.  The execution boundary
     # applies the plan's linked/portable/locked preference so qualification
     # failures are reported uniformly as run validation errors.
-    prepared = RepositoryResolver().resolve(plan, canonical_repository=canonical, mode="linked")
+    prepared = RepositoryResolver().resolve(
+        plan, canonical_repository=canonical,
+        mode="canonical" if plan.execution_mode == "canonical" else "linked",
+    )
     return ResolvedPlanResources(repository=prepared.repository, reusable_steps=reusable)

@@ -53,6 +53,69 @@ accessibility driver and its live environment; the current CI covers the
 headless validation and repository contracts but **does not certify** GUI
 highlighting or native recapture on RHEL 8.9.
 
+## Embedded-to-canonical migration
+
+An `.ahplan` with an `objects` map contains a real repository-shaped
+snapshot, not merely an opaque cache. The plan's **Objects** menu now exposes:
+
+1. **Inspect Embedded Repository**: inspect the embedded objects, UUIDs, types,
+   owner UUIDs, and full stored locator definitions without altering them.
+2. **Migrate Embedded Objects**: choose an existing `.ahobjects` destination,
+   review each object against that repository, and explicitly resolve any
+   name collision by mapping the source UUID to a compatible canonical UUID
+   or renaming the incoming object.
+3. **Export Portable Snapshot**: available after canonical migration; create
+   a separate portable `.ahplan` using a copy of the current canonical
+   object closure without adding embedded objects back into the canonical plan.
+
+The migration process uses these rules:
+
+- Identical UUID: retain the existing canonical object and its current name
+  and definition. A stale embedded locator is not treated as a new version.
+- UUID absent from canonical, name unique: import the object, preserving its
+  UUID, behavior, and ownership (with parent UUIDs remapped as necessary).
+- Name conflict with different UUID: fail closed until the operator explicitly
+  maps the embedded identity to a compatible canonical object or renames
+  the import. Matching names alone do **not** establish identity.
+- Identical locator strategies with different UUIDs and names: report a
+  **possible duplicate** and require an explicit mapping or distinct-import
+  approval. Candidate matching is intentionally conservative, not a proof of
+  logical equivalence; unmatched strategies do not establish distinctness.
+- Same UUID with incompatible semantic object type: block automatic migration
+  and require explicit identity review. Different snapshot revisions for the
+  same UUID are displayed side-by-side; canonical definitions remain authoritative.
+- Explicit UUID coalescence: preserve the chosen canonical UUID and combine
+  locator alternatives only after the operator resolves the conflict.
+- Step calls: rewrite recognized object reference fields to canonical UUIDs.
+  The migrated plan contains `objects: {}` and `execution_mode: canonical`.
+
+Publication stages the destination repository, plan, and owning Project
+membership (when provided), using their original file fingerprints. It
+does not delete existing recording repositories. If the plan already assigns
+a **different** external repository, migration refuses to replace that
+association: first reconcile those repositories at the Project level.
+
+`canonical` is an external-only execution mode: the plan never silently
+falls back to an embedded definition if a canonical UUID is absent. The
+assigned repository is required at execution, including with pytest and the
+CLI. Contrast with the existing `linked` mode, which can still fall back
+to portable plan definitions, and `portable`/`locked` modes.
+
+### Repository lifecycle and reverse references
+
+When an Object Repository is opened from a Project, **Find Usages** lists
+references from that Project's test plans and inline reusable steps. Deleting
+an object with a known Project reference is blocked. Repository merge
+operations reconcile affected Project plan and reusable-step references
+before committing.
+
+The reverse reference inventory is **Project-scoped**. It does not prove
+that an object is unused by other Projects, external `.ahplan` files, or
+dynamic/script-generated references. Standalone deletion explicitly warns
+that external references have not been checked. Workspaces with shared
+repositories across Projects need a workspace-wide dependency index for
+stronger deletion safety.
+
 ## Compatibility and deliberate omissions
 
 - Saved `.ahplan` files, including self-contained plans with embedded
@@ -71,11 +134,13 @@ highlighting or native recapture on RHEL 8.9.
   or a cross-process lock; unrelated writers must cooperate with these checks.
 - When another Step Registry repository owns the source UUID, the GUI refuses
   the operation rather than leaving the other repository inconsistent.
-- Runtime repository resolution supports linked, portable, and locked modes;
+- Runtime repository resolution supports linked, portable, locked, and canonical modes;
   linked uses the canonical current definition, portable uses the embedded
   snapshot, and locked requires matching snapshot provenance and content.
-  Plan saving preserves that provenance, including nested read-only locator
-  definitions transformed into ordinary portable YAML values.
+  canonical requires external definitions and has no embedded fallback.
+  Plan saving preserves snapshot provenance where snapshots are intended,
+  including nested read-only locator definitions transformed into ordinary
+  portable YAML values.
 - No historical branches are deleted or rewritten as part of this work.
 
 ## Validation

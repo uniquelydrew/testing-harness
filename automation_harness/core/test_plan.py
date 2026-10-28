@@ -38,8 +38,8 @@ def load_plan(path: Path) -> TestPlan:
         raise TestPlanError("test plan objects must be a mapping")
     if not isinstance(step_definitions, Mapping):
         raise TestPlanError("test plan step_definitions must be a mapping")
-    if execution_mode not in {"linked", "portable", "locked"}:
-        raise TestPlanError("test plan execution_mode must be 'linked', 'portable', or 'locked'")
+    if execution_mode not in {"linked", "portable", "locked", "canonical"}:
+        raise TestPlanError("test plan execution_mode must be 'linked', 'portable', 'locked', or 'canonical'")
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list):
         raise TestPlanError("test plan steps must be a list")
