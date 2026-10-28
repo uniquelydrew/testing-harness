@@ -994,6 +994,11 @@ def test_timed_out_callback_completion_releases_lease_and_allows_new_recording(m
     with __import__("pytest").raises(RuntimeError, match="callback drain timed out"):
         adapter.stop()
     assert closed == []
+    # GUI recording creates a fresh adapter for each session. The guard must
+    # apply across adapters sharing the same process-global native registry.
+    unrelated_session = AtspiRecordingAdapter(_Driver(_target()))
+    with __import__("pytest").raises(RuntimeError, match="earlier AT-SPI recording"):
+        unrelated_session.start(lambda observation: None)
     adapter._end_callback(1)
     assert closed == ["old"]
     assert adapter._lease is None

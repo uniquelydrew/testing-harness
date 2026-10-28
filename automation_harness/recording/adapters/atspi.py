@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+import weakref
 from typing import Any, Callable
 
 from automation_harness.drivers.atspi_driver import (
@@ -26,6 +27,12 @@ _STRUCTURAL_ROLES = frozenset({
 })
 _PRESENTATION_CONTAINER_ROLES = frozenset({"panel", "filler", "section", "unknown"})
 _PASSIVE_ROLES = frozenset({"label", "static", "paragraph", "icon", "image"})
+
+# Recording sessions create fresh adapters, but AT-SPI registry ownership is
+# process-global. An undrained native callback from a previous adapter must
+# block new native registration until it has released its lease.
+_PENDING_NATIVE_DRAINS = weakref.WeakSet()
+_PENDING_NATIVE_DRAINS_LOCK = threading.Lock()
 
 
 def _normalize_role(value) -> str:
@@ -329,6 +336,9 @@ class AtspiRecordingAdapter:
         # Do not start another session before the old callback drains.
         if self._lease is not None or self._active_callbacks:
             raise RuntimeError("previous AT-SPI recording callback has not safely drained")
+        with _PENDING_NATIVE_DRAINS_LOCK:
+            if any(item._lease is not None for item in tuple(_PENDING_NATIVE_DRAINS)):
+                raise RuntimeError("an earlier AT-SPI recording has not safely drained")
         self._emit = emit
         atspi_available = bool(self.driver.available)
         try:
@@ -487,6 +497,8 @@ class AtspiRecordingAdapter:
                     drained = self._active_callbacks == 0
                     if not drained and lease is not None:
                         self._lease = lease
+                        with _PENDING_NATIVE_DRAINS_LOCK:
+                            _PENDING_NATIVE_DRAINS.add(self)
                         callbacks = dict(self._active_callback_details)
                     else:
                         callbacks = {}
@@ -771,6 +783,8 @@ class AtspiRecordingAdapter:
                     self._lease = deferred_lease
                 self._diagnostic("atspi_deferred_lease_release_failed", error_type=type(exc).__name__)
             else:
+                with _PENDING_NATIVE_DRAINS_LOCK:
+                    _PENDING_NATIVE_DRAINS.discard(self)
                 self._diagnostic("atspi_deferred_lease_released")
 
     def _capture_scoped_point(self, coordinates):
