@@ -56,6 +56,7 @@ class RecaptureCandidate:
     base_revision: int
     proposed: ComponentDefinition
     comparison: Mapping[str, Any]
+    base_fingerprint: str = ""
 
 
 class ObjectCaptureService:
@@ -350,7 +351,18 @@ class ObjectCaptureService:
             revision=existing.revision + 1,
             validate_live=validate_live,
         )
-        properties = dict(proposed.properties or {})
+        # Recapture supplies new locator evidence, not a replacement for
+        # unrelated previously authored metadata or unknown ownership fields.
+        properties = dict(existing.properties or {})
+        properties.update(proposed.properties or {})
+        scope = dict(existing.scope or {})
+        for key, value in (proposed.scope or {}).items():
+            if key == "ownership" and isinstance(value, Mapping):
+                ownership = dict(scope.get("ownership") or {})
+                ownership.update({name: item for name, item in value.items() if item not in (None, "")})
+                scope[key] = ownership
+            elif value not in (None, "", (), [], {}):
+                scope[key] = value
         if any(strategy.type == "anchored_visual" for strategy in proposed.strategies):
             properties["coordinate_space"] = "normalized-owner"
             properties["locator_status"] = "ready"
@@ -368,6 +380,9 @@ class ObjectCaptureService:
             visual=existing.visual,
             subobjects=_merge_recapture_subobjects(existing.subobjects, proposed.subobjects),
             properties=properties,
+            framework=existing.framework or proposed.framework,
+            native_class=existing.native_class or proposed.native_class,
+            scope=scope,
         )
         comparison = recapture_comparison(existing, captured, proposed)
         return proposed, comparison
@@ -404,8 +419,10 @@ class ObjectCaptureService:
         validate_live: bool = True,
     ) -> RecaptureCandidate:
         """Validate a capture before presenting it for authoring review."""
+        from automation_harness.core.repository_preparation import definition_fingerprint
         current = repository.get(existing.object_id)
-        if current.revision != existing.revision:
+        if (current.revision != existing.revision or
+                definition_fingerprint(current) != definition_fingerprint(existing)):
             raise RecaptureValidationError(
                 "stale_revision", "object changed after the recapture was requested",
             )
@@ -416,7 +433,7 @@ class ObjectCaptureService:
         repository.with_component(proposed).validate_persistence()
         return RecaptureCandidate(
             existing.object_id, existing.component_id, existing.revision,
-            proposed, comparison,
+            proposed, comparison, definition_fingerprint(existing),
         )
 
     @staticmethod
@@ -424,8 +441,10 @@ class ObjectCaptureService:
         repository: ComponentRepository, candidate: RecaptureCandidate,
     ) -> ComponentRepository:
         """Refuse to apply a staged capture after the object has changed."""
+        from automation_harness.core.repository_preparation import definition_fingerprint
         current = repository.get(candidate.object_id)
-        if current.revision != candidate.base_revision:
+        if (current.revision != candidate.base_revision or not candidate.base_fingerprint or
+                definition_fingerprint(current) != candidate.base_fingerprint):
             raise RecaptureValidationError(
                 "stale_revision", "object changed while recapture was being reviewed",
             )

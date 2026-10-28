@@ -8,8 +8,11 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GObject, Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
-from automation_harness.authoring.plan_repository import merge_objects_or
+from automation_harness.authoring.project import AuthoringProject
+from automation_harness.authoring.step_registry import AuthoringStepRegistry
 from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
+from automation_harness.core.repository_reconciliation import RepositoryReconciler
+from automation_harness.core.test_plan import load_plan
 from automation_harness.core.component_naming import unique_component_name
 from automation_harness.core.repository_hierarchy import (
     authoring_parent_ids,
@@ -445,19 +448,77 @@ class ObjectRepositoryWindow(ArtifactWindow):
         keep.set_active_id(selected if selected in ids else ids[0]); duplicate.set_active(1 if len(ids) > 1 else 0)
         for label_text, widget in (("Canonical object to keep", keep), ("Duplicate / alternate object", duplicate)):
             label = Gtk.Label(label=label_text); label.set_xalign(0); box.pack_start(label, False, False, 0); box.pack_start(widget, False, False, 0)
-        note = Gtk.Label(label="The canonical object keeps its immutable ID. Locator strategies are unioned as OR alternatives; the duplicate entry is removed.")
+        note = Gtk.Label(label="The canonical UUID is preserved. All Project plans and reusable steps are reviewed and affected artifacts are updated together.")
         note.set_line_wrap(True); note.set_xalign(0); box.pack_start(note, False, False, 0)
         dialog.show_all(); response = dialog.run(); target = keep.get_active_id(); source = duplicate.get_active_id(); dialog.destroy()
         if response != Gtk.ResponseType.OK: return
         if not target or not source or target == source:
             return self.error("Merge Objects", "Choose two different objects.")
-        if not self.confirm("Merge Objects", "Merge %s into %s and remove %s?" % (source, target, source)):
-            return
+        # A repository-only merge would invalidate dependent plans and reusable
+        # steps. Refuse to guess the dependency universe without Project context.
+        if self.project_context is None:
+            return self.error("Merge Objects",
+                "Open this repository through its Project to reconcile dependent plans and reusable steps.")
         try:
-            self.repository = merge_objects_or(self.repository, target, (source,))
+            project = AuthoringProject.load(self.project_context)
+            original = self.repository.get(source)
+            plans = {}
+            baselines = {self.path: self._loaded_fingerprint}
+            for path in project.test_plans:
+                before = repository_fingerprint(path)
+                plans[str(path)] = load_plan(path)
+                if repository_fingerprint(path) != before:
+                    raise ValueError("plan changed while loading dependencies: %s" % path)
+                baselines[path] = before
+            registries = {}
+            reusable_steps = {}
+            for path in project.step_registries:
+                before = repository_fingerprint(path)
+                registry = AuthoringStepRegistry.load(path)
+                if repository_fingerprint(path) != before:
+                    raise ValueError("step registry changed while loading dependencies: %s" % path)
+                if registry.repository.resolve() != self.path.resolve():
+                    external = ComponentRepository.load((registry.repository,))
+                    if external.contains(original.object_id):
+                        raise ValueError("another Step Registry repository owns this UUID: %s" % registry.repository)
+                registries[path] = registry
+                baselines[path] = before
+                for definition in registry.steps:
+                    if definition.step_id in reusable_steps:
+                        raise ValueError("ambiguous reusable-step ID in Project: %s" % definition.step_id)
+                    reusable_steps[definition.step_id] = definition
+            reconciler = RepositoryReconciler()
+            proposal = reconciler.propose(
+                self.repository, target, (source,), plans=plans, reusable_steps=reusable_steps,
+            )
+            affected_registries = {
+                path: registry for path, registry in registries.items()
+                if any(step.step_id in proposal.updated_reusable_steps for step in registry.steps)
+            }
+            plan_paths = {key: Path(key) for key in proposal.updated_plans}
+            expected = {self.path: baselines[self.path]}
+            expected.update({path: baselines[path] for path in plan_paths.values()})
+            expected.update({path: baselines[path] for path in affected_registries})
         except Exception as exc:
             return self.error("Merge Objects", "%s: %s" % (type(exc).__name__, exc))
-        self.mark_dirty(); self.refresh(); self.set_status("Merged %s into %s using OR locator strategies" % (source, target))
+        if not self.confirm("Merge Objects",
+                "Merge %s into %s? This will immediately save the repository, %d affected plan(s), "
+                "and %d affected Step Registry file(s). Plans outside this Project are not discoverable."
+                % (source, target, len(plan_paths), len(affected_registries))):
+            return
+        try:
+            reconciler.publish(
+                proposal, repository_path=self.path, plan_paths=plan_paths,
+                step_registries=affected_registries, expected_fingerprints=expected,
+            )
+        except Exception as exc:
+            return self.error("Merge Objects", "%s: %s" % (type(exc).__name__, exc))
+        self.repository = proposal.repository
+        self._loaded_fingerprint = repository_fingerprint(self.path)
+        self.mark_dirty(False)
+        self.refresh()
+        self.set_status("Merged %s into %s; updated %d plan(s), %d Step Registry file(s)"
+                        % (source, target, len(plan_paths), len(affected_registries)))
 
     def delete_selected(self):
         component_id = self.selected(self.tree)

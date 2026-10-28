@@ -572,9 +572,23 @@ def _component_to_mapping(definition: ComponentDefinition) -> dict[str, Any]:
         payload["scope"] = dict(definition.scope)
     if definition.owner_object_id:
         payload["owner_object_id"] = definition.owner_object_id
-    return payload
+    return _plain_document_value(payload)
 
 
+def _plain_document_value(value: Any) -> Any:
+    """Convert deeply frozen execution mappings to regular YAML-safe containers.
+
+    Repository qualification intentionally uses read-only mapping proxies and
+    tuples. Persistence must not leak those runtime-only container types into
+    PyYAML or portable plan snapshots.
+    """
+    if isinstance(value, Mapping):
+        return {key: _plain_document_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_document_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_plain_document_value(item) for item in value), key=str)
+    return value
 
 
 def _normalize_object_id(value: Any, *, prefix: str) -> str:

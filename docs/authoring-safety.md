@@ -1,9 +1,9 @@
 # Repository authoring safety
 
-This document covers the focused authoring safeguards on the
-`codex/repository-authoring-safety-remediation` branch, developed against
-current `main`. It does not activate or migrate older experimental
-reconciliation behavior.
+This document covers the combined object identity and authoring safeguards on
+`codex/object-identity-authoring-safety-integration`. Canonical UUID
+identification and repository preparation coexist with optimistic save
+protection, recapture validation, and guarded graph reconciliation.
 
 ## Stale-save protection
 
@@ -58,14 +58,30 @@ highlighting or native recapture on RHEL 8.9.
 - Saved `.ahplan` files, including self-contained plans with embedded
   repository definitions, remain supported. No migration is automatic on open.
 - Shared object repositories keep their existing UUID-based schema.
-- Legacy plan-object migration and coordinated plan/repository transactions
-  from `codex/authoring-repository-reconciliation-followups` are **not**
-  imported. They need independent design and validation against current
-  plan ownership and the pytest adapter.
+- Project-scoped repository merges now migrate references in the Project's
+  persisted test plans and inline reusable steps in its Step Registries. Open
+  the repository **through its owning Project** to use Merge / Deduplicate.
+  Standalone merges are blocked because dependent artifact discovery would be
+  incomplete. The Project membership is the transaction boundary; plans and
+  registries outside that Project are not automatically discovered.
+- A changed repository, plan, or Step Registry baseline aborts reconciliation
+  without replacing a target. All affected artifact fingerprints are required
+  for publication. The transaction stages files and restores earlier files on
+  ordinary errors. It does **not** provide crash-atomic multi-file durability
+  or a cross-process lock; unrelated writers must cooperate with these checks.
+- When another Step Registry repository owns the source UUID, the GUI refuses
+  the operation rather than leaving the other repository inconsistent.
+- Runtime repository resolution supports linked, portable, and locked modes;
+  linked uses the canonical current definition, portable uses the embedded
+  snapshot, and locked requires matching snapshot provenance and content.
+  Plan saving preserves that provenance, including nested read-only locator
+  definitions transformed into ordinary portable YAML values.
 - No historical branches are deleted or rewritten as part of this work.
 
 ## Validation
 
 The Python 3.6 CI suite exercises
-`test_repository_concurrency.py` and `test_recapture_safety.py`.
+`test_repository_concurrency.py`, `test_recapture_safety.py`, and
+`test_repository_preparation.py`, including cross-plan reconciliation,
+legacy references, locked execution provenance, and stale-artifact rejection.
 Passing CI does not replace qualification on the isolated RHEL desktop.

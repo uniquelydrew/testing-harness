@@ -91,3 +91,29 @@ def test_staging_rejects_stale_starting_definition():
     newer = repository.with_component(replace(original, revision=original.revision + 1))
     with pytest.raises(RecaptureValidationError, match="changed after"):
         service.stage_recapture(newer, original, captured(), validate_live=False)
+
+
+def test_recapture_with_missing_capture_metadata_keeps_existing_ownership():
+    service, repository, original = setup()
+    original = replace(original, properties={**original.properties, "custom_annotation": "keep"})
+    repository = ComponentRepository({original.component_id: original})
+    candidate = service.stage_recapture(repository, original, captured(
+        accessible_id="save-recaptured", framework=None, native_class=None,
+        application=None, window=None,
+    ), validate_live=False)
+    updated = service.apply_recapture_candidate(repository, candidate).get(original.object_id)
+    assert updated.framework == original.framework
+    assert updated.native_class == original.native_class
+    assert updated.scope["ownership"]["application"] == original.scope["ownership"]["application"]
+    assert updated.scope["ownership"]["window"] == original.scope["ownership"]["window"]
+    assert updated.properties["custom_annotation"] == "keep"
+
+
+def test_recapture_rejects_same_revision_definition_mutation():
+    service, repository, original = setup()
+    candidate = service.stage_recapture(repository, original, captured(), validate_live=False)
+    changed = repository.with_component(replace(original, description="external edit"))
+    with pytest.raises(RecaptureValidationError, match="changed while recapture"):
+        service.apply_recapture_candidate(changed, candidate)
+    with pytest.raises(RecaptureValidationError, match="changed after"):
+        service.stage_recapture(changed, original, captured(), validate_live=False)

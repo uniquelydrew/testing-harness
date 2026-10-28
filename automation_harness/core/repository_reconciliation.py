@@ -9,7 +9,7 @@ from typing import Iterable, Mapping
 
 import yaml
 
-from automation_harness.core.component_repository import ComponentRepository
+from automation_harness.core.component_repository import ComponentRepository, RepositoryFingerprint, repository_fingerprint
 from automation_harness.models.component import ComponentDefinition
 
 
@@ -40,6 +40,10 @@ class RepositoryReconciler:
             merged = _merge(merged, source)
         result = repository.with_component(merged)
         remapped = {source.object_id: target.object_id for source in sources}
+        # Plan steps can still contain pre-UUID name references. Translate both
+        # identity forms while exposing only UUID changes in the proposal API.
+        references = dict(remapped)
+        references.update({source.component_id: target.object_id for source in sources})
         changed = {merged.component_id}
         for definition in tuple(result.components.values()):
             if definition.owner_object_id in remapped:
@@ -58,12 +62,12 @@ class RepositoryReconciler:
             result.validate_persistence()
         updated_plans = {}
         for plan_id, plan in (plans or {}).items():
-            updated = _rewrite_plan(plan, remapped, result)
+            updated = _rewrite_plan(plan, references, result)
             if updated != plan:
                 updated_plans[str(plan_id)] = updated
         updated_steps = {}
         for step_id, definition in (reusable_steps or {}).items():
-            updated_plan = _rewrite_plan(definition.plan, remapped, result)
+            updated_plan = _rewrite_plan(definition.plan, references, result)
             if updated_plan != definition.plan:
                 updated_steps[str(step_id)] = replace(definition, plan=updated_plan)
         return ReconciliationProposal(
@@ -76,18 +80,28 @@ class RepositoryReconciler:
 
     def publish(self, proposal: ReconciliationProposal, *, repository_path: Path,
                 plan_paths: Mapping[str, Path] | None = None,
-                reusable_step_paths: Mapping[str, Path] | None = None) -> None:
+                reusable_step_paths: Mapping[str, Path] | None = None,
+                step_registries: Mapping[Path, object] | None = None,
+                expected_fingerprints: Mapping[Path, RepositoryFingerprint] | None = None) -> None:
         """Publish a validated proposal as a staged, rollback-capable transaction.
 
         Every destination is rendered and fsynced before any visible replacement.
         If a replacement fails, earlier files are restored from their exact bytes.
-        Callers must provide paths for every affected dependent artifact, making
-        partial graph migrations impossible by omission.
+        Callers must provide paths for every affected dependent artifact and
+        fingerprints captured when those files were loaded. A modified artifact
+        rejects the entire proposed transaction before publication.
+
+        This is optimistic concurrency, not a cross-process lock or a crash-
+        atomic filesystem transaction. Rollback covers ordinary write failures.
         """
         plan_paths = plan_paths or {}
         reusable_step_paths = reusable_step_paths or {}
+        step_registries = step_registries or {}
+        registry_step_ids = [step.step_id for registry in step_registries.values() for step in registry.steps]
+        if len(registry_step_ids) != len(set(registry_step_ids)):
+            raise ValueError("reconciliation has ambiguous reusable step IDs across registries")
         missing_plans = set(proposal.updated_plans) - set(plan_paths)
-        missing_steps = set(proposal.updated_reusable_steps) - set(reusable_step_paths)
+        missing_steps = set(proposal.updated_reusable_steps) - set(reusable_step_paths) - set(registry_step_ids)
         if missing_plans or missing_steps:
             raise ValueError(
                 "reconciliation publication requires paths for affected artifacts: "
@@ -100,12 +114,34 @@ class RepositoryReconciler:
             repository_from_plan(plan)
             targets[Path(plan_paths[plan_id])] = yaml.safe_dump(plan.to_dict(), sort_keys=False, allow_unicode=True)
         for step_id, definition in proposal.updated_reusable_steps.items():
-            targets[Path(reusable_step_paths[step_id])] = yaml.safe_dump({
+            if step_id not in reusable_step_paths:
+                continue
+            target_path = Path(reusable_step_paths[step_id])
+            if target_path in targets:
+                raise ValueError("reconciliation has duplicate artifact destination %s" % target_path)
+            targets[target_path] = yaml.safe_dump({
                 "version": 1, "id": definition.step_id, "name": definition.name,
                 "description": definition.description, "inputs": dict(definition.inputs),
                 "outputs": dict(definition.outputs), "plan": definition.plan.to_dict(),
             }, sort_keys=False, allow_unicode=True)
-        _atomic_publish(targets)
+        # Project Step Registries contain inline reusable-step plans. Update
+        # their documents as one publication target rather than accidentally
+        # emitting independent .yaml step files beside the registry.
+        for path, registry in step_registries.items():
+            updated_steps = tuple(
+                proposal.updated_reusable_steps.get(step.step_id, step)
+                for step in registry.steps
+            )
+            if updated_steps == registry.steps:
+                continue
+            target_path = Path(path)
+            if target_path in targets:
+                raise ValueError("reconciliation has duplicate artifact destination %s" % target_path)
+            updated_registry = replace(registry, steps=updated_steps)
+            targets[target_path] = yaml.safe_dump(updated_registry.to_document(), sort_keys=False, allow_unicode=True)
+        if expected_fingerprints is None:
+            raise ValueError("reconciliation publication requires captured disk fingerprints for every artifact")
+        _atomic_publish(targets, expected_fingerprints=expected_fingerprints)
 
 
 def _rewrite_plan(plan, remapped: Mapping[str, str], repository: ComponentRepository):
@@ -140,7 +176,16 @@ def _rewrite_plan(plan, remapped: Mapping[str, str], repository: ComponentReposi
     return embed_plan_repository(rewritten, repository)
 
 
-def _atomic_publish(targets: Mapping[Path, str]) -> None:
+def _atomic_publish(targets: Mapping[Path, str], *,
+                    expected_fingerprints: Mapping[Path, RepositoryFingerprint]) -> None:
+    expected = {Path(path): value for path, value in expected_fingerprints.items()}
+    if set(expected) != set(targets):
+        raise ValueError("reconciliation requires one baseline fingerprint per target artifact")
+    # Validate all baselines before creating temporary files or replacing any
+    # artifact. Recheck immediately before each individual replacement.
+    for target in targets:
+        if repository_fingerprint(target) != expected[target]:
+            raise RuntimeError("reconciliation target changed on disk: %s" % target)
     staged = {}
     originals = {}
     replaced = []
@@ -155,6 +200,8 @@ def _atomic_publish(targets: Mapping[Path, str]) -> None:
                 os.fsync(handle.fileno())
             staged[target] = Path(temporary)
         for target, temporary in staged.items():
+            if repository_fingerprint(target) != expected[target]:
+                raise RuntimeError("reconciliation target changed on disk: %s" % target)
             os.replace(str(temporary), str(target))
             replaced.append(target)
     except Exception:

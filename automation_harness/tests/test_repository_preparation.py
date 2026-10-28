@@ -1,13 +1,17 @@
 from uuid import uuid4
 
+import yaml
+
 import pytest
 
-from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError
+from automation_harness.core.component_repository import ComponentRepository, ComponentRepositoryError, repository_fingerprint
 from automation_harness.core.repository_preparation import IdentityAssessment, RepositoryQualifier, RepositoryResolver, definition_fingerprint
 from automation_harness.core.repository_scope import OVERRIDE_PROPERTY
 from automation_harness.core.repository_reconciliation import RepositoryReconciler
+from automation_harness.authoring.step_registry import AuthoringStepRegistry, save_step_registry
+from automation_harness.core.reusable_steps import ReusableStepDefinition
 from automation_harness.core.test_plan import embed_plan_repository
-from automation_harness.core.test_plan import load_plan
+from automation_harness.core.test_plan import load_plan, save_plan
 from automation_harness.models.component import CapturedComponent, ComponentDefinition, ComponentState, ComponentStrategy
 from automation_harness.models.gui import ObjectType
 from automation_harness.models.plan import StepCall, TestPlan
@@ -148,7 +152,11 @@ def test_reconciler_publishes_repository_and_dependent_plan_together(tmp_path):
     from automation_harness.core.test_plan import save_plan
     save_plan(plan, plan_path)
 
-    RepositoryReconciler().publish(proposal, repository_path=repository_path, plan_paths={"plan": plan_path})
+    RepositoryReconciler().publish(
+        proposal, repository_path=repository_path, plan_paths={"plan": plan_path},
+        expected_fingerprints={repository_path: repository_fingerprint(repository_path),
+                               plan_path: repository_fingerprint(plan_path)},
+    )
 
     assert not ComponentRepository.load((repository_path,)).contains(duplicate.object_id)
     assert load_plan(plan_path).steps[0].inputs["component_id"] == target.object_id
@@ -158,3 +166,88 @@ def test_qualifier_returns_fingerprinted_effective_repository():
     prepared = RepositoryQualifier().qualify(TestPlan(name="empty"))
     assert prepared.issues == ()
     assert len(prepared.fingerprint) == 64
+
+def test_qualified_execution_repository_serializes_from_deeply_frozen_mappings(tmp_path):
+    definition = ComponentDefinition(**{
+        **_definition().__dict__,
+        "properties": {"nested": {"value": ["one", {"two": True}]}},
+        "scope": {"ownership": {"window": "Main"}},
+    })
+    source = ComponentRepository({definition.component_id: definition})
+    plan = embed_plan_repository(TestPlan(name="serialize", steps=(StepCall(
+        "use", "gui.object.action", {"component_id": definition.object_id, "action": {"type": "click"}},
+    ),)), source)
+    prepared = RepositoryQualifier().qualify(plan, canonical_repository=source)
+    assert prepared.issues == ()
+    payload = prepared.repository.to_document()
+    serialized = yaml.safe_dump(payload)
+    assert yaml.safe_load(serialized) == payload
+    assert ComponentRepository.from_document(yaml.safe_load(serialized)).get(definition.object_id).properties == definition.properties
+    portable = embed_plan_repository(plan, prepared.repository)
+    path = tmp_path / "portable.ahplan"
+    save_plan(portable, path)
+    loaded = load_plan(path)
+    assert loaded.step_definitions["__repository_snapshot__"]["objects"][definition.object_id]["revision"] == 1
+    assert RepositoryResolver().resolve(loaded, canonical_repository=source, mode="locked").issues == ()
+
+
+def test_reconciler_updates_legacy_name_based_plan_reference():
+    target, duplicate = _definition("Target"), _definition("Duplicate")
+    source = ComponentRepository({target.component_id: target, duplicate.component_id: duplicate})
+    plan = TestPlan(name="legacy", steps=(StepCall(
+        "use", "gui.object.action", {"component_id": "Duplicate", "action": {"type": "click"}},
+    ),), objects=source.to_document()["components"])
+    proposal = RepositoryReconciler().propose(source, target.object_id, (duplicate.object_id,), plans={"plan": plan})
+    assert proposal.updated_plans["plan"].steps[0].inputs["component_id"] == target.object_id
+
+
+def test_reconciler_refuses_stale_dependent_plan_without_changing_repository(tmp_path):
+    target, duplicate = _definition("Target"), _definition("Duplicate")
+    source = ComponentRepository({target.component_id: target, duplicate.component_id: duplicate})
+    plan = TestPlan(name="dependent", steps=(StepCall(
+        "use", "gui.object.action", {"component_id": duplicate.object_id, "action": {"type": "click"}},
+    ),), objects=source.to_document()["components"])
+    proposal = RepositoryReconciler().propose(source, target.object_id, (duplicate.object_id,), plans={"plan": plan})
+    repo_path = tmp_path / "objects.ahobjects"
+    plan_path = tmp_path / "dependent.ahplan"
+    source.save(repo_path)
+    save_plan(plan, plan_path)
+    baseline = {path: repository_fingerprint(path) for path in (repo_path, plan_path)}
+    plan_path.write_text(plan_path.read_text() + "\n# concurrent editor update\n")
+    with pytest.raises(RuntimeError, match="changed on disk"):
+        RepositoryReconciler().publish(proposal, repository_path=repo_path,
+            plan_paths={"plan": plan_path}, expected_fingerprints=baseline)
+    assert ComponentRepository.load((repo_path,)).contains(duplicate.object_id)
+    assert load_plan(plan_path).steps[0].inputs["component_id"] == duplicate.object_id
+
+def test_project_step_registry_and_plan_reconcile_in_same_publication(tmp_path):
+    target, duplicate = _definition("Target"), _definition("Duplicate")
+    source = ComponentRepository({target.component_id: target, duplicate.component_id: duplicate})
+    repo_path = tmp_path / "objects.ahobjects"
+    plan_path = tmp_path / "plan.ahplan"
+    registry_path = tmp_path / "steps.ahregistry"
+    source.save(repo_path)
+    plan = TestPlan(name="dependent", steps=(StepCall(
+        "use", "gui.object.action", {"component_id": duplicate.object_id, "action": {"type": "click"}},
+    ),), objects=source.to_document()["components"])
+    save_plan(plan, plan_path)
+    reusable = ReusableStepDefinition(
+        step_id="shared.click", name="Shared Click", description="",
+        plan=plan, inputs={}, outputs={},
+    )
+    registry = AuthoringStepRegistry("Steps", tmp_path, repo_path, (reusable,))
+    save_step_registry(registry_path, registry)
+    before = {path: repository_fingerprint(path) for path in (repo_path, plan_path, registry_path)}
+    proposal = RepositoryReconciler().propose(
+        source, target.object_id, (duplicate.object_id,),
+        plans={str(plan_path): load_plan(plan_path)}, reusable_steps={reusable.step_id: reusable},
+    )
+    assert "shared.click" in proposal.updated_reusable_steps
+    RepositoryReconciler().publish(
+        proposal, repository_path=repo_path, plan_paths={str(plan_path): plan_path},
+        step_registries={registry_path: registry}, expected_fingerprints=before,
+    )
+    assert not ComponentRepository.load((repo_path,)).contains(duplicate.object_id)
+    assert load_plan(plan_path).steps[0].inputs["component_id"] == target.object_id
+    saved_registry = AuthoringStepRegistry.load(registry_path)
+    assert saved_registry.get("shared.click").plan.steps[0].inputs["component_id"] == target.object_id

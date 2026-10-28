@@ -457,7 +457,10 @@ class TestPlanWindow(ArtifactWindow):
             portable = snapshot_reusable_dependencies(portable, self.reusable, self.repository)
         expanded = expand_reusable_steps(portable, self.reusable) if self.reusable else portable
         complete_snapshot = embed_plan_repository(expanded, self.repository)
-        portable = replace(portable, objects=complete_snapshot.objects)
+        portable = replace(
+            portable, objects=complete_snapshot.objects,
+            step_definitions=complete_snapshot.step_definitions,
+        )
         _, _, issues = qualify_plan(portable, component_repository=self.repository,
                                      reusable_steps=self.reusable, registry=self.runtime_registry)
         if issues:
