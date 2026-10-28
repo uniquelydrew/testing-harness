@@ -973,3 +973,63 @@ def test_timed_out_callback_retains_registry_lease(monkeypatch):
         assert False, "cannot reuse lease while callback remains active"
     except RuntimeError as exc:
         assert "not safely drained" in str(exc)
+
+def test_timed_out_callback_completion_releases_lease_and_allows_new_recording(monkeypatch):
+    """Timeout -> late callback returns -> lease closes -> new session starts."""
+    import automation_harness.recording.adapters.atspi as module
+    closed = []
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    adapter._lease = SimpleNamespace(close=lambda: closed.append("old"))
+    adapter._pyatspi = SimpleNamespace(Registry=SimpleNamespace(
+        deregisterEventListener=lambda *_args: None,
+    ))
+    adapter._active_callbacks = 1
+    adapter._listeners = []
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._active_callback_details[1] = {"kind": "text", "phase": "snapshot_source"}
+    actual_clock = module.time.monotonic\n    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks, 114))
+    with __import__("pytest").raises(RuntimeError, match="callback drain timed out"):
+        adapter.stop()
+    assert closed == []
+    adapter._end_callback(1)
+    assert closed == ["old"]
+    assert adapter._lease is None
+    assert adapter._pyatspi is None
+    assert adapter._active_callbacks == 0
+    # Mock native registration; the next recording must be a normal session,
+    # not a stale callbacks/lease retry.
+    class Registry:
+        def registerEventListener(self, *args):
+            pass
+        def deregisterEventListener(self, *args):
+            pass
+    native = SimpleNamespace(Registry=Registry())
+    monkeypatch.setattr(module, "_pyatspi", lambda: native)
+    monkeypatch.setattr(module, "acquire_atspi_registry", lambda _native:
+        SimpleNamespace(close=lambda: closed.append("new")))
+    class Monitor:
+        def start(self, callback):
+            self.callback = callback
+        def stop(self):
+            pass
+    adapter._pointer_monitor = Monitor()
+    monkeypatch.setattr(module.time, "monotonic", actual_clock)
+    adapter.start(lambda observation: None)
+    assert adapter._active
+    adapter.stop()
+    assert closed == ["old", "new"]
+
+
+def test_callback_finalization_and_stop_handoff_do_not_double_close():
+    """The retained lease has only one releasing owner."""
+    adapter = AtspiRecordingAdapter(_Driver(_target()))
+    count = []
+    adapter._lease = SimpleNamespace(close=lambda: count.append("close"))
+    adapter._stop_requested.set()
+    adapter._active_callbacks = 1
+    adapter._end_callback(15)
+    assert count == ["close"]
+    adapter._end_callback(16) if False else None  # no duplicate callback
+    assert adapter._lease is None

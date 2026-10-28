@@ -480,18 +480,23 @@ class AtspiRecordingAdapter:
                     pointer_worker=self._pointer_worker.snapshot(),
                 )
             try:
-                if lease is not None and self._active_callbacks == 0:
-                    self._diagnostic("atspi_stop_lease_closing")
-                    lease.close()
-                    self._diagnostic("atspi_stop_lease_closed")
-                elif lease is not None:
-                    # Never release process-global AT-SPI resources while
-                    # callbacks may still be dereferencing their sources.
-                    self._lease = lease
-                    self._diagnostic(
-                        "atspi_stop_lease_retained",
-                        callbacks=dict(self._active_callback_details),
-                    )
+                # Ownership handoff and callback completion share the same
+                # condition. Otherwise a callback could finish between the
+                # count check and retention, stranding the lease forever.
+                with self._callback_condition:
+                    drained = self._active_callbacks == 0
+                    if not drained and lease is not None:
+                        self._lease = lease
+                        callbacks = dict(self._active_callback_details)
+                    else:
+                        callbacks = {}
+                if lease is not None:
+                    if drained:
+                        self._diagnostic("atspi_stop_lease_closing")
+                        lease.close()
+                        self._diagnostic("atspi_stop_lease_closed")
+                    else:
+                        self._diagnostic("atspi_stop_lease_retained", callbacks=callbacks)
             finally:
                 self._listeners = []
                 # Preserve callback-owned state if a native callback did not
@@ -742,11 +747,31 @@ class AtspiRecordingAdapter:
                 self._active_callback_details[callback_id]["phase"] = phase
 
     def _end_callback(self, callback_id):
+        deferred_lease = None
         with self._callback_condition:
             self._active_callback_details.pop(callback_id, None)
             self._active_callbacks -= 1
             if not self._active_callbacks:
                 self._callback_condition.notify_all()
+                # stop() transfers an undrained lease into self._lease.
+                # A later callback completion reclaims it exactly once.
+                # AtspiRegistryLease.close() releases a client count but
+                # deliberately does not stop the native Registry.start loop.
+                if not self._active and self._lease is not None and self._stop_requested.is_set():
+                    deferred_lease = self._lease
+                    self._lease = None
+                    self._emit = None
+                    self._pyatspi = None
+        if deferred_lease is not None:
+            try:
+                deferred_lease.close()
+            except Exception as exc:
+                # Do not hide cleanup failures from subsequent recording.
+                with self._callback_condition:
+                    self._lease = deferred_lease
+                self._diagnostic("atspi_deferred_lease_release_failed", error_type=type(exc).__name__)
+            else:
+                self._diagnostic("atspi_deferred_lease_released")
 
     def _capture_scoped_point(self, coordinates):
         snapshot = getattr(self.driver, "capture_at_point_snapshot", None)
