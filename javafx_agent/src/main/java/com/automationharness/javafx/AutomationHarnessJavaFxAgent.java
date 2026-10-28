@@ -1,6 +1,7 @@
 package com.automationharness.javafx;
 
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -18,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermission;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -51,6 +53,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class AutomationHarnessJavaFxAgent {
     private static final String PROTOCOL = "automation-harness-javafx/1";
+    private static final String AGENT_SHA256 = loadedAgentSha256();
     private static final AtomicLong NEXT_REF = new AtomicLong(1L);
     private static final Map<Object, String> REFERENCES = Collections.synchronizedMap(new IdentityHashMap<Object, String>());
     private static final String TOKEN = UUID.randomUUID().toString();
@@ -239,6 +242,33 @@ public final class AutomationHarnessJavaFxAgent {
         return Paths.get(configured).toAbsolutePath().normalize();
     }
 
+    private static String loadedAgentSha256() {
+        // Hash the JAR actually loaded by this JVM, not the newest local
+        // build. Do not publish the JAR path or agent credentials.
+        try {
+            java.security.CodeSource source =
+                    AutomationHarnessJavaFxAgent.class.getProtectionDomain().getCodeSource();
+            if (source == null || source.getLocation() == null) return null;
+            Path path = Paths.get(source.getLocation().toURI());
+            if (!Files.isRegularFile(path)) return null;
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = Files.newInputStream(path)) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) >= 0) {
+                    if (count > 0) sha.update(buffer, 0, count);
+                }
+            }
+            StringBuilder digest = new StringBuilder();
+            for (byte value : sha.digest()) {
+                digest.append(String.format("%02x", value & 0xff));
+            }
+            return digest.toString();
+        } catch (Exception unavailable) {
+            return null;
+        }
+    }
+
     private static void writeDiscovery(Path directory, int port) throws IOException {
         Files.createDirectories(directory);
         try {
@@ -256,6 +286,7 @@ public final class AutomationHarnessJavaFxAgent {
         payload.put("port", port);
         payload.put("token", TOKEN);
         payload.put("java_version", System.getProperty("java.version"));
+        payload.put("agent_sha256", AGENT_SHA256);
         payload.put("started_at", Instant.now().toString());
         payload.put("command", System.getProperty("sun.java.command"));
 
@@ -366,6 +397,7 @@ public final class AutomationHarnessJavaFxAgent {
             payload.put("javafx_available", available);
             payload.put("java_version", System.getProperty("java.version"));
             payload.put("javafx_version", System.getProperty("javafx.version"));
+            payload.put("agent_sha256", AGENT_SHA256);
             payload.put("command", System.getProperty("sun.java.command"));
             if (available) {
                 try {
@@ -1368,11 +1400,31 @@ public final class AutomationHarnessJavaFxAgent {
             List<NodeMatch> matches = filter(allNodeMatches(), mandatory);
             List<Object> stages = new ArrayList<Object>();
             stages.add(stage("mandatory", mandatory, matches.size()));
+            // Window ownership is a hard safety constraint, not a cosmetic
+            // refinement. It must be checked even for a single mandatory
+            // match, and before ephemeral accessibility text/skin metadata.
+            // The original map insertion order is not a locator priority.
+            if (assistive.containsKey("window")) {
+                Map<String, Object> criterion = new LinkedHashMap<String, Object>();
+                criterion.put("window", assistive.get("window"));
+                matches = filter(matches, criterion);
+                stages.add(stage("assistive:window", criterion, matches.size()));
+            }
+            // Native class is a stable discriminator when multiple JavaFX
+            // controls have the same id (including logical menus and skins).
+            // Apply it before display or assistive text, which can change.
+            if (matches.size() > 1 && assistive.containsKey("class")) {
+                Map<String, Object> criterion = new LinkedHashMap<String, Object>();
+                criterion.put("class", assistive.get("class"));
+                matches = filter(matches, criterion);
+                stages.add(stage("assistive:class", criterion, matches.size()));
+            }
             for (Map.Entry<String, Object> entry : assistive.entrySet()) {
-                // Assistive criteria disambiguate a non-unique mandatory
-                // result. They must never invalidate an object that mandatory
-                // identity has already resolved uniquely; skin ancestry and
-                // layout are allowed to change between capture and playback.
+                if ("window".equals(entry.getKey()) || "class".equals(entry.getKey())) {
+                    continue;
+                }
+                // Non-authoritative assistive hints only disambiguate; never
+                // invalidate a uniquely resolved mandatory+owner identity.
                 if (matches.size() <= 1) {
                     break;
                 }
@@ -1545,15 +1597,25 @@ public final class AutomationHarnessJavaFxAgent {
         private static List<NodeMatch> allNodeMatches() throws Exception {
             List<NodeMatch> result = new ArrayList<NodeMatch>();
             for (Object window : windows()) {
+                // A closed dialog's retained scene graph must not create
+                // duplicates or satisfy current interactive object lookup.
+                if (!boolCall(window, "isShowing", false)) {
+                    continue;
+                }
                 Object scene = call(window, "getScene");
                 Object root = scene == null ? null : call(scene, "getRoot");
                 if (root == null) {
                     continue;
                 }
+                // One logical menu can be reachable from both a MenuBar and
+                // menu traversal. Count native objects, not traversal paths.
+                Map<Object, Boolean> seen = new IdentityHashMap<Object, Boolean>();
                 for (Object node : flatten(root)) {
-                    result.add(new NodeMatch(node, window));
+                    if (seen.put(node, Boolean.TRUE) == null) {
+                        result.add(new NodeMatch(node, window));
+                    }
                     if (isMenuOwner(node)) {
-                        addLogicalMenuMatches(node, window, result);
+                        addLogicalMenuMatches(node, window, result, seen);
                     }
                 }
             }
@@ -1561,11 +1623,15 @@ public final class AutomationHarnessJavaFxAgent {
         }
 
         private static void addLogicalMenuMatches(
-                Object parent, Object window, List<NodeMatch> result) throws Exception {
+                Object parent, Object window, List<NodeMatch> result,
+                Map<Object, Boolean> seen) throws Exception {
             for (Object child : menuChildrenIfPresent(parent)) {
+                if (seen.put(child, Boolean.TRUE) != null) {
+                    continue;
+                }
                 result.add(new NodeMatch(child, window));
                 if (isInstance("javafx.scene.control.Menu", child)) {
-                    addLogicalMenuMatches(child, window, result);
+                    addLogicalMenuMatches(child, window, result, seen);
                 }
             }
         }

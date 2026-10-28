@@ -15,6 +15,7 @@ from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.drivers.java_accessibility import JavaAccessibilityDriver
 from automation_harness.drivers.java_agent import JavaAgentDriver
 from automation_harness.core.object_resolution import owner_relative_bounds, resolve_live_capture
+from automation_harness.core.object_ownership import owning_window_hint
 from automation_harness.core.menu_navigation import resolve_navigation, selectors_from_navigation
 from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
 from automation_harness.drivers.anchored_visual import AnchoredVisualDriver
@@ -235,6 +236,12 @@ class ComponentHandle:
         )
         return result
 
+    def _owning_javafx_window(self) -> str | None:
+        """Derive target Stage without changing the canonical repository."""
+        return owning_window_hint(
+            self.definition, getattr(self.context, "components", None),
+        )
+
     def _scoped_identification(
         self, strategy_type: str, identification: Mapping[str, Any] | None,
     ) -> Mapping[str, Any] | None:
@@ -246,9 +253,8 @@ class ComponentHandle:
         """
         if strategy_type != "javafx":
             return identification
-        ownership = self.definition.scope.get("ownership")
-        window = ownership.get("window") if isinstance(ownership, Mapping) else None
-        if not isinstance(window, str) or not window.strip() or not identification:
+        window = self._owning_javafx_window()
+        if window is None or not identification:
             return identification
         identity = dict(identification)
         if "mandatory" not in identity:
@@ -335,11 +341,9 @@ class ComponentHandle:
                 # Authored ownership is independent of target locator details.
                 # This covers every JavaFX control type, including logical menus
                 # and dialog controls whose locators omit the window qualifier.
-                ownership = self.definition.scope.get("ownership")
-                if isinstance(ownership, Mapping):
-                    owner_window = ownership.get("window")
-                    if isinstance(owner_window, str) and owner_window.strip():
-                        kwargs["window"] = owner_window
+                owner_window = self._owning_javafx_window()
+                if owner_window is not None:
+                    kwargs["window"] = owner_window
 
         window = PreparationOutcome.skipped("activate_window", "not required")
         focus = PreparationOutcome.skipped("focus", "not required")

@@ -123,6 +123,7 @@ class JavaFxBridgeEndpoint:
     discovery_file: Path
     command: str | None = None
     java_version: str | None = None
+    agent_sha256: str | None = None
 
     def request(self, op: str, *, timeout: float = 5.0, **payload: Any) -> dict[str, Any]:
         request = {"token": self.token, "op": op}
@@ -323,6 +324,7 @@ class JavaFxBridgeDriver:
             "stages": [stage.to_dict() for stage in trace],
             "bridge_pid": endpoint.pid,
             "bridge_port": endpoint.port,
+            "agent_sha256": getattr(endpoint, "agent_sha256", None),
         }
         return ResolvedComponent(component_id=component_id, strategy="javafx", metadata=metadata)
 
@@ -377,6 +379,7 @@ class JavaFxBridgeDriver:
                     "focused": True,
                     "activation_attempts": attempts,
                     "selection": "owning_window" if window_hint else "resolved_component",
+                    "agent_sha256": getattr(endpoint, "agent_sha256", None),
                 }
             if time.monotonic() >= deadline:
                 raise RuntimeError(
@@ -748,6 +751,7 @@ def discover_javafx_endpoints(discovery_dir: Path | None = None) -> tuple[JavaFx
                 discovery_file=path,
                 command=_optional_str(payload.get("command")),
                 java_version=_optional_str(payload.get("java_version")),
+                agent_sha256=_optional_str(payload.get("agent_sha256")),
             )
             response = endpoint.request("ping", timeout=0.5)
             if response.get("javafx_available", False):

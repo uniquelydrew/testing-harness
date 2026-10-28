@@ -134,8 +134,13 @@ def test_component_resolution_cannot_inject_global_application_scope():
     # it to a *copy* of the locator prevents a matching ID in another window
     # from satisfying a test without modifying the canonical strategy.
     assert "target_application" not in source
-    assert "attached target" not in source
-    assert 'self.definition.scope.get("ownership")' in source
+    # No global application selector is introduced; canonical object ownership
+    # is the only runtime scoping source (tested behaviorally elsewhere).
+    assert "owning_window_hint(" in source
+    ownership_source = (
+        Path(__file__).resolve().parents[1] / "core" / "object_ownership.py"
+    ).read_text(encoding="utf-8")
+    assert 'scope.get("ownership")' in ownership_source
     assert 'identity = dict(identification)' in source
     assert 'scoped["window"] = window' in source
 
