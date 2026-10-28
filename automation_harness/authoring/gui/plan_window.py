@@ -32,9 +32,11 @@ from automation_harness.runner.plan_resources import resolve_plan_resources
 class TestPlanWindow(ArtifactWindow):
     title_prefix = "Automation Harness Test Plan"
 
-    def __init__(self, path, *, project_context=None, opener=None):
+    def __init__(self, path, *, project_context=None, opener=None,
+                 preloaded_plan=None, defer_repository=False):
         super().__init__(path, project_context=project_context, opener=opener)
-        self.plan = load_plan(self.path)
+        self.plan = preloaded_plan if preloaded_plan is not None else load_plan(self.path)
+        self._defer_repository_composition = bool(defer_repository)
         self._loaded_plan_fingerprint = repository_fingerprint(self.path)
         self.runtime_registry = default_step_registry()
         self.project = AuthoringProject.load(self.project_context) if self.project_context else None
@@ -121,7 +123,9 @@ class TestPlanWindow(ArtifactWindow):
         self.refresh_object_actions()
 
     def _initial_repository(self):
-        """Use the same resolver as every supported execution entry point."""
+        """Defer unsafe repository composition until legacy migration succeeds."""
+        if self._defer_repository_composition:
+            return ComponentRepository({})
         return resolve_plan_resources(self.plan, self.path, project=self.project).repository
 
     def _qualified_plan(self):
@@ -130,6 +134,8 @@ class TestPlanWindow(ArtifactWindow):
 
     def _refresh_assigned_repository(self):
         """Reload an externally edited assigned repository when its file changes."""
+        if self._defer_repository_composition:
+            return False
         path = assigned_repository_path(self.plan, self.path)
         if path is None or not path.is_file():
             return False
@@ -446,6 +452,9 @@ class TestPlanWindow(ArtifactWindow):
         return expand_reusable_steps(self.plan, self.reusable) if self.reusable else self.plan
 
     def validate(self):
+        if self._defer_repository_composition:
+            return self.error("Plan Validation",
+                "Embedded legacy objects require explicit repository migration before validation.")
         try:
             expanded, components, issues = self._qualified_plan()
         except Exception as exc: issues = ["%s: %s" % (type(exc).__name__, exc)]
@@ -482,6 +491,9 @@ class TestPlanWindow(ArtifactWindow):
         return portable
 
     def save(self):
+        if self._defer_repository_composition:
+            return self.error("Save Test Plan",
+                "Migrate embedded legacy objects before saving this plan.")
         try:
             self._save_portable_plan()
             if self.project_context:
@@ -546,6 +558,9 @@ class TestPlanWindow(ArtifactWindow):
         self.set_status("Saved %s to %s" % (name, registry_path.name))
 
     def run_test(self):
+        if self._defer_repository_composition:
+            return self.error("Run Test",
+                "Embedded legacy objects require explicit repository migration before execution.")
         try:
             expanded, components, issues = self._qualified_plan()
             if issues: return self.error("Run Test", "\n".join(issues))
