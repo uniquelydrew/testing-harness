@@ -15,6 +15,7 @@ from automation_harness.authoring.object_identity_workbench import ObjectIdentit
 from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
+from automation_harness.core.visual_projection import project_visual_target
 from automation_harness.core.object_resolution import resolve_repository_object
 from automation_harness.core.repository_hierarchy import (
     authoring_parent_ids,
@@ -431,6 +432,8 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
                 result = resolve_repository_object(
                     self.app.capture, self._repository_host.repository, definition,
                 )
+                # Semantic resolution alone must not authorize a screen overlay.
+                result = project_visual_target(result, operation="highlight")
             except Exception as exc:
                 GLib.idle_add(self._highlight_resolution_failed, generation, exc)
             else:
@@ -444,7 +447,9 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
             return False
         self.app._show_highlight(result.bounds, False)
         GLib.timeout_add(1400, self._clear_highlight)
-        self._set_status("Highlighted %s via %s" % (result.definition.component_id, result.strategy))
+        self._set_status("Highlighted %s via %s" % (
+            result.semantic.definition.component_id, result.semantic.strategy,
+        ))
         return False
 
     def _render_properties(self, node):

@@ -93,3 +93,49 @@ def test_resolved_existence_is_independent_of_visibility():
     assert resolved.observed_state("exists") is True
     assert resolved.observed_state("visible") is False
     assert resolved.observed_state("focused") is None
+
+
+def test_native_identity_can_resolve_without_visual_geometry(monkeypatch):
+    from automation_harness.core.object_resolution import ObjectResolution, resolve_repository_object
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    captured = CapturedComponent(
+        name="Search", role="text field", description=None, accessible_id="search",
+        application="Demo", hierarchy=(), actions=("set_text",),
+        bounds=None, state=ComponentState(present=True),
+    )
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: captured)
+    definition = ComponentDefinition(
+        "Search", object_type=ObjectType.TEXT_FIELD,
+        strategies=(ComponentStrategy("atspi", {"identification": {"mandatory": {"accessible_id": "search"}}}),),
+    )
+    result = resolve_repository_object(None, ComponentRepository({"Search": definition}), definition)
+    assert result.exists
+    assert result.bounds is None
+    assert result.has_visual_bounds is False
+    from automation_harness.core.visual_projection import VisualProjectionError, project_visual_target
+    with pytest.raises(VisualProjectionError, match="no verified visual"):
+        project_visual_target(result, operation="highlight")
+
+
+def test_native_semantic_type_mismatch_is_rejected(monkeypatch):
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: CapturedComponent(
+        name="Label", role="label", description=None, accessible_id="label",
+        application="Demo", hierarchy=(), actions=(), bounds=(10, 20, 20, 10),
+        state=ComponentState(present=True),
+    ))
+    definition = ComponentDefinition("ExpectedButton", object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {"identification": {"mandatory": {"accessible_id": "label"}}}),))
+    with pytest.raises(ObjectResolutionError, match="incompatible semantic type"):
+        resolve_repository_object(None, ComponentRepository({"ExpectedButton": definition}), definition)
+
+
+def test_verified_visual_projection_uses_resolved_bounds():
+    from automation_harness.core.object_resolution import ObjectResolution
+    from automation_harness.core.visual_projection import project_visual_target
+    result = ObjectResolution(definition=ComponentDefinition("Button"), bounds=(1, 2, 30, 40), strategy="atspi")
+    visual = project_visual_target(result, operation="highlight")
+    assert visual.bounds == (1, 2, 30, 40)
+    assert visual.semantic is result
