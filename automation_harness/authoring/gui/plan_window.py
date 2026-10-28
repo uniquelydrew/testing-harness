@@ -26,6 +26,7 @@ from automation_harness.core.step_registry import default_step_registry
 from automation_harness.core.test_plan import embed_plan_repository, load_plan, repository_from_plan, save_plan, validate_plan, validate_plan_components
 from automation_harness.models.plan import PlanVariableRef, StepCall
 from automation_harness.runner.plan_execution import execute_plan, compose_execution_repository, qualify_plan
+from automation_harness.runner.plan_resources import resolve_plan_resources
 
 
 class TestPlanWindow(ArtifactWindow):
@@ -40,8 +41,6 @@ class TestPlanWindow(ArtifactWindow):
         self.reusable = dict(self.registry_resources.steps) if self.registry_resources else load_snapshotted_reusable_steps(self.plan)
         self.repository = self._initial_repository()
         self._assigned_repository_token = None
-        if self.registry_resources:
-            self.repository = self.repository.overlay(self.registry_resources.repository)
 
         self.button("Save", self.save)
         self.button("Validate", self.validate)
@@ -121,12 +120,8 @@ class TestPlanWindow(ArtifactWindow):
         self.refresh_object_actions()
 
     def _initial_repository(self):
-        """Load assigned definitions before validating a legacy embedded snapshot."""
-        assigned_path = assigned_repository_path(self.plan, self.path)
-        if assigned_path is not None and assigned_path.is_file():
-            assigned, _ = load_authoring_repository(self.plan, self.path)
-            return compose_execution_repository(self.plan, assigned)
-        return repository_from_plan(self.plan)
+        """Use the same resolver as every supported execution entry point."""
+        return resolve_plan_resources(self.plan, self.path, project=self.project).repository
 
     def _qualified_plan(self):
         return qualify_plan(self.plan, component_repository=self.repository,
@@ -141,14 +136,7 @@ class TestPlanWindow(ArtifactWindow):
         token = (str(path), stat.st_mtime_ns, stat.st_size)
         if token == self._assigned_repository_token:
             return False
-        assigned, _path = load_authoring_repository(self.plan, self.path)
-        # An assigned authoring repository is the live source of truth. The
-        # repository embedded in the plan is a portable snapshot of those same
-        # objects and must not be overlaid back onto its source: doing so turns
-        # an ordinary saved plan into a duplicate-name collision on reopen.
-        self.repository = compose_execution_repository(self.plan, assigned)
-        if self.registry_resources:
-            self.repository = self.repository.overlay(self.registry_resources.repository)
+        self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         self._assigned_repository_token = token
         return True
 
@@ -536,7 +524,7 @@ class TestPlanWindow(ArtifactWindow):
             self.project = project
             self.registry_resources = load_step_registry_resources(project.step_registries)
             self.reusable = dict(self.registry_resources.steps)
-            self.repository = repository_from_plan(self.plan).overlay(self.registry_resources.repository)
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
             return self.error("Save as Reusable Step", "%s: %s" % (type(exc).__name__, exc))
         self.refresh_all()

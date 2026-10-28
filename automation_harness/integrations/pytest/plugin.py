@@ -48,6 +48,8 @@ def pytest_addoption(parser):
     group.addoption("--ah-project", default=None, metavar="PATH", help="Optional .ahproject owning the collected plans")
     group.addoption("--ah-runs-dir", default=None, metavar="PATH", help="Directory for authoritative harness run artifacts")
     group.addoption("--ah-var", action="append", default=[], metavar="NAME=VALUE", help="Override a top-level plan variable (JSON values accepted)")
+    group.addoption("--ah-repository-mode", choices=("linked", "portable", "locked"), default=None,
+                    help="Override the TestPlan repository execution mode")
     group.addoption(
         "--ah-reference-mode", choices=("gui", "headless"), default="gui",
         help="Synthetic reference backend mode",
@@ -152,6 +154,7 @@ class HarnessPlanItem(pytest.Item):
                 plan, backend, runs_dir=runs_dir,
                 variable_overrides=overrides, component_repository=resources.repository,
                 reusable_steps=resources.reusable_steps,
+                execution_mode=options.getoption("ah_repository_mode"),
             )
         except Exception as exc:
             execution_error = exc

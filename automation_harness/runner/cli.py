@@ -20,6 +20,7 @@ from automation_harness.core.test_plan import derive_execution_state, load_plan,
 from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
+from automation_harness.core.repository_preparation import compose_canonical_repositories
 from automation_harness.runner.validator import validate_bundle
 from automation_harness.runtime_paths import runtime_path
 
@@ -139,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_run.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
     plan_run.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
     plan_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
+    plan_run.add_argument("--repository-mode", choices=("linked", "portable", "locked"),
+                          help="override the TestPlan repository execution mode")
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
 
@@ -288,7 +291,9 @@ def main(argv: list[str] | None = None) -> int:
         component_repository = repository_from_plan(test_plan)
         selected_components = getattr(args, "components", None)
         if selected_components is not None:
-            component_repository = component_repository.overlay(ComponentRepository.load([selected_components.resolve()]))
+            component_repository = compose_canonical_repositories((
+                component_repository, ComponentRepository.load([selected_components.resolve()]),
+            ))
 
         if args.plan_command == "compile":
             try:
@@ -346,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
                     ComponentRepository.load([selected_components.resolve()])
                     if selected_components is not None else None
                 ),
+                execution_mode=args.repository_mode,
             )
             print(json.dumps(result.to_dict(), indent=2, default=str))
             return int(result.exit_code or 0)

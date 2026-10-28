@@ -99,6 +99,7 @@ class CompiledTest:
             steps=tuple(calls),
             objects=dict(components) if isinstance(components, Mapping) else {},
             step_definitions={},
+            execution_mode="portable",
         )
 
 

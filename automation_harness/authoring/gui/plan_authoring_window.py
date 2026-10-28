@@ -28,6 +28,7 @@ from automation_harness.core.repository_scope import RepositoryAssociation, Repo
 from automation_harness.core.reusable_step_snapshot import snapshot_reusable_dependencies
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, save_plan
 from automation_harness.formats import REPOSITORY_SUFFIX
+from automation_harness.runner.plan_resources import resolve_plan_resources
 
 
 class TestPlanAuthoringWindow(TestPlanWindow):
@@ -37,10 +38,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         super().__init__(*args, **kwargs)
         self.assigned_repository_path = assigned_repository_path(self.plan, self.path)
         if self.assigned_repository_path is not None and self.assigned_repository_path.exists():
-            assigned = load_repository_set(self.plan, self.path).compose()
-            self.repository = assigned
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         self.objects_button = self.button("Objects", self.show_objects_menu)
         self.window.show_all()
 
@@ -80,13 +78,11 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = assigned
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_object_repository(selected)
                 save_authoring_project(self.project_context, project)
                 self.project = project
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
             return self.error("Assign Object Repository", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty()
@@ -138,14 +134,11 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             ))
             self.assigned_repository_path = selected
             self._assigned_repository_token = None
-            self.repository = central
-            if self.registry_resources:
-                self.repository = self.repository.overlay(self.registry_resources.repository)
-
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_object_repository(selected)
                 save_authoring_project(self.project_context, project)
                 self.project = project
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
             return self.error("Merge / Assign Central Repository", "%s: %s" % (type(exc).__name__, exc))
 

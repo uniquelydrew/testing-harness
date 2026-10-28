@@ -14,7 +14,7 @@ from automation_harness.authoring.gui.plan_window import _decode, _encode
 from automation_harness.authoring.project import AuthoringProject
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
 from automation_harness.authoring.step_registry import load_step_registry_resources
-from automation_harness.core.test_plan import repository_from_plan
+from automation_harness.runner.plan_resources import resolve_plan_resources
 
 
 class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
@@ -217,7 +217,7 @@ class LaunchRestoringTestPlanWindow(VisualTestPlanWindow):
             self.project = project
             self.registry_resources = load_step_registry_resources(project.step_registries)
             self.reusable = dict(self.registry_resources.steps)
-            self.repository = repository_from_plan(self.plan).overlay(self.registry_resources.repository)
+            self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
             return self.error("Save Group to Registry", "%s: %s" % (type(exc).__name__, exc))
         self.refresh_all()

@@ -32,6 +32,7 @@ from automation_harness.core.logical_menu import (
     logical_menu_target_is_persisted,
 )
 from automation_harness.core.test_plan import embed_plan_repository, repository_from_plan, validate_plan_components
+from automation_harness.core.repository_preparation import compose_recording_workspace
 from automation_harness.drivers.java_agent import configured_java_recording_transports
 from automation_harness.recording import RecordingSession, interactions_to_steps
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
@@ -259,11 +260,13 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             # Only compose a distinct recording repository; reloading and
             # overlaying the assigned file onto itself adds duplicate identity
             # work at the beginning of every subsequent recording generation.
-            recording_repository = recording_repository.overlay(
-                ComponentRepository.load((existing_path,))
+            recording_repository = compose_recording_workspace(
+                recording_repository, (ComponentRepository.load((existing_path,)),)
             )
         if self.registry_resources:
-            recording_repository = recording_repository.overlay(self.registry_resources.repository)
+            recording_repository = compose_recording_workspace(
+                recording_repository, (self.registry_resources.repository,)
+            )
         session = RecordingSession(
             adapters, repository=recording_repository,
             diagnostics=bool(debug_log), debug_log=debug_log,
@@ -836,7 +839,9 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                             base_count=len(self.repository.components),
                             registry_count=len(self.registry_resources.repository.components),
                         )
-                    self.repository = self.repository.overlay(self.registry_resources.repository)
+                    self.repository = compose_recording_workspace(
+                        self.repository, (self.registry_resources.repository,)
+                    )
                     if diagnostic_session is not None:
                         diagnostic_session.diagnostic(
                             "recording_registry_overlay_finished",
