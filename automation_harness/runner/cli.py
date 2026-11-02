@@ -75,6 +75,15 @@ def _add_gtk_demo_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_test_execution_options(parser: argparse.ArgumentParser) -> None:
+    """Install the options shared by every declarative test execution path."""
+    parser.add_argument("--backend", choices=_BACKEND_CHOICES, default="live-desktop")
+    parser.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
+    parser.add_argument("--var", dest="variables", action="append", default=[], metavar="NAME=VALUE")
+    _add_reference_options(parser)
+    _add_gtk_demo_options(parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="automation-run", description="Automation harness development runner")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -145,6 +154,47 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reference_options(plan_run)
     _add_gtk_demo_options(plan_run)
 
+    # ``plan`` is the original declarative-test surface.  Keep it intact, but
+    # expose the action users perform through an explicit ``test`` noun too.
+    test = sub.add_parser("test", help="validate, inspect, compile, or execute one declarative test")
+    test_sub = test.add_subparsers(dest="test_command", required=True)
+    test_validate = test_sub.add_parser("validate", help="validate one declarative test")
+    test_validate.add_argument("path", type=Path)
+    test_validate.add_argument("--backend", choices=_BACKEND_CHOICES, help="also validate backend capabilities/risk policy")
+    test_validate.add_argument("--components", type=Path, help="additional object repository to overlay for validation")
+    _add_reference_options(test_validate)
+    _add_gtk_demo_options(test_validate)
+    test_status = test_sub.add_parser("status", help="show the initial managed queue projection")
+    test_status.add_argument("path", type=Path)
+    test_status.add_argument("--json", action="store_true")
+    test_compile = test_sub.add_parser("compile", help="compile one test into an immutable execution artifact")
+    test_compile.add_argument("path", type=Path)
+    test_compile.add_argument("--output", "-o", type=Path, required=True)
+    test_compile.add_argument("--components", type=Path, help="additional object repository to overlay before compilation")
+    test_run = test_sub.add_parser("run", help="execute one declarative test")
+    test_run.add_argument("path", type=Path)
+    test_run.add_argument("--components", type=Path, help="additional object repository to overlay for execution")
+    test_run.add_argument("--repository-mode", choices=("linked", "portable", "locked", "canonical"),
+                          help="override the TestPlan repository execution mode")
+    _add_test_execution_options(test_run)
+
+    batch = sub.add_parser("batch", help="execute selected test members of an authoring project")
+    batch_sub = batch.add_subparsers(dest="batch_command", required=True)
+    batch_run = batch_sub.add_parser("run", help="execute selected project tests in order and continue after failures")
+    batch_run.add_argument("project", type=Path, help="authoring project (.ahproject)")
+    batch_run.add_argument("plans", type=Path, nargs="+", help="one or more test-plan members to execute")
+    _add_test_execution_options(batch_run)
+
+    project = sub.add_parser("project", help="execute or inspect an authoring project")
+    project_sub = project.add_subparsers(dest="project_command", required=True)
+    project_run = project_sub.add_parser("run", help="execute every test-plan member as a durable batch")
+    project_run.add_argument("path", type=Path, help="authoring project (.ahproject)")
+    _add_test_execution_options(project_run)
+    project_history = project_sub.add_parser("history", help="show durable batch history for an authoring project")
+    project_history.add_argument("path", type=Path, help="authoring project (.ahproject)")
+    project_history.add_argument("--runs-dir", type=Path, default=_default_runs_dir())
+    project_history.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     compiled = sub.add_parser("compiled", help="inspect or execute immutable compiled test artifacts")
     compiled_sub = compiled.add_subparsers(dest="compiled_command", required=True)
     compiled_inspect = compiled_sub.add_parser("inspect", help="verify and print compiled artifact metadata")
@@ -198,6 +248,73 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _batch_payload(batch) -> dict:
+    """Return the batch record plus the aggregate fields users need to act on it."""
+    payload = batch.to_dict()
+    payload.update({"status": batch.status, "passed": batch.passed, "failed": batch.failed})
+    return payload
+
+
+def _run_project_command(args: argparse.Namespace) -> int:
+    """Execute project members through the same durable batch service as the GUI."""
+    from automation_harness.authoring.project import AuthoringProject
+    from automation_harness.authoring.project_runs import execute_project_batch, load_batches
+
+    project_path = (args.project if args.command == "batch" else args.path).resolve()
+    try:
+        project = AuthoringProject.load(project_path)
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.command == "project" and args.project_command == "history":
+        batches = load_batches(args.runs_dir.resolve(), project_path)
+        payload = [_batch_payload(batch) for batch in batches]
+        if args.json:
+            print(json.dumps(payload, indent=2, default=str))
+        elif not payload:
+            print(f"No batch history for {project.name}.")
+        else:
+            for batch in payload:
+                print(
+                    f"{batch['batch_id']} {batch['status']:<7} "
+                    f"passed={batch['passed']} failed={batch['failed']} "
+                    f"plans={len(batch['plans'])}"
+                )
+        return 0
+
+    selected = tuple(project.test_plans)
+    if args.command == "batch":
+        selected = tuple(path.resolve() for path in args.plans)
+        members = {path.resolve() for path in project.test_plans}
+        outside = [path for path in selected if path not in members]
+        if outside:
+            print(
+                "ERROR: batch plans must be members of %s: %s" %
+                (project_path, ", ".join(str(path) for path in outside)),
+                file=sys.stderr,
+            )
+            return 2
+    if not selected:
+        print(f"ERROR: project contains no test-plan members: {project_path}", file=sys.stderr)
+        return 2
+    try:
+        variable_overrides = _parse_variable_overrides(args.variables)
+        batch = execute_project_batch(
+            project,
+            project_path,
+            selected,
+            runs_dir=args.runs_dir.resolve(),
+            backend_factory=lambda: _backend(args.backend, args),
+            variable_overrides=variable_overrides,
+        )
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(_batch_payload(batch), indent=2, default=str))
+    return 0 if batch.status == "passed" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -206,6 +323,16 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "command", None) is None:
         build_parser().print_help(sys.stderr)
         return 2
+
+    # Preserve the established ``plan`` implementation as the canonical
+    # single-test engine while making the intended operation discoverable as
+    # ``automation-run test ...``.
+    if args.command == "test":
+        args.command = "plan"
+        args.plan_command = args.test_command
+
+    if args.command in ("batch", "project"):
+        return _run_project_command(args)
 
     if args.command == "compiled":
         try:

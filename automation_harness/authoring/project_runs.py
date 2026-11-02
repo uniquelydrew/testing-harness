@@ -131,7 +131,8 @@ ProgressCallback = Callable[[str, int, int, Optional[ProjectPlanRun]], None]
 
 def execute_project_batch(project, project_path: Path, plan_paths: Iterable[Path], *, runs_dir: Path,
                           progress: ProgressCallback | None = None,
-                          backend_factory=LiveDesktopBackend) -> ProjectBatchRun:
+                          backend_factory=LiveDesktopBackend,
+                          variable_overrides: Mapping[str, object] | None = None) -> ProjectBatchRun:
     """Run saved Project plans in order, retaining failures and continuing onward."""
     selected = tuple(Path(path).resolve() for path in plan_paths)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -152,6 +153,7 @@ def execute_project_batch(project, project_path: Path, plan_paths: Iterable[Path
                     plan, backend_factory(), runs_dir=Path(runs_dir),
                     component_repository=resources.repository,
                     reusable_steps=resources.reusable_steps,
+                    variable_overrides=variable_overrides,
                 )
                 record = ProjectPlanRun(
                     str(plan_path), plan.name, "passed" if result.exit_code == 0 else "failed", started, _now(),
