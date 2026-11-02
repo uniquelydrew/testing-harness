@@ -94,20 +94,27 @@ steps:
 
 The setup step is ordinary plan behavior. It may produce values used by later steps, participates in dependency ordering, appears in execution state, and is included in the evidence stream.
 
-## Register implementations with an authoring project
+## Register implementations for CLI execution
 
-```yaml
-version: 1
-name: Customer integration tests
-repository: objects.ahobjects
-script_steps:
-  - script_steps/environment_prepare.ahstep
+Load each external manifest explicitly in the process that validates or runs
+the plan. The option may be repeated:
+
+```bash
+automation-run test run ./customer-update.ahplan \
+  --backend live-desktop \
+  --script-step ./script_steps/environment_prepare.ahstep
 ```
 
-Paths are relative to the project manifest. Loading the project registers those semantic step definitions before plans are validated or executed.
+`--script-step` is also available to `automation-run plan validate`, `plan
+run`, `batch run`, and `project run`. This keeps the implementation selected
+by the invoking environment instead of persisting executable paths in an
+`.ahproject`. Version-2 authoring projects persist test-plan, reusable-step
+registry, and object-repository membership; they do not register script-step
+manifests.
 
-Project loading registers the listed manifests. Saving a self-contained plan
-embeds referenced step definitions for standalone execution.
+Plans still persist their semantic step IDs and ordinary reusable-step
+snapshots. A process that uses an external script implementation must load its
+manifest again before validating or executing that plan.
 
 ## Execution scope
 

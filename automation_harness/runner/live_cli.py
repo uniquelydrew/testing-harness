@@ -29,12 +29,22 @@ def _install_cli_policy(cli_module):
         plan = _find_subparser(parser, "plan")
         plan_validate = _find_subparser(plan, "validate")
         plan_run = _find_subparser(plan, "run")
+        test = _find_subparser(parser, "test")
+        test_validate = _find_subparser(test, "validate")
+        test_run = _find_subparser(test, "run")
+        batch = _find_subparser(parser, "batch")
+        batch_run = _find_subparser(batch, "run")
+        project = _find_subparser(parser, "project")
+        project_run = _find_subparser(project, "run")
         validate = _find_subparser(parser, "validate")
         bundle_run = _find_subparser(parser, "run")
 
         # The catalog used for validation must be the same catalog used for
         # execution, so external implementations are accepted by both paths.
-        for command in (validate, plan_validate, plan_run, bundle_run):
+        for command in (
+            validate, plan_validate, plan_run, test_validate, test_run,
+            batch_run, project_run, bundle_run,
+        ):
             if command is not None:
                 command.add_argument(
                     "--script-step",

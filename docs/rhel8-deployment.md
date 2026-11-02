@@ -65,6 +65,27 @@ AUTOMATION_HARNESS_VENV=/opt/automation-harness/venv bash bootstrap.sh
 
 The Pillow pip fallback defaults to `Pillow==8.4.0`, the final Pillow release that supports Python 3.6. An explicit deployment mirror or validated replacement version can be selected with `AUTOMATION_HARNESS_PILLOW_VERSION`.
 
+## Jenkins integration
+
+The repository includes a declarative `Jenkinsfile` and a stable dispatcher:
+
+```bash
+bash scripts/ci/jenkins.sh unit
+bash scripts/ci/jenkins.sh agents
+bash scripts/ci/jenkins.sh desktop
+```
+
+The pipeline expects Jenkins agents labeled `linux && python36` for unit
+tests, `linux && jdk11` for agent builds, and `linux && rhel8 && desktop` for
+desktop qualification. The desktop stage is disabled by default; enable the
+`RUN_DESKTOP_QUALIFICATION` build parameter only on a qualified interactive
+RHEL 8 runner. It never runs against an ordinary Linux worker.
+
+Each lane writes CI artifacts beneath `artifacts/jenkins/<lane>` unless
+`CI_ARTIFACTS_DIR` is already set. Jenkins publishes the unit and desktop JUnit
+XML plus available diagnostic artifacts, and fingerprints the built Java agent
+JARs.
+
 ## Optional declarative-plan pytest adapter
 
 The normal RHEL bootstrap **does not install the optional pytest dependency**.
