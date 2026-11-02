@@ -14,12 +14,6 @@ elif [[ -r "$ROOT_DIR/.automation-harness-env" ]]; then
 fi
 
 VENV="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
-ENTRY="$VENV/bin/automation-codex-runtime"
-
-if [[ -x "$ENTRY" ]]; then
-    exec "$ENTRY" "$@"
-fi
-
 PYTHON="$VENV/bin/python"
 if [[ -x "$PYTHON" ]]; then
     export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
