@@ -128,6 +128,8 @@ automation-reference
 automation-author
 automation-plan
 automation-javafx
+automation-java-target
+automation-codex-runtime
 ```
 
 The optional `automation-pytest` command becomes usable after installing
@@ -145,6 +147,10 @@ AT-SPI object capture and real accessibility interaction require the host system
 On RHEL 8, use `bash bootstrap.sh`; it installs the available native RPMs and
 qualifies the complete Python/GTK/AT-SPI combination. See
 [`docs/rhel8-deployment.md`](docs/rhel8-deployment.md) for exact behavior.
+
+Jenkins installations can use the checked-in `Jenkinsfile` and its stable
+`scripts/ci/jenkins.sh` launcher. The desktop qualification lane is opt-in and
+requires a suitably labeled RHEL 8 desktop agent; see the deployment guide.
 
 You can verify the installation with:
 
@@ -216,18 +222,21 @@ automation-author
 Or open an existing authoring project directly:
 
 ```bash
-automation-author --project ./project.ahproject
+automation-author ./project.ahproject
 ```
 
-An authoring project connects its object repository, run artifacts, and
-optional script-step implementations:
+An authoring project groups independently saved test plans, reusable-step
+registries, and object repositories:
 
 ```yaml
-version: 1
+version: 2
 name: Login workflow
-repository: objects.ahobjects
-script_steps:
-  - script_steps/prepare-environment.ahstep
+test_plans:
+  - login.ahplan
+step_registries:
+  - shared.ahregistry
+object_repositories:
+  - objects.ahobjects
 ```
 
 Inside the GUI, capture an object, select it in **Object Repository**, choose
@@ -252,7 +261,7 @@ The older repository-only entry point remains available for migration and
 low-level repository editing:
 
 ```bash
-automation-author --repository ./objects.ahobjects
+automation-author ./objects.ahobjects
 ```
 
 Or launch it without one and choose a repository when saving the first captured object:
@@ -1149,10 +1158,10 @@ Object Capture is the mechanism for converting a live Linux desktop accessibilit
 
 The capture service is available through the local authoring GUI.
 
-For focused tools, launch the Object Capture or Object Repository workflow from the authoring application:
+For focused tools, open an Object Repository directly:
 
 ```bash
-automation-author --repository ./objects.ahobjects
+automation-author ./objects.ahobjects
 ```
 
 The repository launcher lets you inspect and edit the selected component as JSON; it validates the definition before saving it back to the supplied YAML repository.
@@ -1160,7 +1169,7 @@ The repository launcher lets you inspect and edit the selected component as JSON
 ## Launch with an editable repository
 
 ```bash
-automation-author --repository ./objects.ahobjects
+automation-author ./objects.ahobjects
 ```
 
 The Object Repository panel shows the current logical objects. The capture tools inspect live AT-SPI objects and can save them into the selected repository.
@@ -1447,7 +1456,7 @@ before it can become a plan step.
 Launch:
 
 ```bash
-automation-author --repository ./objects.ahobjects
+automation-author ./objects.ahobjects
 ```
 
 The GUI currently exposes the same underlying repositories, Step Registry, and TestPlan model used by the CLI.
@@ -1740,6 +1749,32 @@ automation-run plan run ./test.ahplan \
   --backend reference \
   --reference-mode headless
 ```
+
+## Execution scopes
+
+`plan` remains the original declarative-test command family. The following
+explicit command families make the execution scope visible in scripts and CI:
+
+```bash
+# One declarative test (the test commands mirror plan validate/status/compile/run).
+automation-run test run ./tests/login.ahplan --backend live-desktop
+
+# Selected test-plan members of one project; failures are recorded and later
+# selected plans still run.
+automation-run batch run ./app.ahproject ./tests/login.ahplan ./tests/logout.ahplan \
+  --backend live-desktop
+
+# Every test-plan member of a project, persisted as one durable batch.
+automation-run project run ./app.ahproject --backend live-desktop
+
+# Inspect the persisted project-batch history.
+automation-run project history ./app.ahproject --json
+```
+
+`batch run` rejects plans that are not project members. Both batch commands
+emit JSON with the batch status, per-test result, and run artifact location.
+They continue after a test failure and return a nonzero exit status if any test
+in the batch fails.
 
 ---
 
@@ -2041,6 +2076,42 @@ automation-run plan run ./test.ahplan --backend reference
 automation-run plan run ./test.ahplan --backend reference --components ./objects.ahobjects
 
 automation-run plan run ./test.ahplan --backend reference --var track_id='"alpha"'
+
+# Explicit execution scopes
+automation-run test validate ./test.ahplan --backend reference
+
+automation-run test status ./test.ahplan --json
+
+automation-run test compile ./test.ahplan --output ./test.compiled.json
+
+automation-run test run ./test.ahplan --backend reference
+
+automation-run batch run ./project.ahproject ./test.ahplan --backend reference
+
+automation-run project run ./project.ahproject --backend reference
+
+automation-run project history ./project.ahproject --json
+```
+
+## Compiled tests
+
+```bash
+automation-run compiled inspect ./test.compiled.json
+
+automation-run compiled run ./test.compiled.json --backend reference
+```
+
+## Visual baselines
+
+```bash
+automation-run visual stage ./objects.ahobjects login.submit \
+  --bounds 10,20,120,32
+
+automation-run visual status ./objects.ahobjects login.submit
+
+automation-run visual approve ./objects.ahobjects login.submit <variant-key>
+
+automation-run visual reject ./objects.ahobjects login.submit <variant-key>
 ```
 
 ## Optional pytest plan collection
@@ -2073,7 +2144,7 @@ automation-run run ./bundle --backend reference
 ```bash
 automation-author
 
-automation-author --repository ./objects.ahobjects
+automation-author ./objects.ahobjects
 ```
 
 GUI construction smoke test:
@@ -2089,6 +2160,19 @@ automation-reference
 ```
 
 Normal reference execution is generally started through `automation-run` so backend lifecycle, evidence, and environment setup remain coordinated.
+
+## Java targets and Codex runtime
+
+```bash
+automation-java-target --agent swing -- java -jar ./target-app.jar
+
+automation-java-target --agent javafx -- java -jar ./target-app.jar
+
+automation-javafx status
+```
+
+For the detached authoring-runtime commands, see
+[`docs/codex-runtime.md`](docs/codex-runtime.md).
 
 ---
 

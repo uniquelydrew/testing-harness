@@ -32,7 +32,7 @@ would bypass the runtime handoff and monitoring contract.
 Arguments after `--` are forwarded to `automation-author`:
 
 ```bash
-automation-codex-runtime launch -- --repository ./objects.ahobjects
+automation-codex-runtime launch -- ./objects.ahobjects
 ```
 
 ## Codex contract

@@ -33,9 +33,10 @@ automation-run plan run test.ahplan \
   --components objects.ahobjects
 ```
 
-Script-step manifests used by the authoring project are registered when the
-project is loaded. A self-contained saved plan embeds the object and step
-definitions it needs; `--components` is only an overlay.
+Load an external script-step manifest explicitly with the relevant
+`automation-run` command's `--script-step` option; version-2 authoring projects do not persist script-step
+manifest paths. A self-contained saved plan embeds its object and reusable-step
+definitions; `--components` is only an overlay.
 
 Self-contained plans can be executed directly. The longer
 `automation-run plan run` spelling remains supported:
@@ -68,7 +69,7 @@ Inside `automation-author`, **Run Test** executes the same plan against the curr
 
 Application names may be used as object-level locator properties where they improve identity. They are not test-level execution scope. A single test may therefore interact with objects owned by multiple applications without declaring any global application selector.
 
-Authoring project documents persist repository/run paths and optional `script_steps` manifests only. Environment preparation belongs in the plan.
+Authoring project documents persist test-plan, step-registry, and object-repository membership. Environment preparation belongs in the plan.
 
 See `docs/script-backed-steps.md` for the script protocol and manifest contract.
 
