@@ -54,6 +54,7 @@ def execute_plan(
     compiled_artifact: "CompiledTest | None" = None,
     reusable_steps: Mapping[str, ReusableStepDefinition] | None = None,
     execution_mode: str | None = None,
+    source_plan_path: Path | None = None,
 ) -> RunResult:
     """Execute a validated declarative or compiled TestPlan using installed steps.
 
@@ -67,6 +68,7 @@ def execute_plan(
         run_id=artifacts.root.name,
         backend=backend.name,
         bundle=plan.name,
+        source_plan_path=str(Path(source_plan_path).resolve()) if source_plan_path is not None else None,
         started_at=utc_now(),
         artifact_dir=artifacts.root,
     )
@@ -202,6 +204,16 @@ def execute_plan(
             setattr(context, "execution_node_id", node_id)
             try:
                 with context.execution_scope(call.scope):
+                    # The target's owning window must be ready before evidence
+                    # capture, otherwise a screenshot may show an occluding
+                    # harness window even though dispatch later succeeds.
+                    prepared = context.prepare_gui_step(definition.name, resolved_inputs)
+                    if prepared is not None:
+                        recorder.record(
+                            "step_window_prepared",
+                            node_id=node_id,
+                            preparation=prepared.to_dict(),
+                        )
                     # Evidence is observational: capture before invocation and never
                     # let a collector failure change execution or assertion results.
                     try:
@@ -342,6 +354,14 @@ def _finalize(plan, backend, result, artifacts, recorder, initial_variables, *, 
     result.finished_at = utc_now()
     recorder.record("plan_run_finished", exit_code=result.exit_code)
     artifacts.write_run_json(result.to_dict())
+    # Snapshot labels at execution time: later edits must not rewrite historic reports.
+    labels = {
+        step.node_id: {"name": step.name or step.description or step.step_id, "step_id": step.step_id}
+        for step in plan.steps
+    }
+    (artifacts.root / "step_labels.json").write_text(
+        json.dumps(labels, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     mode = "compiled-test" if compiled_artifact is not None else "declarative-plan"
     artifacts.environment.write_text(
         json.dumps(

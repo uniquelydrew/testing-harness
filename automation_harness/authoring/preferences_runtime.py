@@ -20,7 +20,7 @@ from automation_harness.runtime_paths import ensure_external_runtime_path, runti
 
 
 _PREFERENCES_VERSION = 1
-_RUN_SETTLE_DELAY_MS = 350
+RUN_SETTLE_DELAY_MS = 350
 
 
 def preferences_path():
@@ -169,6 +169,24 @@ def _restore_harness_windows(app_instance):
         try:
             primary.present()
         except Exception:
+            pass
+        # present() requests activation but some X11 window managers retain
+        # foreground ownership after deiconify. Explicitly request the
+        # harness's known native XID without clicking an application control.
+        # The call is asynchronous and cannot delay report rendering.
+        try:
+            if os.environ.get("DISPLAY"):
+                from gi.repository import GdkX11
+                from automation_harness.drivers.x11_foreground import request_window_activation
+                native = primary.get_window()
+                if native is not None:
+                    xid = GdkX11.X11Window.get_xid(native)
+                    if xid:
+                        request_window_activation(int(xid))
+        except Exception:
+            # Platform/WM-dependent focus requests are best-effort. The report
+            # has already been loaded and must remain inspectable even when
+            # the desktop refuses foreground activation.
             pass
 
 
@@ -352,7 +370,7 @@ def install(app_module):
             ).start()
             return False
 
-        GLib.timeout_add(_RUN_SETTLE_DELAY_MS, start_worker)
+        GLib.timeout_add(RUN_SETTLE_DELAY_MS, start_worker)
 
     def present_result(self, result):
         _restore_harness_windows(self)

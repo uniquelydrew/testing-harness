@@ -73,12 +73,23 @@ def test_window_close_is_semantic_not_pointer_or_focus(kind, monkeypatch):
                         lambda _self, label, method, *args, **kwargs:
                         called.append((label, method, args, kwargs))
                         or {"closed": True, "window": "Advanced Details"})
+    class NativeWindow:
+        def __init__(self, _ctx):
+            pass
+        def activate_window(self, **kwargs):
+            called.append(("activate_window", kwargs))
+            return {"window": "Advanced Details", "focused": True}
+    monkeypatch.setattr(
+        "automation_harness.core.component_handle.JavaFxBridgeDriver", NativeWindow,
+    )
     preparation = preparation_requirement(ActionType.CLOSE, object_type=kind)
-    assert not preparation.activate_window
+    assert preparation.activate_window
+    assert preparation.require_window_activation
     assert not preparation.request_focus
     result = handle.execute("close")
     assert result.result["closed"] is True
-    assert called == [("close window", "close_window", (), {"fail_closed": True})]
+    assert called[0][0] == "activate_window"
+    assert called[1:] == [("close window", "close_window", (), {"fail_closed": True})]
 
 
 def test_javafx_close_uses_unique_explicit_stage_without_resolving_child():

@@ -1,25 +1,22 @@
-"""Test Plan workflow additions for visual matching and unobstructed execution."""
+"""Test Plan visual matching and action authoring; execution is inherited."""
 from __future__ import annotations
 
-import threading
 from dataclasses import replace
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+from gi.repository import Gtk
 
 from automation_harness.steps import visual_assert_steps as _visual_assert_steps  # noqa: F401
 from automation_harness.authoring.action_catalog import action_by_id, actions_for
+from automation_harness.authoring.step_naming import default_step_name
 from automation_harness.authoring.gui.action_widgets import create_action_input_widget, read_action_input
 from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.gui.plan_recording_window import RecordingTestPlanWindow
 from automation_harness.authoring.gui.plan_window import _next_node_id
-from automation_harness.authoring.preferences_runtime import AuthoringPreferences
 from automation_harness.authoring.visual_match_assets import import_visual_match
-from automation_harness.runner.plan_execution import execute_plan
-from automation_harness.backends.live_desktop import LiveDesktopBackend
-from automation_harness.core.test_plan import validate_plan, validate_plan_components
+from automation_harness.core.test_plan import validate_plan_components
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.plan import StepCall
 from automation_harness.models.gui import GuiAction
@@ -253,6 +250,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                             "minimum_match_percentage": float(match_percentage.get_value()),
                         },
                         group=group,
+                        name=default_step_name("Assert Match", component.component_id, component.object_type),
                     )
                     description = "Assert Match"
                 else:
@@ -267,7 +265,10 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                                 values[name] = item.default
                             continue
                         values[name] = value
-                    call = replace(action.to_step_call(node_id, canonical_id, values), group=group)
+                    call = replace(action.to_step_call(
+                        node_id, canonical_id, values,
+                        object_label=component.component_id, object_type=component.object_type,
+                    ), group=group)
                     if call.step_id == "gui.object.action":
                         GuiAction.from_value(call.inputs["action"])
                     description = action.name
@@ -293,25 +294,3 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
         self.refresh_all()
         self.set_status("Added %s on %s" % (added_description, added))
 
-    def run_test(self):
-        try:
-            expanded = self._expanded(); issues = validate_plan(expanded, self.runtime_registry); issues.extend(validate_plan_components(expanded, self.repository))
-            if issues: return self.error("Run Test", "\n".join(issues))
-            prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
-        self.run_button.set_sensitive(False); self.set_status("Running test…")
-        # All authoring toplevels belong to this GTK process; the application
-        # under test is external. Clear every harness window from its surface.
-        for window in Gtk.Window.list_toplevels():
-            if window.get_visible():
-                window.iconify()
-        plan = self.plan; reusable = dict(self.reusable); repository = self.repository
-        def worker():
-            try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable)
-            except Exception as exc: GLib.idle_add(self._run_finished, None, exc); return
-            GLib.idle_add(self._run_finished, result, None)
-        GLib.timeout_add(175, lambda: (threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start() or False))
-
-    def _run_finished(self, result, error):
-        self.window.deiconify(); self.window.present()
-        return super()._run_finished(result, error)

@@ -154,6 +154,7 @@ def execute_project_batch(project, project_path: Path, plan_paths: Iterable[Path
                     component_repository=resources.repository,
                     reusable_steps=resources.reusable_steps,
                     variable_overrides=variable_overrides,
+                    source_plan_path=plan_path,
                 )
                 record = ProjectPlanRun(
                     str(plan_path), plan.name, "passed" if result.exit_code == 0 else "failed", started, _now(),

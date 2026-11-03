@@ -31,10 +31,10 @@ def test_text_actions_require_verified_component_focus():
     assert requirement.require_focus
 
 
-def test_semantic_activation_attempts_focus_without_requiring_focusability():
+def test_semantic_activation_raises_owner_without_focusing_child():
     requirement = preparation_requirement(ActionType.ACTIVATE)
     assert requirement.activate_window
-    assert requirement.request_focus
+    assert not requirement.request_focus
     assert not requirement.require_focus
 
 

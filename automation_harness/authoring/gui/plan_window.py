@@ -13,7 +13,12 @@ from gi.repository import Gdk, GLib, Gtk
 from automation_harness.authoring.action_catalog import actions_for
 from automation_harness.authoring.step_order import insert_calls, reorder_calls, StepOrderError
 from automation_harness.authoring.gui.common import ArtifactWindow
-from automation_harness.authoring.preferences_runtime import AuthoringPreferences
+from automation_harness.authoring.gui.result_report_viewer import ResultReportViewer
+from automation_harness.reporting.run_reports import list_plan_reports
+from automation_harness.authoring.preferences_runtime import (
+    AuthoringPreferences, RUN_SETTLE_DELAY_MS,
+    _suspend_harness_windows, _restore_harness_windows,
+)
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
 from automation_harness.authoring.plan_repository import assigned_repository_path, load_authoring_repository
@@ -46,8 +51,10 @@ class TestPlanWindow(ArtifactWindow):
         self.button("Save", self.save)
         self.button("Validate", self.validate)
         self.run_button = self.button("Run Test", self.run_test)
+        self.plan_notebook = Gtk.Notebook()
+        self.root.pack_start(self.plan_notebook, True, True, 0)
         content = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.root.pack_start(content, True, True, 0)
+        self.plan_notebook.append_page(content, Gtk.Label(label="Test Plan"))
         self._build_library(content)
         center_right = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         content.pack2(center_right, resize=True, shrink=False)
@@ -56,7 +63,67 @@ class TestPlanWindow(ArtifactWindow):
         content.set_position(320); center_right.set_position(610)
 
         self._build_variables()
+        self._build_results_page()
         self.refresh_all()
+        self.refresh_run_reports()
+
+    def _build_results_page(self):
+        outer = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.plan_notebook.append_page(outer, Gtk.Label(label="Results"))
+        history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        history.set_border_width(8)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.pack_start(Gtk.Label(label="RUN HISTORY", xalign=0), True, True, 0)
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked", lambda *_args: self.refresh_run_reports())
+        controls.pack_start(refresh, False, False, 0)
+        history.pack_start(controls, False, False, 0)
+        self.report_tree, self.report_store = self.list_tree((
+            ("Started", 190), ("Result", 90), ("Passed", 60), ("Failed", 60),
+        ))
+        self.report_tree.get_selection().connect("changed", lambda *_args: self._show_selected_report())
+        history.pack_start(self.scrolled(self.report_tree), True, True, 0)
+        outer.pack1(history, resize=False, shrink=False)
+        self.report_viewer = ResultReportViewer(parent_window=self.window)
+        outer.pack2(self.report_viewer, resize=True, shrink=False)
+        outer.set_position(390)
+        self._report_runs = []
+        self.plan_notebook.connect(
+            "switch-page",
+            lambda _notebook, _page, index: self.refresh_run_reports() if index == 1 else None,
+        )
+
+    def refresh_run_reports(self, *, preferred_id=None):
+        previous = preferred_id or (
+            self.report_viewer.report.run_id if self.report_viewer.report else None
+        )
+        runs_dir = AuthoringPreferences.load().resolved_runs_dir(self.project)
+        try:
+            self._report_runs = list(list_plan_reports(runs_dir, self.path, self.plan.name))
+        except (OSError, ValueError) as exc:
+            self._report_runs = []
+            self.set_status("Unable to read run history: %s" % exc)
+        self.report_store.clear()
+        for report in self._report_runs:
+            self.report_store.append((
+                report.started_at, report.status, str(report.passed), str(report.failed),
+            ))
+        if self._report_runs:
+            index = next(
+                (i for i, report in enumerate(self._report_runs) if report.run_id == previous), 0,
+            )
+            self.report_tree.get_selection().select_path(index)
+        else:
+            self.report_viewer.set_report(None)
+
+    def _show_selected_report(self):
+        model, iterator = self.report_tree.get_selection().get_selected()
+        if iterator is None:
+            self.report_viewer.set_report(None)
+            return
+        index = model.get_path(iterator).get_indices()[0]
+        if index < len(self._report_runs):
+            self.report_viewer.set_report(self._report_runs[index])
 
     def _build_library(self, parent):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -380,7 +447,10 @@ class TestPlanWindow(ArtifactWindow):
         if configured is None: return
         inputs, outputs = configured
         group = self.ask_text("Insert Registry Step", "Composed step/group:", definition.name) or definition.name
-        call = StepCall(_next_node_id(self.plan.steps), step_id, inputs=inputs, outputs=outputs, group=group)
+        call = StepCall(
+            _next_node_id(self.plan.steps), step_id, inputs=inputs, outputs=outputs,
+            group=group, name=definition.name,
+        )
         self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1)); self.mark_dirty(); self.refresh_all()
 
     def _configure_contract(self, definition):
@@ -547,23 +617,40 @@ class TestPlanWindow(ArtifactWindow):
 
     def run_test(self):
         try:
+            # Project Manager resolves its repository from disk for each run.
+            # Refresh an externally edited assigned repository here as well,
+            # before composing the qualified execution repository.
+            self._refresh_assigned_repository()
             expanded, components, issues = self._qualified_plan()
             if issues: return self.error("Run Test", "\n".join(issues))
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
         self.run_button.set_sensitive(False); self.set_status("Running test…")
+        _suspend_harness_windows(self, Gtk, Gdk)
         plan = self.plan; reusable = dict(self.reusable); repository = components
         def worker():
-            try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable)
+            try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable, source_plan_path=self.path)
             except Exception as exc: GLib.idle_add(self._run_finished, None, exc); return
             GLib.idle_add(self._run_finished, result, None)
-        threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start()
+        def start_worker():
+            threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start()
+            return False
+        GLib.timeout_add(RUN_SETTLE_DELAY_MS, start_worker)
 
     def _run_finished(self, result, error):
         self.run_button.set_sensitive(True)
-        if error is not None: self.set_status("Run failed"); self.error("Run Test", "%s: %s" % (type(error).__name__, error)); return False
-        self.set_status("Run %s" % ("passed" if result.exit_code == 0 else "failed")); message = "Passed: %s\nFailed: %s\nArtifacts: %s" % (result.passed, result.failed, result.artifact_dir)
-        (self.info if result.exit_code == 0 else self.error)("Run Test", message); return False
+        if result is not None:
+            self.refresh_run_reports(preferred_id=result.run_id)
+            self.plan_notebook.set_current_page(1)
+        _restore_harness_windows(self)
+        if error is not None:
+            self.set_status("Run failed")
+            self.error("Run Test", "%s: %s" % (type(error).__name__, error))
+            return False
+        self.set_status("Run %s: %d passed, %d failed" % (
+            "passed" if result.exit_code == 0 else "failed", result.passed, result.failed,
+        ))
+        return False
 
 
 def _next_node_id(steps):

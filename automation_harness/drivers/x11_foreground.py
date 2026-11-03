@@ -15,10 +15,23 @@ class X11ActivationError(RuntimeError):
     pass
 
 
+class X11WindowNotFound(X11ActivationError):
+    """No EWMH-managed window exposes this exact native identity."""
+
+
+class X11WindowIdentityConflict(X11ActivationError):
+    """The requested title is registered to a different native process."""
+
+
+class X11WindowAmbiguous(X11ActivationError):
+    """More than one EWMH-managed window matches the identity."""
+
+
 def _xprop(*args: str) -> str:
     try:
         result = subprocess.run(
-            ["xprop", *args], capture_output=True, text=True, timeout=2, check=True,
+            ["xprop", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=2, check=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise X11ActivationError("Unable to query X11 properties: %s" % exc) from exc
@@ -31,26 +44,79 @@ def _window_ids() -> list[int]:
 
 
 def _window_properties(xid: int) -> tuple[int | None, str]:
+    """Parse standard xprop ' = ' output and older ':' fixtures.
+
+    Prefer the UTF-8 EWMH title over the legacy WM_NAME.
+    """
     data = _xprop("-id", hex(xid), "_NET_WM_PID", "_NET_WM_NAME", "WM_NAME")
-    pid_match = re.search(r"_NET_WM_PID\(CARDINAL\):\s*(\d+)", data)
-    title_match = re.search(r'(?:_NET_WM_NAME\([^)]*\)|WM_NAME\([^)]*\)):\s*"([^"]*)"', data)
-    return (int(pid_match.group(1)) if pid_match else None,
-            title_match.group(1) if title_match else "")
+    pid_match = re.search(
+        r"^\s*_NET_WM_PID\(CARDINAL\)\s*(?:=|:)\s*(\d+)\s*$",
+        data, re.MULTILINE,
+    )
+    title = ""
+    for atom in ("_NET_WM_NAME", "WM_NAME"):
+        match = re.search(
+            r'^\s*' + atom + r'\([^)]*\)\s*(?:=|:)\s*"([^"]*)"\s*$',
+            data, re.MULTILINE,
+        )
+        if match and match.group(1):
+            title = match.group(1)
+            break
+    return (int(pid_match.group(1)) if pid_match else None, title)
 
 
 def find_window(*, pid: int, title: str) -> int:
     if not title:
         raise X11ActivationError("Cannot identify X11 window without owning-stage title")
-    matches = [
-        xid for xid in _window_ids()
-        if _window_properties(xid) == (pid, title)
-    ]
-    if len(matches) != 1:
-        raise X11ActivationError(
-            "Expected one X11 window for pid=%s title=%r; found %s"
-            % (pid, title, [hex(x) for x in matches])
+    observed = [(xid, *_window_properties(xid)) for xid in _window_ids()]
+    matches = [xid for xid, owner_pid, caption in observed
+               if owner_pid == pid and caption == title]
+    if len(matches) > 1:
+        raise X11WindowAmbiguous(
+            "Multiple X11 windows for pid=%s title=%r: %s" %
+            (pid, title, [hex(xid) for xid in matches])
         )
-    return matches[0]
+    if matches:
+        return matches[0]
+    foreign_title = [(hex(xid), owner_pid) for xid, owner_pid, caption in observed
+                     if caption == title and owner_pid not in (None, pid)]
+    if foreign_title:
+        raise X11WindowIdentityConflict(
+            "X11 window title %r belongs to another PID; expected=%s observed=%s" %
+            (title, pid, foreign_title)
+        )
+    same_process = [(hex(xid), caption) for xid, owner_pid, caption in observed
+                    if owner_pid == pid]
+    raise X11WindowNotFound(
+        "No X11 window matched pid=%s title=%r; EWMH windows for PID=%s; "
+        "matching-title windows with unknown PID=%s" %
+        (pid, title, same_process,
+         [hex(xid) for xid, owner_pid, caption in observed
+          if caption == title and owner_pid is None])
+    )
+
+
+def list_windows() -> tuple[dict, ...]:
+    """Read the current EWMH-managed window inventory without changing focus."""
+    windows = []
+    for xid in _window_ids():
+        try:
+            pid, title = _window_properties(xid)
+        except X11ActivationError:
+            continue
+        windows.append({
+            "native_window_id": hex(xid),
+            "process_id": pid,
+            "title": title,
+        })
+    return tuple(windows)
+
+
+def request_window_activation(xid: int) -> None:
+    """Request foreground for a known native window ID without blocking GTK."""
+    if not isinstance(xid, int) or xid <= 0:
+        raise X11ActivationError("native window ID must be a positive integer")
+    _request_activation(xid)
 
 
 def active_window() -> int | None:
@@ -118,8 +184,18 @@ def activate_window(*, pid: int, title: str, timeout: float = 2.0) -> dict:
                 hex(before) if before is not None else None),
                 "active_window": hex(current), "native_foreground_verified": True}
         if time.monotonic() >= deadline:
+            active_pid = None
+            active_title = None
+            if current is not None and current != xid:
+                try:
+                    active_pid, active_title = _window_properties(current)
+                except X11ActivationError:
+                    pass
             raise X11ActivationError(
-                "X11 foreground activation timed out: target=%s pid=%s title=%r active=%s"
-                % (hex(xid), pid, title, hex(current) if current is not None else None)
+                "X11 foreground activation timed out: target=%s pid=%s title=%r "
+                "active=%s active_pid=%r active_title=%r"
+                % (hex(xid), pid, title,
+                   hex(current) if current is not None else None,
+                   active_pid, active_title)
             )
         time.sleep(0.05)

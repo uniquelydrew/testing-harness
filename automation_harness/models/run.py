@@ -30,6 +30,7 @@ class RunResult:
     skipped: int = 0
     artifact_dir: Path | None = None
     validation_errors: list[str] = field(default_factory=list)
+    source_plan_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

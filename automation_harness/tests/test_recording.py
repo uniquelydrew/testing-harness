@@ -73,6 +73,7 @@ def test_click_correlates_action_and_meaningful_state_without_pressed_noise():
     assert [(delta.property, delta.before, delta.after) for delta in interaction.resulting_changes] == [("enabled", True, False)]
     assert "coordinates" not in interaction.parameters
     assert interactions_to_steps(interactions)[0].inputs["action"] == {"type": "click"}
+    assert interactions_to_steps(interactions)[0].name == "Click Open Button"
 
 
 def test_text_changes_coalesce_to_final_value_and_stop_flushes_pending_interaction():

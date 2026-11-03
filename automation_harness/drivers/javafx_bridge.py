@@ -331,12 +331,32 @@ class JavaFxBridgeDriver:
     def state(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> ComponentState:
         return self.inspect(identification=identification).state
 
+    def request_window_activation(
+        self,
+        *,
+        identification: Mapping[str, Any] | None = None,
+        window: str | None = None,
+        process_id: int | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Request Stage activation without waiting for OS-level foreground.
+
+        WindowOrchestrator must be able to raise the native X11 owner when
+        JavaFX's toFront()/requestFocus() is rejected by the window manager.
+        Keep the normal activate_window() method strict for standalone callers.
+        """
+        return self.activate_window(
+            identification=identification, window=window,
+            process_id=process_id, allow_unfocused=True,
+        )
+
     def activate_window(
         self,
         *,
         identification: Mapping[str, Any] | None = None,
         window: str | None = None,
         process_id: int | None = None,
+        allow_unfocused: bool = False,
         **_kwargs: Any,
     ) -> dict[str, Any]:
         """Activate the owning Stage independently of the target component.
@@ -371,12 +391,12 @@ class JavaFxBridgeDriver:
                     "JavaFX agent activated unexpected window %r (expected %r, pid=%s)"
                     % (response.get("window"), window_hint, endpoint.pid)
                 )
-            if response.get("focused") is True:
+            if response.get("focused") is True or allow_unfocused:
                 return {
                     "operation": "activate_window",
                     "bridge_pid": endpoint.pid,
                     "window": response.get("window"),
-                    "focused": True,
+                    "focused": response.get("focused") is True,
                     "activation_attempts": attempts,
                     "selection": "owning_window" if window_hint else "resolved_component",
                     "agent_sha256": getattr(endpoint, "agent_sha256", None),
