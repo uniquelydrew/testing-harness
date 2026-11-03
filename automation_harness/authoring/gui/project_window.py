@@ -11,13 +11,15 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.gui.common import ArtifactWindow
+from automation_harness.authoring.gui.result_report_viewer import ResultReportViewer
+from automation_harness.reporting.run_reports import load_run_report
 from automation_harness.authoring.plan_repository import assigned_repository_path
 from automation_harness.authoring.preferences_runtime import (
     AuthoringPreferences, _restore_harness_windows, _suspend_harness_windows,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_runs import (
-    execute_project_batch, failed_steps, load_batches,
+    execute_project_batch, load_batches,
 )
 from automation_harness.authoring.step_registry import AuthoringStepRegistry, create_step_registry
 from automation_harness.core.component_repository import ComponentRepository
@@ -61,93 +63,126 @@ class ProjectWindow(ArtifactWindow):
         self.refresh_runs()
 
     def _build_runs_page(self, notebook):
+        """Batch history, cross-plan failure summary and reusable single-run viewer."""
         outer = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         notebook.append_page(outer, Gtk.Label(label="Test Runs"))
+
         history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         history.set_border_width(8)
-        history.pack_start(Gtk.Label(label="RUN HISTORY", xalign=0), False, False, 0)
+        history.pack_start(Gtk.Label(label="BATCH HISTORY", xalign=0), False, False, 0)
         self.batch_tree, self.batch_store = self.list_tree((
-            ("Started", 170), ("Status", 85), ("Plans", 55)))
+            ("Started", 180), ("Status", 85), ("Plans", 55)))
         self.batch_tree.get_selection().connect("changed", lambda *_args: self.show_batch())
         history.pack_start(self.scrolled(self.batch_tree), True, True, 0)
-        history.pack_start(Gtk.Label(label="PLANS IN BATCH", xalign=0), False, False, 0)
+
+        plans_title = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        plans_title.pack_start(Gtk.Label(label="REPORTS IN BATCH", xalign=0), True, True, 0)
+        self.plan_status_filter = Gtk.ComboBoxText()
+        for value in ("All plans", "Failed only", "Passed only"):
+            self.plan_status_filter.append_text(value)
+        self.plan_status_filter.set_active(0)
+        self.plan_status_filter.connect("changed", lambda *_args: self._populate_batch_plans())
+        plans_title.pack_start(self.plan_status_filter, False, False, 0)
+        history.pack_start(plans_title, False, False, 0)
         self.plan_run_tree, self.plan_run_store = self.list_tree((
             ("Plan", 210), ("Status", 75), ("Passed", 60), ("Failed", 60)))
         self.plan_run_tree.get_selection().connect("changed", lambda *_args: self.show_plan_run())
         history.pack_start(self.scrolled(self.plan_run_tree), True, True, 0)
         outer.pack1(history, resize=False, shrink=False)
 
-        workspace = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        workspace.set_border_width(8)
-        outer.pack2(workspace, resize=True, shrink=False)
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.run_heading = Gtk.Label(label="Select a test run", xalign=0)
-        self.run_heading.set_markup("<b>Select a test run</b>")
-        header.pack_start(self.run_heading, True, True, 0)
-        self.open_report_button = self.button("HTML Report", self.open_report, parent=header)
-        self.open_folder_button = self.button("Run Folder", self.open_run_folder, parent=header)
-        workspace.pack_start(header, False, False, 0)
-        self.run_summary = Gtk.Label(label="Choose a batch and plan to inspect execution.", xalign=0)
-        self.run_summary.set_line_wrap(True)
-        workspace.pack_start(self.run_summary, False, False, 0)
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        controls.pack_start(Gtk.Label(label="Execution timeline", xalign=0), True, True, 0)
-        self.step_filter = Gtk.ComboBoxText()
-        for value in ("All steps", "Failed", "Passed", "Running", "Not run"):
-            self.step_filter.append_text(value)
-        self.step_filter.set_active(0)
-        self.step_filter.connect("changed", lambda *_args: self._populate_step_list())
-        controls.pack_start(self.step_filter, False, False, 0)
-        workspace.pack_start(controls, False, False, 0)
-        inspector = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        workspace.pack_start(inspector, True, True, 0)
-        self.failed_tree, self.failed_store = self.list_tree((
-            ("#", 45), ("Result", 95), ("Step name", 280)))
-        self.failed_tree.get_selection().connect("changed", lambda *_args: self.show_failed_step())
-        inspector.pack1(self.scrolled(self.failed_tree), resize=True, shrink=False)
-        detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        detail_box.pack_start(Gtk.Label(label="STEP INSPECTOR", xalign=0), False, False, 0)
-        self.failure_detail = Gtk.TextView()
-        self.failure_detail.set_editable(False)
-        self.failure_detail.set_cursor_visible(False)
-        self.failure_detail.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.failure_detail.set_left_margin(14)
-        self.failure_detail.set_right_margin(14)
-        self.failure_detail.set_top_margin(12)
-        detail_box.pack_start(self.scrolled(self.failure_detail), True, True, 0)
-        inspector.pack2(detail_box, resize=True, shrink=False)
-        outer.set_position(360)
-        inspector.set_position(440)
-        self._visible_steps = []
-        self._inspected_steps = []
-        self.open_report_button.set_sensitive(False)
-        self.open_folder_button.set_sensitive(False)
+        self.report_notebook = Gtk.Notebook()
+        outer.pack2(self.report_notebook, resize=True, shrink=False)
+        overview = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        overview.set_border_width(8)
+        self.batch_heading = Gtk.Label(label="Select a batch", xalign=0)
+        self.batch_heading.set_selectable(True)
+        overview.pack_start(self.batch_heading, False, False, 0)
+        self.batch_summary = Gtk.Label(label="Select a historical batch to see aggregated results.", xalign=0)
+        self.batch_summary.set_line_wrap(True)
+        overview.pack_start(self.batch_summary, False, False, 0)
+        overview.pack_start(Gtk.Label(label="FAILURES ACROSS REPORTS", xalign=0), False, False, 0)
+        self.batch_failure_tree, self.batch_failure_store = self.list_tree((
+            ("Plan", 170), ("Step", 220), ("Failure / Diagnostic", 400)))
+        self.batch_failure_tree.connect("row-activated", lambda *_args: self._open_batch_failure())
+        self.batch_failure_tree.get_selection().connect("changed", lambda *_args: self._open_batch_failure())
+        overview.pack_start(self.scrolled(self.batch_failure_tree), True, True, 0)
+        self.report_notebook.append_page(overview, Gtk.Label(label="Batch Overview"))
+        self.report_viewer = ResultReportViewer(parent_window=self.window)
+        self.report_notebook.append_page(self.report_viewer, Gtk.Label(label="Run Report"))
+        outer.set_position(385)
+        self._visible_plan_records = []
+        self._batch_failure_refs = []
 
-    def _populate_step_list(self):
-        selected = self._tree_index(self.failed_tree)
-        selected_node = None
-        if selected is not None and selected < len(self._visible_steps):
-            selected_node = self._visible_steps[selected].get("node_id")
-        filter_text = self.step_filter.get_active_text() or "All steps"
-        wanted = {"Failed": "FAILED", "Passed": "PASSED",
-                  "Running": "RUNNING", "Not run": "NOT RUN"}.get(filter_text)
-        self._visible_steps = [
-            item for item in self._inspected_steps
-            if wanted is None or item["status"] == wanted
-        ]
-        self.failed_store.clear()
-        for item in self._visible_steps:
-            number = self._inspected_steps.index(item) + 1
-            self.failed_store.append((str(number), item["status"], str(item["name"])))
-        if selected_node:
-            for index, item in enumerate(self._visible_steps):
-                if item["node_id"] == selected_node:
-                    self.failed_tree.get_selection().select_path(index)
-                    return
-        first_failure = next(
-            (i for i, item in enumerate(self._visible_steps) if item["status"] == "FAILED"), None)
-        if first_failure is not None:
-            self.failed_tree.get_selection().select_path(first_failure)
+    def _populate_batch_plans(self):
+        self.plan_run_store.clear()
+        self._visible_plan_records = []
+        if self._shown_batch is None:
+            return
+        chosen = self.plan_status_filter.get_active_text() or "All plans"
+        for index, record in enumerate(self._shown_batch.plans):
+            if chosen == "Failed only" and record.status == "passed":
+                continue
+            if chosen == "Passed only" and record.status != "passed":
+                continue
+            self._visible_plan_records.append(index)
+            self.plan_run_store.append((
+                record.plan_name, record.status.upper(), str(record.passed), str(record.failed),
+            ))
+
+    def _populate_batch_overview(self):
+        self.batch_failure_store.clear()
+        self._batch_failure_refs = []
+        batch = self._shown_batch
+        if batch is None:
+            self.batch_heading.set_text("Select a batch")
+            self.batch_summary.set_text("Select a historical batch to see aggregated results.")
+            return
+
+        plan_count = len(batch.plans)
+        step_passed = sum(item.passed for item in batch.plans)
+        step_failed = sum(item.failed for item in batch.plans)
+        self.batch_heading.set_text("Batch %s    •    %s" % (batch.batch_id, batch.status.upper()))
+        self.batch_summary.set_text(
+            "%d plans: %d passed, %d failed or incomplete\n"
+            "%d passed steps    •    %d failed steps\n"
+            "Started: %s    Finished: %s\n"
+            "Select a plan on the left, or a failure below, to drill into its report." %
+            (plan_count, batch.passed, batch.failed, step_passed, step_failed,
+             batch.started_at, batch.finished_at or "In progress")
+        )
+        for plan_index, record in enumerate(batch.plans):
+            artifact_dir = Path(record.artifact_dir) if record.artifact_dir else None
+            report = load_run_report(artifact_dir, fallback_record=record)
+            if report is None:
+                continue
+            failures = [step for step in report.steps if step.status == "FAILED"]
+            for step in failures:
+                self._batch_failure_refs.append((plan_index, step.node_id))
+                self.batch_failure_store.append((
+                    record.plan_name, step.name, step.error or "Step failed",
+                ))
+            if record.status != "passed" and not failures:
+                self._batch_failure_refs.append((plan_index, None))
+                self.batch_failure_store.append((
+                    record.plan_name, "Run diagnostic",
+                    record.error or "; ".join(report.diagnostics) or "No step-level evidence available",
+                ))
+
+    def _open_batch_failure(self):
+        index = self._tree_index(self.batch_failure_tree)
+        if index is None or index >= len(self._batch_failure_refs):
+            return
+        plan_index, node_id = self._batch_failure_refs[index]
+        if plan_index not in self._visible_plan_records:
+            self.plan_status_filter.set_active(0)
+        try:
+            visible_index = self._visible_plan_records.index(plan_index)
+        except ValueError:
+            return
+        self.plan_run_tree.get_selection().select_path(visible_index)
+        self.report_notebook.set_current_page(1)
+        if node_id:
+            self.report_viewer.select_step(node_id)
 
     def refresh(self):
         self.store.clear()
@@ -248,18 +283,20 @@ class ProjectWindow(ArtifactWindow):
     def refresh_runs(self):
         if self._run_active:
             return
+        previous_batch = getattr(getattr(self, "_shown_batch", None), "batch_id", None)
         try:
             self._batches = load_batches(self._runs_dir(), self.path)
         except Exception as exc:
             self._batches = ()
             self.set_status("Unable to load run history: %s" % exc)
-        previous_batch = getattr(getattr(self, "_shown_batch", None), "batch_id", None)
+        self._shown_batch = None
         self.batch_store.clear()
         for batch in self._batches:
             self.batch_store.append((batch.started_at, batch.status.upper(), str(len(batch.plans))))
-        self.plan_run_store.clear(); self.failed_store.clear()
-        self.failure_detail.get_buffer().set_text("")
-        self.open_report_button.set_sensitive(False); self.open_folder_button.set_sensitive(False)
+        self._populate_batch_plans()
+        self._populate_batch_overview()
+        self.report_viewer.set_report(None)
+        self.report_notebook.set_current_page(0)
         if self._batches:
             index = next((i for i, batch in enumerate(self._batches)
                           if batch.batch_id == previous_batch), 0)
@@ -267,15 +304,11 @@ class ProjectWindow(ArtifactWindow):
 
     def show_batch(self):
         index = self._tree_index(self.batch_tree)
-        self.plan_run_store.clear(); self.failed_store.clear(); self.failure_detail.get_buffer().set_text("")
-        self.open_report_button.set_sensitive(False); self.open_folder_button.set_sensitive(False)
         self._shown_batch = self._batches[index] if index is not None and index < len(self._batches) else None
-        if self._shown_batch is None:
-            return
-        for record in self._shown_batch.plans:
-            self.plan_run_store.append((record.plan_name, record.status.upper(), str(record.passed), str(record.failed)))
-        if self._shown_batch.plans:
-            self.plan_run_tree.get_selection().select_path(0)
+        self._populate_batch_plans()
+        self._populate_batch_overview()
+        self.report_viewer.set_report(None)
+        self.report_notebook.set_current_page(0)
 
     @staticmethod
     def _tree_index(tree):
@@ -286,139 +319,20 @@ class ProjectWindow(ArtifactWindow):
 
     def _selected_plan_run(self):
         index = self._tree_index(self.plan_run_tree)
-        if self._shown_batch is None or index is None or index >= len(self._shown_batch.plans):
+        if (self._shown_batch is None or index is None or
+                index >= len(self._visible_plan_records)):
             return None
-        return self._shown_batch.plans[index]
-
-    def _inspection_steps(self, record):
-        """Merge authored labels and execution events for all steps, not failures only."""
-        if not record or not record.artifact_dir:
-            return []
-        artifact = Path(record.artifact_dir)
-        labels = {}
-        try:
-            plan = load_plan(Path(record.plan_path))
-            labels = {
-                step.node_id: (step.name or step.description or step.step_id)
-                for step in plan.steps
-            }
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        states = {}
-        order = []
-        events_path = artifact / "events.jsonl"
-        if events_path.is_file():
-            try:
-                with events_path.open(encoding="utf-8") as stream:
-                    for line in stream:
-                        try:
-                            event = json.loads(line)
-                        except (ValueError, TypeError):
-                            continue
-                        if not isinstance(event, dict):
-                            continue
-                        node = event.get("node_id")
-                        if not isinstance(node, str):
-                            continue
-                        if node not in states:
-                            states[node] = {"node_id": node, "status": "NOT RUN", "error": "", "assertions": []}
-                            order.append(node)
-                        item = states[node]
-                        kind = event.get("event")
-                        if kind == "plan_step_started":
-                            item["status"] = "RUNNING"
-                            item["step_id"] = event.get("step_id", item.get("step_id", ""))
-                        elif kind == "plan_step_finished":
-                            item["status"] = "PASSED"
-                        elif kind == "plan_step_failed":
-                            item["status"] = "FAILED"
-                            item["error"] = str(event.get("error") or "")
-                        elif kind == "assertion":
-                            item["assertions"].append(event)
-            except OSError:
-                pass
-        for node in labels:
-            if node not in states:
-                states[node] = {"node_id": node, "status": "NOT RUN", "error": "", "assertions": []}
-                order.append(node)
-        for node in order:
-            item = states[node]
-            item["name"] = labels.get(node) or item.get("step_id") or node
-        return [states[node] for node in order]
+        return self._shown_batch.plans[self._visible_plan_records[index]]
 
     def show_plan_run(self):
         record = self._selected_plan_run()
-        self.failed_store.clear()
-        self.failure_detail.get_buffer().set_text("")
-        has_artifacts = bool(record and record.artifact_dir and Path(record.artifact_dir).is_dir())
-        self.open_report_button.set_sensitive(has_artifacts and (Path(record.artifact_dir) / "report.html").is_file())
-        self.open_folder_button.set_sensitive(has_artifacts)
-        self._inspected_steps = self._inspection_steps(record)
-        self._populate_step_list()
         if record is None:
-            self.run_heading.set_markup("<b>Select a test run</b>")
-            self.run_summary.set_text("Choose a batch and plan to inspect execution.")
+            self.report_viewer.set_report(None)
             return
-        import html
-        self.run_heading.set_markup("<b>%s</b>" % html.escape(record.plan_name))
-        not_run = sum(1 for item in self._inspected_steps if item["status"] == "NOT RUN")
-        self.run_summary.set_text(
-            "%s    •    %d passed    •    %d failed    •    %d not run\\n"
-            "Started: %s    Finished: %s" %
-            (record.status.upper(), record.passed, record.failed, not_run,
-             record.started_at, record.finished_at or "In progress")
-        )
-        if record.error and not self._inspected_steps:
-            self.failure_detail.get_buffer().set_text("RUN DIAGNOSTIC\\n\\n" + record.error)
-
-    def show_failed_step(self):
-        index = self._tree_index(self.failed_tree)
-        if index is None or index >= len(self._visible_steps):
-            return
-        item = self._visible_steps[index]
-        lines = [
-            str(item["name"]), "─" * 32, "",
-            "RESULT   " + item["status"],
-            "NODE     " + item["node_id"],
-        ]
-        if item.get("step_id"):
-            lines.append("ACTION   " + str(item["step_id"]))
-        if item.get("error"):
-            lines.extend(("", "FAILURE", str(item["error"])))
-        assertions = item.get("assertions") or []
-        if assertions:
-            lines.extend(("", "ASSERTIONS", "─" * 32))
-            for assertion in assertions:
-                outcome = "PASS" if assertion.get("passed") else "FAIL"
-                lines.append("[%s] %s" % (outcome, assertion.get("assertion", "Assertion")))
-                for key in ("message", "expected", "actual", "component_id"):
-                    if key in assertion:
-                        lines.append("  %s: %s" % (key.replace("_", " ").title(), assertion[key]))
-                for evidence in assertion.get("evidence") or ():
-                    if isinstance(evidence, dict):
-                        lines.append("  %s: %s" % (
-                            str(evidence.get("role", "Evidence")).title(),
-                            evidence.get("value", evidence.get("path", evidence.get("type", "")))))
-                lines.append("")
-        else:
-            lines.extend(("", "No assertion evidence recorded for this step."))
-        self.failure_detail.get_buffer().set_text("\\n".join(lines))
-
-    def open_report(self):
-        record = self._selected_plan_run()
-        if record and record.artifact_dir:
-            self._open_uri((Path(record.artifact_dir) / "report.html").resolve().as_uri())
-
-    def open_run_folder(self):
-        record = self._selected_plan_run()
-        if record and record.artifact_dir:
-            self._open_uri(Path(record.artifact_dir).resolve().as_uri())
-
-    def _open_uri(self, uri):
-        try:
-            Gtk.show_uri_on_window(self.window, uri, Gdk.CURRENT_TIME)
-        except Exception:
-            webbrowser.open(uri)
+        artifact_dir = Path(record.artifact_dir) if record.artifact_dir else None
+        report = load_run_report(artifact_dir, fallback_record=record)
+        self.report_viewer.set_report(report)
+        self.report_notebook.set_current_page(1)
 
     def run_selected(self):
         self._run_plans(self._selected_plan_paths())
