@@ -77,6 +77,7 @@ INTERACTIONS: dict[ActionType, ActionDefinition] = {
     ActionType.CLICK: _interaction(ActionType.CLICK, "Click", "Click the selected object."),
     ActionType.ACTIVATE: _interaction(ActionType.ACTIVATE, "Activate", "Invoke the selected object's default accessible action."),
     ActionType.FOCUS: _interaction(ActionType.FOCUS, "Focus", "Move keyboard focus to the selected object."),
+    ActionType.CLOSE: _interaction(ActionType.CLOSE, "Close", "Request that the selected window or dialog close, respecting its close handlers."),
     ActionType.SET_TEXT: _interaction(ActionType.SET_TEXT, "Set Text", "Replace the selected object's text.", _TEXT_VALUE),
     ActionType.CLEAR_TEXT: _interaction(ActionType.CLEAR_TEXT, "Clear Text", "Clear the selected object's text."),
     ActionType.APPEND_TEXT: _interaction(ActionType.APPEND_TEXT, "Append Text", "Append text to the selected object.", _TEXT_VALUE),

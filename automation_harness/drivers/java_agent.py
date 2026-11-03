@@ -137,6 +137,18 @@ class JavaAgentDriver:
         )
         return {"operation": "activate_window", "component": captured.to_dict()}
 
+    def close_window(self, *, identification=None, **_kwargs):
+        """Request closure of a directly resolved Swing/AWT Window or Dialog."""
+        response = self._request_first("close_window", _identity_payload(identification))
+        if response.get("closed") is not True:
+            raise RuntimeError("Java agent did not confirm window closure: %r" % response)
+        return {
+            "action": "close",
+            "closed": True,
+            "window": response.get("window"),
+            "mechanism": response.get("mechanism"),
+        }
+
     def get_text(self, *, identification=None, **_kwargs):
         response = self._request_first(
             "get_text", _identity_payload(identification),

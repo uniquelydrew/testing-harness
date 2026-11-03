@@ -182,6 +182,9 @@ public final class AutomationHarnessJavaFxAgent {
             return ok(FxRuntime.activateWindow(
                     mapValue(request.get("identification")), stringValue(request.get("window"))));
         }
+        if ("close_window".equals(op)) {
+            return ok(FxRuntime.closeWindow(stringValue(request.get("window"))));
+        }
         if ("focus".equals(op)) {
             return ok(FxRuntime.focus(mapValue(request.get("identification"))));
         }
@@ -871,6 +874,52 @@ public final class AutomationHarnessJavaFxAgent {
                 result.put("operation", "activate_window");
                 result.put("window", windowTitle(owner));
                 result.put("focused", focused);
+                return result;
+            });
+        }
+
+        static Map<String, Object> closeWindow(final String ownerTitle) throws Exception {
+            return onFx(() -> {
+                // WINDOW_CLOSE_REQUEST is the framework's cooperative close
+                // protocol. Stage.close()/hide() would bypass an application's
+                // unsaved-work and cancellation handlers.
+                if (ownerTitle == null || ownerTitle.trim().isEmpty()) {
+                    throw new IllegalArgumentException("close_window requires an explicit Stage title");
+                }
+                List<Object> matches = new ArrayList<Object>();
+                for (Object candidate : windows()) {
+                    if (isInstance("javafx.stage.Stage", candidate)
+                            && boolCall(candidate, "isShowing", false)
+                            && ownerTitle.equals(windowTitle(candidate))) {
+                        matches.add(candidate);
+                    }
+                }
+                if (matches.size() != 1) {
+                    throw new IllegalArgumentException(
+                            "close_window requires one showing Stage named " + ownerTitle
+                                    + "; matches=" + matches.size());
+                }
+                Object stage = matches.get(0);
+                Class<?> windowClass = Class.forName("javafx.stage.Window");
+                Class<?> eventTypeClass = Class.forName("javafx.event.EventType");
+                Class<?> eventClass = Class.forName("javafx.event.Event");
+                Class<?> eventTargetClass = Class.forName("javafx.event.EventTarget");
+                Class<?> windowEventClass = Class.forName("javafx.stage.WindowEvent");
+                Object closeType = windowEventClass.getField("WINDOW_CLOSE_REQUEST").get(null);
+                Object request = windowEventClass.getConstructor(windowClass, eventTypeClass)
+                        .newInstance(stage, closeType);
+                eventClass.getMethod("fireEvent", eventTargetClass, eventClass)
+                        .invoke(null, stage, request);
+                if (boolCall(stage, "isShowing", false)) {
+                    throw new IllegalStateException(
+                            "JavaFX Stage remained visible after WINDOW_CLOSE_REQUEST: "
+                                    + ownerTitle + " (request may have been consumed)");
+                }
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "close");
+                result.put("window", ownerTitle);
+                result.put("closed", Boolean.TRUE);
+                result.put("mechanism", "javafx.window_close_request");
                 return result;
             });
         }

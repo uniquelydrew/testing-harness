@@ -31,7 +31,7 @@ final class AgentServer {
         this.token = token;
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
         HttpHandler handler = new HttpHandler() { public void handle(HttpExchange exchange) throws IOException { AgentServer.this.handle(exchange); }};
-        String[] paths = {"/health", "/runtime", "/record_start", "/record_read", "/record_stop", "/capture_next_click", "/hit_test", "/resolve", "/activate", "/focus", "/activate_window", "/get_text", "/set_text", "/select_child", "/get_value", "/set_value", "/select_menu_path", "/windows", "/render_surface_inspect"};
+        String[] paths = {"/health", "/runtime", "/record_start", "/record_read", "/record_stop", "/capture_next_click", "/hit_test", "/resolve", "/activate", "/focus", "/activate_window", "/close_window", "/get_text", "/set_text", "/select_child", "/get_value", "/set_value", "/select_menu_path", "/windows", "/render_surface_inspect"};
         for (String path : paths) server.createContext(path, handler);
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
@@ -73,6 +73,7 @@ final class AgentServer {
             else if (path.equals("/activate")) result.putAll(SwingRecorder.activate(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/focus")) result.putAll(SwingRecorder.focus(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/activate_window")) result.putAll(SwingRecorder.activateWindow(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
+            else if (path.equals("/close_window")) result.putAll(SwingRecorder.closeWindow(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/get_text")) result.put("text", SwingRecorder.getText(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path")));
             else if (path.equals("/set_text")) result.putAll(SwingRecorder.setText(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path"), string(request, "value")));
             else if (path.equals("/select_child")) result.putAll(SwingRecorder.selectChild(string(request, "name"), string(request, "accessible_id"), string(request, "native_class"), string(request, "window"), string(request, "component_path"), (int)number(request, "index", -1)));

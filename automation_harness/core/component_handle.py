@@ -156,6 +156,10 @@ class ComponentHandle:
                 payload["focused"] = preparation.component_focus.success
             elif semantic.type == ActionType.ACTIVATE:
                 payload = self.activate()
+            elif semantic.type == ActionType.CLOSE:
+                if self.definition.object_type not in {ObjectType.WINDOW, ObjectType.DIALOG}:
+                    raise UnsupportedGuiAction("close applies only to windows and dialogs")
+                payload = self._accessibility_operation("close window", "close_window")
             elif semantic.type == ActionType.SET_TEXT:
                 if not isinstance(semantic.value, str):
                     raise ValueError("set_text requires a string value")

@@ -393,6 +393,74 @@ class AtspiDriver:
             "resolution_stages": [stage.to_dict() for stage in trace],
         }
 
+    def close_window(
+        self,
+        *,
+        identification: Mapping[str, Any] | AtspiIdentification | None = None,
+        name: str | None = None,
+        role: str | None = None,
+        accessible_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Use a native Close action only on an identified top-level surface.
+
+        AT-SPI does not guarantee that windows expose a Close action. Never
+        substitute a coordinate click, Alt-F4, or an action on a child control.
+        """
+        pyatspi = _pyatspi()
+        locator = _identification(identification, name=name, role=role, accessible_id=accessible_id)
+        match, trace = _select_accessible(pyatspi.Registry.getDesktop(0), locator)
+        actual_role = str(match.getRoleName() or "").casefold().strip()
+        if actual_role not in {"window", "frame", "dialog", "alert"}:
+            raise RuntimeError(
+                "AT-SPI close_window requires a top-level window/dialog, got %r" % actual_role
+            )
+        try:
+            native = match.queryAction()
+        except Exception as exc:
+            raise RuntimeError("AT-SPI window does not expose a native Close action") from exc
+        close_indices = [
+            index for index in range(native.nActions)
+            if str(native.getName(index) or "").strip().casefold() == "close"
+        ]
+        if len(close_indices) != 1:
+            raise RuntimeError(
+                "AT-SPI window has no unique native Close action; available=%r"
+                % [native.getName(index) for index in range(native.nActions)]
+            )
+        result = native.doAction(close_indices[0])
+        if result is False:
+            raise RuntimeError("AT-SPI native Close action was rejected")
+        # AT-SPI Action confirms dispatch only. Do not mark Close successful
+        # until the exact accessible is no longer showing. Check briefly to
+        # allow the AUT to process an asynchronous close request.
+        deadline = time.monotonic() + 1.0
+        closed = False
+        while time.monotonic() < deadline:
+            try:
+                state = match.getState()
+                closed = (
+                    state.contains(pyatspi.STATE_DEFUNCT)
+                    or not state.contains(pyatspi.STATE_SHOWING)
+                )
+            except Exception:
+                # A defunct target may refuse further queries after closure.
+                # Do not interpret arbitrary AT-SPI communication errors as
+                # confirmed closing.
+                break
+            if closed:
+                break
+            time.sleep(0.05)
+        if not closed:
+            raise RuntimeError(
+                "AT-SPI Close action was issued but the window did not confirm closure"
+            )
+        return {
+            "action": "close",
+            "closed": True,
+            "mechanism": "atspi.native_action",
+            "resolution_stages": [stage.to_dict() for stage in trace],
+        }
+
     def focus(
         self,
         *,

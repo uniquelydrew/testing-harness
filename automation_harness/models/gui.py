@@ -152,6 +152,8 @@ class ExecutionResult:
 
 
 DEFAULT_ACTIONS: dict[ObjectType, frozenset[ActionType]] = {
+    ObjectType.WINDOW: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
+    ObjectType.DIALOG: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
     ObjectType.TAB_CONTAINER: frozenset({ActionType.FOCUS, ActionType.SELECT_ITEM}),
     ObjectType.BUTTON: frozenset({ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.FOCUS, ActionType.SHOW_CONTEXT_MENU, ActionType.ACTIVATE}),
     ObjectType.TOGGLE_BUTTON: frozenset({ActionType.CLICK, ActionType.TOGGLE, ActionType.FOCUS}),

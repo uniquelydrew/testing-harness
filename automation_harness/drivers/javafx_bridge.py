@@ -439,6 +439,33 @@ class JavaFxBridgeDriver:
             )
         return owners[0]
 
+    def close_window(
+        self, *, identification: Mapping[str, Any] | None = None,
+        window: str | None = None, process_id: int | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Close exactly one showing JavaFX Stage, never a descendant/popup.
+
+        The owner title must be provided by the canonical window identity,
+        not guessed from a resolved child or whichever Stage has focus.
+        """
+        title = _explicit_window_hint(identification, window)
+        if title is None:
+            raise ValueError("JavaFX close_window requires explicit owning-window identity")
+        endpoint = self._endpoint_for_window(title, process_id=process_id)
+        response = endpoint.request("close_window", window=title, timeout=5.0)
+        if response.get("closed") is not True or response.get("window") != title:
+            raise JavaFxBridgeProtocolError(
+                "JavaFX window close did not confirm the requested Stage: %r" % response
+            )
+        return {
+            "action": "close",
+            "window": title,
+            "bridge_pid": endpoint.pid,
+            "closed": True,
+            "mechanism": response.get("mechanism"),
+        }
+
     def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
         response = endpoint.request("focus", timeout=5.0, identification=dict(identification or {}))
