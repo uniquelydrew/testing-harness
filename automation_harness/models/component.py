@@ -93,7 +93,15 @@ class ComponentDefinition:
             for strategy in self.strategies
         ):
             values.add(ActionType.CLOSE)
-        return frozenset(values) or default_actions(self.object_type)
+        available = frozenset(values) or default_actions(self.object_type)
+        if self.object_type in {ObjectType.WINDOW, ObjectType.DIALOG} and not any(
+            strategy.type in {"javafx", "java_agent", "atspi", "java_accessibility"}
+            for strategy in self.strategies
+        ):
+            # Reference-only/visual window proxies cannot honor native close
+            # requests. Do not offer a misleading action in Add Object Action.
+            available = available - frozenset({ActionType.CLOSE})
+        return available
 
     def supports(self, action: ActionType) -> bool:
         if action is ActionType.SELECT_MENU_ITEM:

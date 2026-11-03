@@ -159,7 +159,13 @@ class ComponentHandle:
             elif semantic.type == ActionType.CLOSE:
                 if self.definition.object_type not in {ObjectType.WINDOW, ObjectType.DIALOG}:
                     raise UnsupportedGuiAction("close applies only to windows and dialogs")
-                payload = self._accessibility_operation("close window", "close_window")
+                # Close has side effects even when the native caller reports
+                # failure (for example, an application's handler can veto the
+                # request). Never dispatch a second close through a fallback
+                # backend after the first native attempt.
+                payload = self._accessibility_operation(
+                    "close window", "close_window", fail_closed=True,
+                )
             elif semantic.type == ActionType.SET_TEXT:
                 if not isinstance(semantic.value, str):
                     raise ValueError("set_text requires a string value")
@@ -265,10 +271,40 @@ class ComponentHandle:
         return result
 
     def _owning_javafx_window(self) -> str | None:
-        """Derive target Stage without changing the canonical repository."""
-        return owning_window_hint(
+        """Derive a Stage from canonical ownership, never from a child label."""
+        explicit = owning_window_hint(
             self.definition, getattr(self.context, "components", None),
         )
+        if explicit is not None:
+            return explicit
+        # Older canonical window proxies were captured with only the exact
+        # Stage caption as mandatory accessible_text and window_proxy=True.
+        # This is a safe title hint ONLY for a true Window/Dialog proxy, not
+        # for TabPane roots or any arbitrary descendant's visible text.
+        if (
+            self.definition.object_type not in {ObjectType.WINDOW, ObjectType.DIALOG}
+            or dict(self.definition.properties or {}).get("window_proxy") is not True
+        ):
+            return None
+        candidates = set()
+        for strategy in self.definition.strategies:
+            if strategy.type != "javafx":
+                continue
+            identity = strategy.options.get("identification")
+            if not isinstance(identity, Mapping):
+                continue
+            mandatory = identity.get("mandatory")
+            if not isinstance(mandatory, Mapping):
+                continue
+            caption = mandatory.get("accessible_text")
+            if isinstance(caption, str) and caption.strip():
+                candidates.add(caption.strip())
+        if len(candidates) > 1:
+            raise ComponentResolutionError(
+                "conflicting JavaFX Stage captions on canonical window proxy %r"
+                % self.definition.component_id
+            )
+        return next(iter(candidates), None)
 
     def _scoped_identification(
         self, strategy_type: str, identification: Mapping[str, Any] | None,
@@ -528,7 +564,9 @@ class ComponentHandle:
     def set_value(self, value: float) -> dict[str, Any]:
         return self._accessibility_operation("set value", "set_value", value)
 
-    def _accessibility_operation(self, label: str, method: str, *args: Any):
+    def _accessibility_operation(
+        self, label: str, method: str, *args: Any, fail_closed: bool = False,
+    ):
         errors: list[str] = []
         for strategy in self.definition.strategies:
             if strategy.type not in {"atspi", "java_accessibility", "javafx", "java_agent"}:
@@ -556,6 +594,12 @@ class ComponentHandle:
                 return result
             except Exception as exc:
                 errors.append(f"{strategy.type}: {type(exc).__name__}: {exc}")
+                if fail_closed:
+                    raise ComponentResolutionError(
+                        f"unable to {label} for {self.definition.component_id!r}; "
+                        f"native close attempted once via {strategy.type}; "
+                        f"no fallback close dispatched; {type(exc).__name__}: {exc}"
+                    ) from exc
         raise ComponentResolutionError(
             f"unable to {label} for {self.definition.component_id!r}; "
             + "; ".join(errors or ["no compatible accessibility strategy"])

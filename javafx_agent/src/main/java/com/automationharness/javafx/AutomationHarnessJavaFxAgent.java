@@ -910,16 +910,32 @@ public final class AutomationHarnessJavaFxAgent {
                         .newInstance(stage, closeType);
                 eventClass.getMethod("fireEvent", eventTargetClass, eventClass)
                         .invoke(null, stage, request);
+                // OpenJFX's default WindowCloseRequestHandler hides a window
+                // when no handler consumes the request. A still-showing Stage
+                // therefore means closure was refused, a custom dispatcher
+                // bypassed the default handler, or the AUT retained the Stage.
+                // Report diagnostic evidence rather than force a second hide.
+                boolean eventConsumed = boolCall(request, "isConsumed", false);
+                Object dispatcher = callQuiet(stage, "getEventDispatcher");
+                String dispatcherClass = dispatcher == null
+                        ? "null" : dispatcher.getClass().getName();
                 if (boolCall(stage, "isShowing", false)) {
                     throw new IllegalStateException(
                             "JavaFX Stage remained visible after WINDOW_CLOSE_REQUEST: "
-                                    + ownerTitle + " (request may have been consumed)");
+                                    + ownerTitle
+                                    + " (event_consumed=" + eventConsumed
+                                    + ", event_dispatcher=" + dispatcherClass
+                                    + ", on_close_request_present="
+                                    + (callQuiet(stage, "getOnCloseRequest") != null)
+                                    + "; no additional hide/close requested)");
                 }
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
                 result.put("action", "close");
                 result.put("window", ownerTitle);
                 result.put("closed", Boolean.TRUE);
                 result.put("mechanism", "javafx.window_close_request");
+                result.put("event_consumed", eventConsumed);
+                result.put("event_dispatcher", dispatcherClass);
                 return result;
             });
         }
