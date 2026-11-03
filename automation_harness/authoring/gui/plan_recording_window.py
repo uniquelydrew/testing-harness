@@ -119,12 +119,22 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             return operation()
         completed = threading.Event()
         callback_entered = threading.Event()
+        cancelled = threading.Event()
         result = {}
         session = self._recording_diagnostic_session
         started_at = time.monotonic()
 
         def invoke():
+            # A queued GLib source can be dispatched after the background
+            # shutdown worker has timed out. The cancellation flag closes the
+            # race between observing callback state and source removal.
+            if cancelled.is_set():
+                completed.set()
+                return False
             callback_entered.set()
+            if cancelled.is_set():
+                completed.set()
+                return False
             if session is not None:
                 session.diagnostic(
                     "native_main_thread_unregister_entered",
@@ -146,7 +156,11 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     )
             return False
 
-        source_id = GLib.idle_add(invoke)
+        # Native AT-SPI dispatch uses the normal GLib main context. A default
+        # idle source has lower priority and can starve under sustained AT-SPI
+        # traffic, precisely when recorder teardown needs to deregister those
+        # listeners. Schedule cleanup ahead of ordinary event dispatch.
+        source_id = GLib.idle_add(invoke, priority=GLib.PRIORITY_HIGH)
         if session is not None:
             session.diagnostic(
                 "native_main_thread_unregister_queued",
@@ -163,6 +177,15 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     callback_entered=callback_entered.is_set(),
                     elapsed_seconds=round(time.monotonic() - started_at, 6),
                 )
+            # Fail the pending invocation closed even if it is dispatched
+            # between the timeout check and GLib.source_remove(). A callback
+            # that has already entered native code cannot be preempted.
+            cancelled.set()
+            if not callback_entered.is_set():
+                try:
+                    GLib.source_remove(source_id)
+                except Exception:
+                    pass
             raise TimeoutError(
                 "native main-thread recording teardown timed out "
                 "(source_id=%s)" % source_id
