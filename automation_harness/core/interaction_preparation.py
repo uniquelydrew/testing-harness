@@ -85,6 +85,11 @@ def preparation_requirement(
 ) -> PreparationRequirement:
     """Return the minimum preconditions for one semantic interaction."""
     semantic = GuiAction.from_value(action)
+    if semantic.type is ActionType.CLOSE and object_type in {ObjectType.WINDOW, ObjectType.DIALOG}:
+        # Native close requests are addressed to a uniquely resolved window.
+        # Foreground activation/focus can instead redirect to another dialog
+        # or invoke modal focus handlers, so avoid both preparations.
+        return PreparationRequirement(False, False, require_window_activation=False)
     if semantic.type in _POINTER_ACTIONS and object_type in {
         ObjectType.MENU_ITEM,
         ObjectType.CHECK_MENU_ITEM,

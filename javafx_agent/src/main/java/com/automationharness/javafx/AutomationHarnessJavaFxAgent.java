@@ -154,6 +154,15 @@ public final class AutomationHarnessJavaFxAgent {
         if ("capture_next_click".equals(op)) {
             return ok(singleton("node", FxRuntime.captureNextClick(longValue(request.get("timeout_ms"), 30000L))));
         }
+        if ("record_start".equals(op)) {
+            return ok(FxRuntime.recordStart());
+        }
+        if ("record_read".equals(op)) {
+            return ok(FxRuntime.recordRead(longValue(request.get("timeout_ms"), 200L)));
+        }
+        if ("record_stop".equals(op)) {
+            return ok(FxRuntime.recordStop());
+        }
         if ("hit_test".equals(op)) {
             double x = doubleValue(request.get("x"), Double.NaN);
             double y = doubleValue(request.get("y"), Double.NaN);
@@ -172,6 +181,9 @@ public final class AutomationHarnessJavaFxAgent {
         if ("activate_window".equals(op)) {
             return ok(FxRuntime.activateWindow(
                     mapValue(request.get("identification")), stringValue(request.get("window"))));
+        }
+        if ("close_window".equals(op)) {
+            return ok(FxRuntime.closeWindow(stringValue(request.get("window"))));
         }
         if ("focus".equals(op)) {
             return ok(FxRuntime.focus(mapValue(request.get("identification"))));
@@ -203,6 +215,10 @@ public final class AutomationHarnessJavaFxAgent {
         if ("select_child".equals(op)) {
             return ok(FxRuntime.selectChild(
                     mapValue(request.get("identification")), intValue(request.get("index"), -1)));
+        }
+        if ("select_tab".equals(op)) {
+            return ok(FxRuntime.selectTab(
+                    mapValue(request.get("identification")), mapValue(request.get("criteria"))));
         }
         return error("unsupported op: " + op);
     }
@@ -382,6 +398,17 @@ public final class AutomationHarnessJavaFxAgent {
         // requests multiply those filters and their proxy callbacks while the
         // popup topology is changing, which is unsafe pressure on JavaFX.
         private static final AtomicBoolean NEXT_CLICK_CAPTURE_ACTIVE = new AtomicBoolean(false);
+        // TabPane selection belongs to the logical model, not its transient
+        // tab-header skin. These listeners are installed/removed on the FX
+        // application thread and record only actual selection transitions.
+        private static final Object TAB_RECORD_LOCK = new Object();
+        private static final List<Map<String, Object>> TAB_RECORD_EVENTS = new ArrayList<Map<String, Object>>();
+        private static final Map<Object, TabRecordListener> TAB_RECORD_LISTENERS =
+                new IdentityHashMap<Object, TabRecordListener>();
+        private static volatile boolean TAB_RECORD_ACTIVE = false;
+        private static volatile String TAB_RECORD_FAILURE = null;
+        private static final int MAX_TAB_RECORD_EVENTS = 1024;
+
         private static final Map<String, PendingMenuClick> PENDING_MENU_CLICKS = new ConcurrentHashMap<String, PendingMenuClick>();
         private static final Map<String, PendingMenuClick> MENU_DISPATCHES = new ConcurrentHashMap<String, PendingMenuClick>();
         private enum InteractionFamily {
@@ -445,6 +472,177 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 return singleton("windows", values);
             });
+        }
+
+        static Map<String, Object> recordStart() throws Exception {
+            return onFx(() -> {
+                if (TAB_RECORD_ACTIVE) {
+                    throw new IllegalStateException("JavaFX tab recording already active");
+                }
+                synchronized (TAB_RECORD_LOCK) {
+                    TAB_RECORD_EVENTS.clear();
+                    TAB_RECORD_FAILURE = null;
+                }
+                TAB_RECORD_ACTIVE = true;
+                try {
+                    refreshTabRecordListeners();
+                } catch (Exception exc) {
+                    TAB_RECORD_ACTIVE = false;
+                    clearTabRecordListeners();
+                    throw exc;
+                }
+                return singleton("recording", Boolean.TRUE);
+            });
+        }
+
+        static Map<String, Object> recordRead(long timeoutMs) throws Exception {
+            // Refresh on the FX thread to discover lazily attached nested panes.
+            onFx(() -> {
+                if (TAB_RECORD_ACTIVE) refreshTabRecordListeners();
+                return null;
+            });
+            long wait = Math.max(0L, Math.min(250L, timeoutMs));
+            synchronized (TAB_RECORD_LOCK) {
+                if (TAB_RECORD_ACTIVE && TAB_RECORD_EVENTS.isEmpty() && wait > 0) {
+                    TAB_RECORD_LOCK.wait(wait);
+                }
+                if (TAB_RECORD_FAILURE != null) {
+                    throw new IllegalStateException(TAB_RECORD_FAILURE);
+                }
+                return singleton("observations", drainTabRecordEvents());
+            }
+        }
+
+        static Map<String, Object> recordStop() throws Exception {
+            return onFx(() -> {
+                TAB_RECORD_ACTIVE = false;
+                clearTabRecordListeners();
+                synchronized (TAB_RECORD_LOCK) {
+                    TAB_RECORD_LOCK.notifyAll();
+                    if (TAB_RECORD_FAILURE != null) {
+                        String failure = TAB_RECORD_FAILURE;
+                        TAB_RECORD_FAILURE = null;
+                        TAB_RECORD_EVENTS.clear();
+                        throw new IllegalStateException(failure);
+                    }
+                    return singleton("observations", drainTabRecordEvents());
+                }
+            });
+        }
+
+        private static List<Map<String, Object>> drainTabRecordEvents() {
+            // Caller holds TAB_RECORD_LOCK.
+            List<Map<String, Object>> result = new ArrayList<Map<String, Object>>(TAB_RECORD_EVENTS);
+            TAB_RECORD_EVENTS.clear();
+            return result;
+        }
+
+        private static void refreshTabRecordListeners() throws Exception {
+            for (Object window : windows()) {
+                if (!boolCall(window, "isShowing", false)) continue;
+                Object scene = callQuiet(window, "getScene");
+                Object root = callQuiet(scene, "getRoot");
+                if (root == null) continue;
+                for (Object node : flatten(root)) {
+                    if (!isInstance("javafx.scene.control.TabPane", node)
+                            || TAB_RECORD_LISTENERS.containsKey(node)) continue;
+                    Object model = callQuiet(node, "getSelectionModel");
+                    Object property = callQuiet(model, "selectedItemProperty");
+                    if (property == null) continue;
+                    Class<?> listenerClass = Class.forName("javafx.beans.value.ChangeListener");
+                    final Object owner = node;
+                    final Object ownerWindow = window;
+                    InvocationHandler invocation = (proxy, method, arguments) -> {
+                        if ("changed".equals(method.getName()) && arguments != null
+                                && arguments.length == 3 && TAB_RECORD_ACTIVE) {
+                            observeTabSelection(owner, ownerWindow, arguments[1], arguments[2]);
+                        }
+                        return null;
+                    };
+                    Object listener = Proxy.newProxyInstance(
+                            listenerClass.getClassLoader(),
+                            new Class<?>[]{listenerClass}, invocation);
+                    Method addListener = property.getClass().getMethod("addListener", listenerClass);
+                    addListener.invoke(property, listener);
+                    TAB_RECORD_LISTENERS.put(node, new TabRecordListener(property, listener, listenerClass));
+                }
+            }
+        }
+
+        private static void observeTabSelection(
+                Object owner, Object window, Object previous, Object selected) {
+            if (!TAB_RECORD_ACTIVE || selected == null || previous == selected) return;
+            try {
+                List<Object> tabs = listValue(call(owner, "getTabs"));
+                int index = -1;
+                for (int i = 0; i < tabs.size(); i++) {
+                    if (tabs.get(i) == selected) { index = i; break; }
+                }
+                if (index < 0) return;
+                String id = optionalNoArgStringQuiet(selected, "getId");
+                String text = optionalNoArgStringQuiet(selected, "getText");
+                // Do not record a selector that can only be replayed by
+                // an unreliable global/owner-local ordinal.
+                if ((id == null || id.isEmpty()) && (text == null || text.isEmpty())) return;
+                Map<String, Object> criteria = new LinkedHashMap<String, Object>();
+                if (id != null && !id.isEmpty()) criteria.put("id", id);
+                if (text != null && !text.isEmpty()) criteria.put("text", text);
+                criteria.put("index", index);
+                Map<String, Object> observation = new LinkedHashMap<String, Object>();
+                observation.put("type", "state_changed");
+                observation.put("timestamp", System.nanoTime() / 1000000000.0);
+                observation.put("property", "tab_selection");
+                observation.put("after", criteria);
+                observation.put("target", singleton("node", nodePayload(owner, window)));
+                synchronized (TAB_RECORD_LOCK) {
+                    if (!TAB_RECORD_ACTIVE) return;
+                    if (TAB_RECORD_EVENTS.size() >= MAX_TAB_RECORD_EVENTS) {
+                        // Fail closed rather than silently dropping an older
+                        // selection and producing an inaccurate test plan.
+                        TAB_RECORD_ACTIVE = false;
+                        TAB_RECORD_EVENTS.clear();
+                        TAB_RECORD_FAILURE = "JavaFX tab recording observation buffer overflow";
+                    } else {
+                        TAB_RECORD_EVENTS.add(observation);
+                    }
+                    TAB_RECORD_LOCK.notifyAll();
+                }
+                // Selecting a new tab may attach nested TabPanes on the next
+                // pulse. The read poll discovers their selection models.
+            } catch (Throwable failure) {
+                System.err.println("[automation-harness-javafx] tab selection capture failed: " + failure);
+                synchronized (TAB_RECORD_LOCK) {
+                    TAB_RECORD_FAILURE = "JavaFX tab selection capture failed: "
+                            + failure.getClass().getSimpleName() + ": " + failure.getMessage();
+                    TAB_RECORD_ACTIVE = false;
+                    TAB_RECORD_LOCK.notifyAll();
+                }
+            }
+        }
+
+        private static void clearTabRecordListeners() {
+            for (TabRecordListener listener : TAB_RECORD_LISTENERS.values()) {
+                try {
+                    Method remove = listener.property.getClass()
+                            .getMethod("removeListener", listener.listenerClass);
+                    remove.invoke(listener.property, listener.listener);
+                } catch (Throwable error) {
+                    System.err.println("[automation-harness-javafx] tab listener cleanup failed: " + error);
+                }
+            }
+            TAB_RECORD_LISTENERS.clear();
+        }
+
+        private static final class TabRecordListener {
+            final Object property;
+            final Object listener;
+            final Class<?> listenerClass;
+
+            TabRecordListener(Object property, Object listener, Class<?> listenerClass) {
+                this.property = property;
+                this.listener = listener;
+                this.listenerClass = listenerClass;
+            }
         }
 
         static Map<String, Object> captureNextClick(long timeoutMs) throws Exception {
@@ -680,6 +878,68 @@ public final class AutomationHarnessJavaFxAgent {
             });
         }
 
+        static Map<String, Object> closeWindow(final String ownerTitle) throws Exception {
+            return onFx(() -> {
+                // WINDOW_CLOSE_REQUEST is the framework's cooperative close
+                // protocol. Stage.close()/hide() would bypass an application's
+                // unsaved-work and cancellation handlers.
+                if (ownerTitle == null || ownerTitle.trim().isEmpty()) {
+                    throw new IllegalArgumentException("close_window requires an explicit Stage title");
+                }
+                List<Object> matches = new ArrayList<Object>();
+                for (Object candidate : windows()) {
+                    if (isInstance("javafx.stage.Stage", candidate)
+                            && boolCall(candidate, "isShowing", false)
+                            && ownerTitle.equals(windowTitle(candidate))) {
+                        matches.add(candidate);
+                    }
+                }
+                if (matches.size() != 1) {
+                    throw new IllegalArgumentException(
+                            "close_window requires one showing Stage named " + ownerTitle
+                                    + "; matches=" + matches.size());
+                }
+                Object stage = matches.get(0);
+                Class<?> windowClass = Class.forName("javafx.stage.Window");
+                Class<?> eventTypeClass = Class.forName("javafx.event.EventType");
+                Class<?> eventClass = Class.forName("javafx.event.Event");
+                Class<?> eventTargetClass = Class.forName("javafx.event.EventTarget");
+                Class<?> windowEventClass = Class.forName("javafx.stage.WindowEvent");
+                Object closeType = windowEventClass.getField("WINDOW_CLOSE_REQUEST").get(null);
+                Object request = windowEventClass.getConstructor(windowClass, eventTypeClass)
+                        .newInstance(stage, closeType);
+                eventClass.getMethod("fireEvent", eventTargetClass, eventClass)
+                        .invoke(null, stage, request);
+                // OpenJFX's default WindowCloseRequestHandler hides a window
+                // when no handler consumes the request. A still-showing Stage
+                // therefore means closure was refused, a custom dispatcher
+                // bypassed the default handler, or the AUT retained the Stage.
+                // Report diagnostic evidence rather than force a second hide.
+                boolean eventConsumed = boolCall(request, "isConsumed", false);
+                Object dispatcher = callQuiet(stage, "getEventDispatcher");
+                String dispatcherClass = dispatcher == null
+                        ? "null" : dispatcher.getClass().getName();
+                if (boolCall(stage, "isShowing", false)) {
+                    throw new IllegalStateException(
+                            "JavaFX Stage remained visible after WINDOW_CLOSE_REQUEST: "
+                                    + ownerTitle
+                                    + " (event_consumed=" + eventConsumed
+                                    + ", event_dispatcher=" + dispatcherClass
+                                    + ", on_close_request_present="
+                                    + (callQuiet(stage, "getOnCloseRequest") != null)
+                                    + "; no additional hide/close requested)");
+                }
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "close");
+                result.put("window", ownerTitle);
+                result.put("closed", Boolean.TRUE);
+                result.put("mechanism", "javafx.window_close_request");
+                result.put("event_consumed", eventConsumed);
+                result.put("event_dispatcher", dispatcherClass);
+                return result;
+            });
+        }
+
         static Map<String, Object> focus(final Map<String, Object> identification) throws Exception {
             return onFx(() -> {
                 NodeMatch match = unique(resolve(identification, true), identification);
@@ -910,10 +1170,14 @@ public final class AutomationHarnessJavaFxAgent {
                 final Map<String, Object> identification, final int index) throws Exception {
             return onFx(() -> {
                 NodeMatch root = unique(resolve(identification, true), identification);
-                if (interactionFamily(root.node) != InteractionFamily.POPUP_SELECTOR) {
-                    throw new IllegalArgumentException("select_child requires a popup-selector owner");
+                boolean tabPane = isInstance("javafx.scene.control.TabPane", root.node);
+                if (!tabPane && interactionFamily(root.node) != InteractionFamily.POPUP_SELECTOR) {
+                    throw new IllegalArgumentException("select_child requires a popup-selector or TabPane owner");
                 }
-                Object items = call(root.node, "getItems");
+                // Tab is a logical model object, not a scene-graph Node.
+                // Resolve the TabPane first and select through its own model;
+                // clicking a transient tab-header skin loses parent identity.
+                Object items = call(root.node, tabPane ? "getTabs" : "getItems");
                 int count = listValue(items).size();
                 if (index < 0 || index >= count) {
                     throw new IllegalArgumentException("popup selection index " + index + " outside " + count + " items");
@@ -924,7 +1188,71 @@ public final class AutomationHarnessJavaFxAgent {
                 Map<String, Object> result = new LinkedHashMap<String, Object>();
                 result.put("action", "select_item");
                 result.put("index", index);
+                result.put("selection_family", tabPane ? "tab_pane" : "popup_selector");
                 result.put("node", nodePayload(root.node, root.window));
+                return result;
+            });
+        }
+
+        static Map<String, Object> selectTab(
+                final Map<String, Object> identification,
+                final Map<String, Object> criteria) throws Exception {
+            return onFx(() -> {
+                NodeMatch owner = unique(resolve(identification, true), identification);
+                if (!isInstance("javafx.scene.control.TabPane", owner.node)) {
+                    throw new IllegalArgumentException("select_tab requires a JavaFX TabPane owner");
+                }
+                List<Object> tabs = listValue(call(owner.node, "getTabs"));
+                String wantedId = stringValue(criteria.get("id"));
+                String wantedText = stringValue(criteria.get("text"));
+                Integer fallbackIndex = criteria.get("index") instanceof Number
+                        ? ((Number) criteria.get("index")).intValue() : null;
+                if ((wantedId == null || wantedId.isEmpty())
+                        && (wantedText == null || wantedText.isEmpty())) {
+                    throw new IllegalArgumentException("tab selector requires id or text");
+                }
+                List<Integer> matches = new ArrayList<Integer>();
+                for (int index = 0; index < tabs.size(); index++) {
+                    Object tab = tabs.get(index);
+                    String id = optionalNoArgStringQuiet(tab, "getId");
+                    String label = optionalNoArgStringQuiet(tab, "getText");
+                    if (wantedId != null && !wantedId.isEmpty() && !wantedId.equals(id)) continue;
+                    if (wantedText != null && !wantedText.isEmpty() && !wantedText.equals(label)) continue;
+                    matches.add(index);
+                }
+                int selected = -1;
+                if (matches.size() == 1) {
+                    selected = matches.get(0);
+                } else if (matches.size() > 1 && fallbackIndex != null
+                        && matches.contains(fallbackIndex)) {
+                    // The ordinal is valid only inside the uniquely resolved
+                    // owner and only when it also matches the semantic criteria.
+                    selected = fallbackIndex;
+                }
+                if (selected < 0) {
+                    throw new IllegalArgumentException(
+                            "JavaFX tab selector matched " + matches.size() + " children: " + criteria);
+                }
+                Object tab = tabs.get(selected);
+                if (boolCall(tab, "isDisable", false)) {
+                    throw new IllegalArgumentException("JavaFX tab is disabled: " + criteria);
+                }
+                Object model = call(owner.node, "getSelectionModel");
+                Class.forName("javafx.scene.control.SelectionModel")
+                        .getMethod("select", int.class).invoke(model, selected);
+                Object actual = call(model, "getSelectedIndex");
+                if (!(actual instanceof Number) || ((Number) actual).intValue() != selected) {
+                    throw new IllegalStateException("JavaFX tab selection was not confirmed");
+                }
+                Map<String, Object> tabDescriptor = new LinkedHashMap<String, Object>();
+                tabDescriptor.put("id", optionalNoArgStringQuiet(tab, "getId"));
+                tabDescriptor.put("text", optionalNoArgStringQuiet(tab, "getText"));
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "select_item");
+                result.put("selection_family", "tab_pane");
+                result.put("index", selected);
+                result.put("tab", tabDescriptor);
+                result.put("node", nodePayload(owner.node, owner.window));
                 return result;
             });
         }
@@ -1679,6 +2007,31 @@ public final class AutomationHarnessJavaFxAgent {
                 payload.put("selected_index", callQuiet(model, "getSelectedIndex"));
                 Object value = callQuiet(node, "getValue");
                 if (value != null) payload.put("value", String.valueOf(value));
+            }
+            if (isInstance("javafx.scene.control.TabPane", node)) {
+                // Unselected Tabs are not scene-graph Nodes and their content
+                // may not be attached to the visible scene. Expose an inventory
+                // without inventing Node ancestry or resolving hidden content.
+                Object model = callQuiet(node, "getSelectionModel");
+                payload.put("selected_index", callQuiet(model, "getSelectedIndex"));
+                List<Object> tabs = listValue(call(node, "getTabs"));
+                List<Object> inventory = new ArrayList<Object>();
+                for (int index = 0; index < tabs.size(); index++) {
+                    Object tab = tabs.get(index);
+                    Map<String, Object> descriptor = new LinkedHashMap<String, Object>();
+                    descriptor.put("index", index);
+                    descriptor.put("id", optionalNoArgStringQuiet(tab, "getId"));
+                    descriptor.put("text", optionalNoArgStringQuiet(tab, "getText"));
+                    descriptor.put("selected", boolCall(tab, "isSelected", false));
+                    descriptor.put("disabled", boolCall(tab, "isDisable", false));
+                    Object content = callQuiet(tab, "getContent");
+                    if (content != null) {
+                        descriptor.put("content_id", optionalNoArgStringQuiet(content, "getId"));
+                        descriptor.put("content_class", content.getClass().getName());
+                    }
+                    inventory.add(descriptor);
+                }
+                payload.put("tabs", inventory);
             }
             payload.put("style_classes", listValue(call(node, "getStyleClass")));
             double[] bounds = boundsOnScreen(node);

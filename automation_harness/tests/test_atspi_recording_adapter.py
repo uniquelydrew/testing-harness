@@ -919,3 +919,87 @@ def test_pointer_worker_drain_is_bounded_and_recoverable():
     assert worker.stop_and_drain(timeout=1.0) is True
     assert worker.snapshot()["worker_alive"] is False
     assert worker.state == worker.STOPPED
+
+
+def test_failed_main_thread_unregister_retains_registry_and_retries_safely():
+    class Registry:
+        def __init__(self):
+            self.removed = []
+
+        def deregisterEventListener(self, callback, event_type):
+            self.removed.append((callback, event_type))
+
+    class Lease:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    registry = Registry()
+    lease = Lease()
+    adapter = AtspiRecordingAdapter(_Driver(_target()))
+    adapter._active = True
+    adapter._lease = lease
+    adapter._pyatspi = SimpleNamespace(Registry=registry)
+    listener = lambda event: None
+    adapter._listeners = [(listener, "object:text-changed")]
+
+    def blocked(_operation):
+        raise TimeoutError("native main-thread recording teardown timed out")
+
+    adapter._main_thread_runner = blocked
+    import pytest
+    with pytest.raises(TimeoutError, match="native main-thread"):
+        adapter.stop()
+
+    assert lease.closed == 0
+    assert adapter._lease is lease
+    assert adapter._listeners == [(listener, "object:text-changed")]
+    assert registry.removed == []
+
+    adapter._main_thread_runner = lambda operation: operation()
+    adapter.stop()
+    assert registry.removed == [(listener, "object:text-changed")]
+    assert lease.closed == 1
+    assert adapter._lease is None
+    assert adapter._listeners == []
+
+
+def test_partial_listener_unregister_only_retries_remaining_listeners():
+    class Registry:
+        def __init__(self):
+            self.removed = []
+            self.fail_second = True
+
+        def deregisterEventListener(self, callback, event_type):
+            if event_type == "second" and self.fail_second:
+                raise RuntimeError("transient native failure")
+            self.removed.append(event_type)
+
+    class Lease:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    registry, lease = Registry(), Lease()
+    adapter = AtspiRecordingAdapter(_Driver(_target()))
+    adapter._active = True
+    adapter._lease = lease
+    adapter._pyatspi = SimpleNamespace(Registry=registry)
+    callback = lambda event: None
+    adapter._listeners = [(callback, "first"), (callback, "second")]
+    import pytest
+    with pytest.raises(RuntimeError, match="transient native failure"):
+        adapter.stop()
+    assert registry.removed == ["first"]
+    assert len(adapter._listeners) == 1
+    assert adapter._listeners[0][1] == "second"
+    assert lease.closed is False
+
+    registry.fail_second = False
+    adapter.stop()
+    assert registry.removed == ["first", "second"]
+    assert lease.closed

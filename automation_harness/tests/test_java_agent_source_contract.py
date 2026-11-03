@@ -112,3 +112,25 @@ def test_javafx_recorder_refreshes_new_popup_scenes_while_recording():
     assert "static void refreshOpenScenes()" in recorder
     assert "refreshOpenScenes();" in recorder
     assert "JavaFxRecorder.refreshOpenScenes();" in server
+
+
+def test_dedicated_javafx_agent_exposes_native_tab_recording_lifecycle():
+    source = (
+        ROOT
+        / "javafx_agent"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "automationharness"
+        / "javafx"
+        / "AutomationHarnessJavaFxAgent.java"
+    ).read_text(encoding="utf-8")
+
+    assert '"record_start".equals(op)' in source
+    assert '"record_read".equals(op)' in source
+    assert '"record_stop".equals(op)' in source
+    assert '"selectedItemProperty"' in source
+    assert 'getMethod("removeListener", listener.listenerClass)' in source
+    assert '"tab_selection"' in source
+    assert 'MAX_TAB_RECORD_EVENTS' in source

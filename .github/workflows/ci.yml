@@ -42,9 +42,13 @@ jobs:
             gir1.2-gtk-3.0 \
             libcairo2-dev \
             libgirepository1.0-dev \
-            pkg-config
+            pkg-config \
+            xvfb \
+            xauth
       - name: Run Python test suite
         run: bash scripts/ci/unit.sh
+      - name: Exercise Test Plan GTK action dialog under virtual X11
+        run: xvfb-run -a python -m pytest -q --tb=long automation_harness/tests/test_plan_visual_add_action_dialog.py automation_harness/tests/test_action_widget_values.py
 
   java8-agent:
     name: Swing/JOGL agent (Java 8 bytecode)

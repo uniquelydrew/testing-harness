@@ -152,6 +152,9 @@ class ExecutionResult:
 
 
 DEFAULT_ACTIONS: dict[ObjectType, frozenset[ActionType]] = {
+    ObjectType.WINDOW: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
+    ObjectType.DIALOG: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
+    ObjectType.TAB_CONTAINER: frozenset({ActionType.FOCUS, ActionType.SELECT_ITEM}),
     ObjectType.BUTTON: frozenset({ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.FOCUS, ActionType.SHOW_CONTEXT_MENU, ActionType.ACTIVATE}),
     ObjectType.TOGGLE_BUTTON: frozenset({ActionType.CLICK, ActionType.TOGGLE, ActionType.FOCUS}),
     ObjectType.CHECK_BOX: frozenset({ActionType.CLICK, ActionType.TOGGLE, ActionType.FOCUS}),
@@ -186,7 +189,9 @@ def default_actions(object_type: ObjectType) -> frozenset[ActionType]:
 
 
 def classify_accessibility(role: str | None, native_class: str | None = None) -> ObjectType:
-    value = f"{role or ''} {native_class or ''}".casefold()
+    value = " ".join(
+        f"{role or ''} {native_class or ''}".replace("_", " ").replace("-", " ").casefold().split()
+    )
     rules = (
         ("check menu item", ObjectType.CHECK_MENU_ITEM),
         ("radio menu item", ObjectType.RADIO_MENU_ITEM),
@@ -194,6 +199,7 @@ def classify_accessibility(role: str | None, native_class: str | None = None) ->
         ("tab list", ObjectType.TAB_CONTAINER),
         ("tabbedpane", ObjectType.TAB_CONTAINER),
         ("tabpane", ObjectType.TAB_CONTAINER),
+        ("tab pane", ObjectType.TAB_CONTAINER),
         ("page tab", ObjectType.TAB),
         ("toolbar", ObjectType.TOOLBAR),
         ("tool bar", ObjectType.TOOLBAR),

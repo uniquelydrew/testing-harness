@@ -439,6 +439,33 @@ class JavaFxBridgeDriver:
             )
         return owners[0]
 
+    def close_window(
+        self, *, identification: Mapping[str, Any] | None = None,
+        window: str | None = None, process_id: int | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Close exactly one showing JavaFX Stage, never a descendant/popup.
+
+        The owner title must be provided by the canonical window identity,
+        not guessed from a resolved child or whichever Stage has focus.
+        """
+        title = _explicit_window_hint(identification, window)
+        if title is None:
+            raise ValueError("JavaFX close_window requires explicit owning-window identity")
+        endpoint = self._endpoint_for_window(title, process_id=process_id)
+        response = endpoint.request("close_window", window=title, timeout=5.0)
+        if response.get("closed") is not True or response.get("window") != title:
+            raise JavaFxBridgeProtocolError(
+                "JavaFX window close did not confirm the requested Stage: %r" % response
+            )
+        return {
+            "action": "close",
+            "window": title,
+            "bridge_pid": endpoint.pid,
+            "closed": True,
+            "mechanism": response.get("mechanism"),
+        }
+
     def focus(self, *, identification: Mapping[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
         endpoint, _node, _trace = self._find_unique(identification)
         response = endpoint.request("focus", timeout=5.0, identification=dict(identification or {}))
@@ -575,7 +602,37 @@ class JavaFxBridgeDriver:
             identification=dict(identification or {}), index=index,
         )
         return {"action": "select_item", "bridge_pid": endpoint.pid,
-                "index": response.get("index"), "node": response.get("node")}
+                "index": response.get("index"), "node": response.get("node"),
+                "selection_family": response.get("selection_family")}
+
+    def select_tab(self, criteria: Mapping[str, Any], *, identification=None, **_kwargs) -> dict[str, Any]:
+        """Select a logical JavaFX Tab by ID/text within its owning TabPane."""
+        if not isinstance(criteria, Mapping):
+            raise TypeError("tab selector criteria must be a mapping")
+        allowed = {"id", "text", "index"}
+        if set(criteria) - allowed:
+            raise ValueError("unsupported JavaFX tab selector criteria")
+        tab_id, text = criteria.get("id"), criteria.get("text")
+        if not any(isinstance(value, str) and value for value in (tab_id, text)):
+            raise ValueError("tab selection requires an ID or text")
+        if "index" in criteria and (
+            isinstance(criteria["index"], bool) or not isinstance(criteria["index"], int)
+            or criteria["index"] < 0
+        ):
+            raise ValueError("tab index must be a nonnegative integer")
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "select_tab", timeout=5.0,
+            identification=dict(identification or {}), criteria=dict(criteria),
+        )
+        return {
+            "action": "select_item",
+            "bridge_pid": endpoint.pid,
+            "selection_family": response.get("selection_family"),
+            "index": response.get("index"),
+            "tab": response.get("tab"),
+            "node": response.get("node"),
+        }
 
     def count_matches(
         self,
@@ -847,6 +904,8 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "layout": dict(node.get("layout") or {}) if isinstance(node.get("layout"), Mapping) else {},
         "sibling_index": node.get("sibling_index"),
         "sibling_count": node.get("sibling_count"),
+        **({"tabs": [dict(tab) for tab in node["tabs"] if isinstance(tab, Mapping)]}
+           if isinstance(node.get("tabs"), (list, tuple)) else {}),
     }
     physical_native_class = (
         dict(node.get("backend_properties") or {}).get("physical_native_class")
@@ -874,7 +933,11 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         authored_strategy=strategy,
         framework="javafx",
         native_class=native_class,
-        logical_subobjects=_javafx_menu_subobjects(node.get("menu_children")),
+        logical_subobjects=(
+            _javafx_tab_subobjects(node.get("tabs"))
+            if classify_accessibility(role, native_class) is ObjectType.TAB_CONTAINER
+            else _javafx_menu_subobjects(node.get("menu_children"))
+        ),
     )
 
 
@@ -1160,7 +1223,11 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         strategy = ComponentStrategy("javafx", {"identification": _candidate_identification(node)})
     else:
         strategy = None
-    logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
+    logical_subobjects = (
+        _javafx_tab_subobjects(node.get("tabs"))
+        if object_type is ObjectType.TAB_CONTAINER
+        else _javafx_menu_subobjects(node.get("menu_children"))
+    )
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("accessible_text") or node.get("text") or node.get("id")), role=role,
@@ -1175,6 +1242,8 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             **({"component_path": node["component_path"]} if node.get("component_path") else {}),
             **({"sibling_index": node["sibling_index"]} if node.get("sibling_index") is not None else {}),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
+            **({"tabs": [dict(tab) for tab in node["tabs"] if isinstance(tab, Mapping)]}
+               if isinstance(node.get("tabs"), (list, tuple)) else {}),
         },
         parent_name=_optional_str(parent.get("name")),
         parent_role=_optional_str(parent.get("role")),
@@ -1183,6 +1252,49 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         object_type=object_type, framework=framework, native_class=native_class,
         logical_subobjects=logical_subobjects,
     )
+
+
+def _javafx_tab_subobjects(raw: Any) -> dict[str, Any]:
+    """Persist logical Tabs beneath their uniquely identified TabPane owner.
+
+    A Tab is not a JavaFX Node. The stable model ID or owner-local label is
+    authoritative; the ordinal is corroborating evidence, never global identity.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return {}
+    result = {}
+    for ordinal, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            continue
+        tab_id = item.get("id")
+        label = item.get("text")
+        if tab_id in (None, "") and label in (None, ""):
+            continue
+        base = str(tab_id or label).strip().casefold()
+        key = "".join(char if char.isalnum() else "_" for char in base).strip("_")
+        if not key:
+            key = "tab_%d" % ordinal
+        candidate = key
+        suffix = 2
+        while candidate in result:
+            candidate = "%s_%d" % (key, suffix)
+            suffix += 1
+        criteria = {}
+        if tab_id not in (None, ""):
+            criteria["id"] = str(tab_id)
+        if label not in (None, ""):
+            criteria["text"] = str(label)
+        entry = {
+            "kind": "tab",
+            "display_name": str(label or tab_id),
+            "criteria": criteria,
+            "ordinal": ordinal,
+            "selectable": not bool(item.get("disabled", False)),
+        }
+        if item.get("disabled") is not None:
+            entry["enabled"] = not bool(item["disabled"])
+        result[candidate] = entry
+    return result
 
 
 def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:

@@ -71,3 +71,95 @@ def test_unnamed_same_class_swing_controls_keep_distinct_resolvable_paths():
     assert first.candidate_strategy() != second.candidate_strategy()
     assert first.candidate_strategy().options["identification"]["mandatory"]["component_path"].endswith("[0]")
     assert second.candidate_strategy().options["identification"]["mandatory"]["component_path"].endswith("[1]")
+
+
+def test_javafx_nested_tab_inventory_is_preserved_in_recorded_capture():
+    node = {
+        "framework": "javafx",
+        "class": "javafx.scene.control.TabPane",
+        "id": "childTabs",
+        "window": "MSCT Display",
+        "selected_index": 1,
+        "tabs": [
+            {"index": 0, "id": "configurationTab", "text": "Configuration",
+             "selected": False, "disabled": False,
+             "content_id": "configurationPane", "content_class": "javafx.scene.layout.Pane"},
+            {"index": 1, "id": "statusTab", "text": "Status",
+             "selected": True, "disabled": False,
+             "content_id": "statusPane", "content_class": "javafx.scene.layout.Pane"},
+        ],
+    }
+
+    capture = _captured_recording_node(node)
+
+    assert capture.state.properties["selected_index"] == 1
+    assert capture.backend_properties["tabs"] == node["tabs"]
+    assert capture.semantic_type().value == "tab_container"
+
+
+def test_javafx_select_child_preserves_bridge_tab_selection_metadata():
+    from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+
+    class Endpoint:
+        pid = 4095
+
+        def request(self, op, **kwargs):
+            assert op == "select_child"
+            assert kwargs["identification"] == {"mandatory": {"id": "childTabs"}}
+            assert kwargs["index"] == 1
+            return {"index": 1, "selection_family": "tab_pane", "node": {
+                "id": "childTabs", "selected_index": 1,
+            }}
+
+    driver = JavaFxBridgeDriver()
+    driver._find_unique = lambda identification: (Endpoint(), {}, ())
+    result = driver.select_child(1, identification={"mandatory": {"id": "childTabs"}})
+
+    assert result["index"] == 1
+    assert result["selection_family"] == "tab_pane"
+    assert result["node"]["selected_index"] == 1
+
+
+def test_javafx_semantic_tab_selection_routes_owner_scoped_criteria_to_native_agent():
+    from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+
+    class Endpoint:
+        pid = 4095
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, op, **kwargs):
+            self.calls.append((op, kwargs))
+            return {
+                "selection_family": "tab_pane",
+                "index": 3,
+                "tab": {"id": "sessionViewTab", "text": "Active Sessions"},
+                "node": {"id": "advancedTabs"},
+            }
+
+    endpoint = Endpoint()
+    driver = JavaFxBridgeDriver()
+    driver._find_unique = lambda identification: (endpoint, {}, ())
+    identity = {"mandatory": {"id": "advancedTabs"}}
+    criteria = {"id": "sessionViewTab", "text": "Active Sessions"}
+    result = driver.select_tab(criteria, identification=identity)
+
+    assert result["index"] == 3
+    assert result["tab"]["text"] == "Active Sessions"
+    assert endpoint.calls == [("select_tab", {
+        "timeout": 5.0, "identification": identity, "criteria": criteria,
+    })]
+
+
+def test_javafx_semantic_tab_selector_requires_identity_and_rejects_unscoped_index():
+    import pytest
+    from automation_harness.drivers.javafx_bridge import JavaFxBridgeDriver
+
+    driver = JavaFxBridgeDriver()
+    with pytest.raises(ValueError, match="ID or text"):
+        driver.select_tab({"index": 3}, identification={"mandatory": {"id": "advancedTabs"}})
+    with pytest.raises(ValueError, match="unsupported"):
+        driver.select_tab({"text": "Camera Status", "window": "other"})
+    with pytest.raises(ValueError, match="nonnegative"):
+        driver.select_tab({"text": "Camera Status", "index": -1})

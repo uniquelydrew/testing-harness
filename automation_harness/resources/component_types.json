@@ -1,8 +1,8 @@
 {
   "version": 1,
   "types": {
-    "window": {"display_name": "Window", "container": true, "actions": ["focus", "activate"], "allowed_children": ["*"]},
-    "dialog": {"display_name": "Dialog", "container": true, "actions": ["focus", "activate"], "allowed_children": ["*"]},
+    "window": {"display_name": "Window", "container": true, "actions": ["focus", "activate", "close"], "allowed_children": ["*"]},
+    "dialog": {"display_name": "Dialog", "container": true, "actions": ["focus", "activate", "close"], "allowed_children": ["*"]},
     "panel": {"display_name": "Panel", "container": true, "fallback": true, "actions": ["click", "focus"]},
     "tab_container": {"display_name": "Tabs", "container": true, "actions": ["focus", "select_item"], "allowed_children": ["tab"]},
     "tab": {"display_name": "Tab", "container": true, "actions": ["click", "activate", "focus"]},

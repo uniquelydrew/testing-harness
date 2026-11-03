@@ -630,3 +630,113 @@ def test_ordinary_menu_is_not_reparented_as_context_menu_invocation():
 
     assert changed is False
     assert updated.get(menu.component_id).owner_object_id is None
+
+
+def _logical_owner_menu(component_id, menu_id, label, child_label="Settings"):
+    return ComponentDefinition(
+        component_id=component_id,
+        description=label,
+        framework="javafx",
+        object_type=ObjectType.MENU,
+        actions=frozenset({"resolve", "activate", "select_menu_item"}),
+        strategies=(ComponentStrategy("javafx", {
+            "identification": {
+                "mandatory": {"id": menu_id},
+                "assistive": {"text": label},
+            }
+        }),),
+        subobjects={
+            "settings": {
+                "kind": "menu_item",
+                "criteria": {"id": "settingsMenuItem", "text": child_label},
+            },
+        },
+    )
+
+
+def _owned_menu_capture(owner_id, owner_label, item_label="Settings"):
+    base = _live_camera_selector_capture("javafx.scene.control.MenuItem")
+    logical_menu = {
+        "owner": {
+            "kind": "menu",
+            "logical": {
+                "kind": "menu",
+                "criteria": {"id": owner_id, "text": owner_label},
+            },
+        },
+        "path": [
+            {"kind": "menu", "criteria": {"id": owner_id, "text": owner_label}},
+            {"kind": "menu_item", "criteria": {"id": "settingsMenuItem", "text": item_label}},
+        ],
+    }
+    return CapturedComponent(**{
+        **base.__dict__,
+        "name": item_label,
+        "accessible_id": "settingsMenuItem",
+        "backend_properties": {"logical_menu": logical_menu},
+    })
+
+
+def test_system_menu_capture_is_scoped_to_logical_owner_not_matching_file_item():
+    file_menu = _logical_owner_menu("file-owner", "fileMenu", "File")
+    system_menu = _logical_owner_menu("system-owner", "systemMenu", "System")
+    capture = _owned_menu_capture("systemMenu", "System")
+
+    matches = find_logical_menu_targets((file_menu, system_menu), capture)
+
+    assert len(matches) == 1
+    assert matches[0].owner_component_id == "system-owner"
+    assert matches[0].subobject_path == ("settings",)
+
+
+def test_duplicate_owner_ids_are_disambiguated_by_menu_text():
+    # Duplicate IDs are encountered in the JavaFX AUT. Corroborating owner
+    # text prevents the File menu from receiving System menu interactions.
+    file_menu = _logical_owner_menu("file-owner", "sharedMenu", "File")
+    system_menu = _logical_owner_menu("system-owner", "sharedMenu", "System")
+    capture = _owned_menu_capture("sharedMenu", "System")
+
+    matches = find_logical_menu_targets((file_menu, system_menu), capture)
+
+    assert len(matches) == 1
+    assert matches[0].owner_component_id == "system-owner"
+
+
+def test_unknown_or_ambiguous_menu_owner_does_not_fall_back_to_global_item():
+    file_menu = _logical_owner_menu("file-owner", "fileMenu", "File")
+    unrecognized = _owned_menu_capture("systemMenu", "System")
+    assert find_logical_menu_targets((file_menu,), unrecognized) == ()
+
+    system_menu = _logical_owner_menu("system-owner", "systemMenu", "System")
+    duplicate = _logical_owner_menu("other-system-owner", "systemMenu", "System")
+    assert find_logical_menu_targets((system_menu, duplicate), unrecognized) == ()
+
+
+def test_duplicate_child_ids_with_different_text_do_not_overwrite_siblings():
+    owner = _file_owner()
+    repository = ComponentRepository({owner.component_id: owner})
+    original = _new_file_menu_item_capture()
+    repository, first, _, changed = stage_recorded_menu_capture(repository, original)
+    assert changed and first is not None
+
+    metadata = original.backend_properties["logical_menu"]
+    updated_path = [dict(item) for item in metadata["path"]]
+    updated_path[-1] = dict(updated_path[-1])
+    updated_path[-1]["criteria"] = {
+        "id": "openRecordingMenuItem",
+        "text": "Open Logs",
+    }
+    other = CapturedComponent(**{
+        **original.__dict__,
+        "name": "Open Logs",
+        "backend_properties": {
+            "logical_menu": {**metadata, "path": updated_path},
+        },
+    })
+    repository, second, _, changed = stage_recorded_menu_capture(repository, other)
+
+    assert changed and second is not None
+    assert first.subobject_path != second.subobject_path
+    stored = repository.get(owner.component_id).subobjects
+    assert stored[first.subobject_path[0]]["criteria"]["text"] == "Open Recording"
+    assert stored[second.subobject_path[0]]["criteria"]["text"] == "Open Logs"

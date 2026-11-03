@@ -536,3 +536,28 @@ def test_materialize_existing_combo_does_not_promote_noncanonical_action():
     assert created is False
     assert matched_id == definition.object_id
     assert updated.get(matched_id).actions == frozenset({"click"})
+
+
+def test_session_stops_all_adapters_even_if_first_shutdown_fails():
+    order = []
+
+    class Adapter:
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+
+        def start(self, emit):
+            self.emit = emit
+
+        def stop(self):
+            order.append(self.name)
+            if self.fail:
+                raise RuntimeError("native bridge stop failure")
+
+    session = RecordingSession((Adapter("atspi"), Adapter("javafx", fail=True)))
+    session.start()
+    import pytest
+    with pytest.raises(RuntimeError, match="native bridge stop failure"):
+        session.stop()
+    assert order == ["javafx", "atspi"]
+    assert not session.active

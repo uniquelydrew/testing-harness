@@ -180,6 +180,8 @@ def _definition_from_descriptor(repository, descriptor, *, owner_object_id):
         actions.add("focus")
     if object_type in {ObjectType.WINDOW, ObjectType.DIALOG, ObjectType.TAB}:
         actions.add("activate")
+    if object_type in {ObjectType.WINDOW, ObjectType.DIALOG}:
+        actions.add("close")
     if object_type in {ObjectType.MENU_BAR, ObjectType.MENU, ObjectType.CONTEXT_MENU}:
         actions.add("select_menu_item")
     if object_type == ObjectType.MENU:

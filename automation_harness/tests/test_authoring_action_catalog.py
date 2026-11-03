@@ -128,3 +128,61 @@ def test_choicebox_selector_action_requires_explicit_value():
     assert any(item.name == "selector" and item.required for item in select.inputs)
     call = select.to_step_call("choice-1", definition.component_id, {"selector": "Camera A"})
     assert call.inputs["action"]["selector"] == "Camera A"
+
+
+def test_legacy_tabpane_inventory_exposes_typed_owner_scoped_selector_options():
+    from automation_harness.authoring.action_catalog import tab_inventory_selector_options
+
+    definition = ComponentDefinition(
+        "Advanced Details Window.Tabs",
+        object_type=ObjectType.TAB_CONTAINER,
+        actions=frozenset({"select_item"}),
+        properties={"tabs": [
+            {"index": 0, "id": None, "text": "Camera Status", "disabled": False},
+            {"index": 1, "id": None, "text": "Video Tracker Status", "disabled": False},
+            {"index": 2, "id": "ersaInstanceTab", "text": "ERSA Instance"},
+            {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
+            {"index": 4, "id": "cameraHealthViewTab", "text": "Camera Health"},
+            {"index": 5, "id": None, "text": "Camera Commands"},
+            {"index": 6, "id": None, "text": "MVD Messages"},
+        ]},
+    )
+
+    options = tab_inventory_selector_options(definition)
+    assert len(options) == 7
+    assert options[0] == (
+        {"kind": "tab", "criteria": {"text": "Camera Status", "index": 0}},
+        "Camera Status",
+    )
+    assert options[3] == (
+        {"kind": "tab", "criteria": {
+            "id": "sessionViewTab", "text": "Active Sessions", "index": 3,
+        }},
+        "Active Sessions",
+    )
+    select = action_by_id(definition, "select_item")
+    call = select.to_step_call("select-active-sessions", definition.object_id, {
+        "selector": options[3][0],
+    })
+    assert call.inputs["component_id"] == definition.object_id
+    assert call.inputs["action"]["selector"] == options[3][0]
+
+
+def test_tab_inventory_selector_options_reject_disabled_or_unidentifiable_tabs():
+    from automation_harness.authoring.action_catalog import tab_inventory_selector_options
+    definition = ComponentDefinition(
+        "tab-owner", object_type=ObjectType.TAB_CONTAINER,
+        properties={"tabs": [
+            {"text": "Enabled", "index": 0},
+            {"text": "Disabled", "index": 1, "disabled": True},
+            {"index": 2, "id": None, "text": None},
+            {"text": "Enabled", "index": 3},
+        ]},
+    )
+    options = tab_inventory_selector_options(definition)
+    assert [label for _, label in options] == ["Enabled (tab 1)", "Enabled (tab 4)"]
+    assert options[0][0]["criteria"] == {"text": "Enabled", "index": 0}
+    assert options[1][0]["criteria"] == {"text": "Enabled", "index": 3}
+    assert tab_inventory_selector_options(
+        ComponentDefinition("not-tabpane", object_type=ObjectType.TAB, properties=definition.properties)
+    ) == ()

@@ -61,6 +61,13 @@ class JavaAccessibilityDriver:
     def activate(self, **kwargs: Any):
         return self._linux().activate(**kwargs) if platform.system() == "Linux" else self._windows().activate(**kwargs)
 
+    def close_window(self, **kwargs: Any):
+        if platform.system() == "Linux":
+            return self._linux().close_window(**kwargs)
+        raise NotImplementedError(
+            "Windows Java Access Bridge does not expose a verified native window Close operation"
+        )
+
     def get_text(self, **kwargs: Any):
         return self._linux().get_text(**kwargs) if platform.system() == "Linux" else self._windows().get_text(**kwargs)
 

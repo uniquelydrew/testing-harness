@@ -422,10 +422,21 @@ class AtspiRecordingAdapter:
         # callback-owned state.  libatspi dispatches deferred messages on the
         # main context; cross-thread listener removal can race that native
         # dispatch and leave stale listener metadata behind.
+        unregister_error = None
         try:
             self._deregister_listeners_on_main_thread()
+        except Exception as exc:
+            # A timed-out main-thread unregister has not proven that any
+            # listener is detached. Preserve the native registry lease and
+            # listener references until a later successful stop. Releasing
+            # them now risks a late libatspi callback against freed state.
+            unregister_error = exc
+            self._diagnostic(
+                "atspi_main_thread_unregister_failed",
+                error_type=type(exc).__name__, error=str(exc),
+            )
         finally:
-            shutdown_error = None
+            shutdown_error = unregister_error
             callback_deadline = time.monotonic() + 5.0
             with self._callback_condition:
                 self._diagnostic(
@@ -473,16 +484,25 @@ class AtspiRecordingAdapter:
                     pointer_worker=self._pointer_worker.snapshot(),
                 )
             try:
-                if lease is not None:
-                    self._diagnostic("atspi_stop_lease_closing")
-                    lease.close()
-                    self._diagnostic("atspi_stop_lease_closed")
+                if shutdown_error is None:
+                    if lease is not None:
+                        self._diagnostic("atspi_stop_lease_closing")
+                        lease.close()
+                        self._diagnostic("atspi_stop_lease_closed")
+                else:
+                    # Keep the lease reachable for a safe explicit retry.
+                    # In particular, never release libatspi with a pending
+                    # registration or callback still owned by this adapter.
+                    self._lease = lease
+                    self._diagnostic(
+                        "atspi_stop_lease_retained_for_recovery",
+                        unregister_failed=unregister_error is not None,
+                        active_callbacks=self._active_callbacks,
+                    )
             finally:
-                self._listeners = []
-                # Preserve callback-owned state if a native callback did not
-                # drain; the process-global registry remains alive and the
-                # callback may still unwind against this adapter instance.
-                if self._active_callbacks == 0:
+                if unregister_error is None:
+                    self._listeners = []
+                if shutdown_error is None and self._active_callbacks == 0:
                     self._emit = None
                     self._pyatspi = None
                 self._diagnostic(
@@ -510,6 +530,10 @@ class AtspiRecordingAdapter:
             )
             for callback, event_type in tuple(self._listeners):
                 self._pyatspi.Registry.deregisterEventListener(callback, event_type)
+                # Commit successful removals individually. If a later native
+                # deregistration raises, a retry must not deregister an
+                # already detached callback a second time.
+                self._listeners.remove((callback, event_type))
             self._diagnostic(
                 "atspi_main_thread_unregister_finished",
                 listener_count=len(self._listeners),

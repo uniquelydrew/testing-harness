@@ -85,7 +85,23 @@ class ComponentDefinition:
             ObjectType.CONTEXT_MENU,
         }:
             values.add(ActionType.SELECT_MENU_ITEM)
-        return frozenset(values) or default_actions(self.object_type)
+        # Legacy window/dialog repositories predate the canonical Close action.
+        # Preserve object identity and stored capabilities; advertise the
+        # semantic operation without an automatic click on an arbitrary X.
+        if self.object_type in {ObjectType.WINDOW, ObjectType.DIALOG} and any(
+            strategy.type in {"javafx", "java_agent", "atspi", "java_accessibility"}
+            for strategy in self.strategies
+        ):
+            values.add(ActionType.CLOSE)
+        available = frozenset(values) or default_actions(self.object_type)
+        if self.object_type in {ObjectType.WINDOW, ObjectType.DIALOG} and not any(
+            strategy.type in {"javafx", "java_agent", "atspi", "java_accessibility"}
+            for strategy in self.strategies
+        ):
+            # Reference-only/visual window proxies cannot honor native close
+            # requests. Do not offer a misleading action in Add Object Action.
+            available = available - frozenset({ActionType.CLOSE})
+        return available
 
     def supports(self, action: ActionType) -> bool:
         if action is ActionType.SELECT_MENU_ITEM:

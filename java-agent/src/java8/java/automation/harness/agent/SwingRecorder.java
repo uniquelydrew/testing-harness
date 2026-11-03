@@ -10,6 +10,7 @@ import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.event.AWTEventListener;
 import java.awt.event.MouseEvent;
+import java.awt.event.WindowEvent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -118,6 +119,32 @@ final class SwingRecorder {
         }});
         Map<String, Object> result = new LinkedHashMap<String, Object>(target(component, null, null));
         result.put("window_activated", true);
+        return result;
+    }
+
+    static Map<String, Object> closeWindow(String name, String accessibleId, String nativeClass,
+            String windowTitle, String componentPath) {
+        final Component target = find(name, accessibleId, nativeClass, windowTitle, componentPath);
+        if (!(target instanceof Window)) {
+            throw new IllegalArgumentException(
+                    "close_window requires a directly identified AWT Window/Dialog, not a child component");
+        }
+        final Window window = (Window) target;
+        runOnEdtAndWait(new Runnable() { public void run() {
+            if (!window.isShowing()) throw new IllegalStateException("window already hidden");
+            // WINDOW_CLOSING honors the AUT's normal veto/unsaved-work
+            // lifecycle. dispose() would bypass those handlers.
+            window.dispatchEvent(new WindowEvent(window, WindowEvent.WINDOW_CLOSING));
+        }});
+        if (window.isShowing()) {
+            throw new IllegalStateException(
+                    "Swing/AWT window remains visible after WINDOW_CLOSING (close refused)");
+        }
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("closed", true);
+        result.put("action", "close");
+        result.put("mechanism", "awt.window_closing");
+        result.put("window", windowTitle(window));
         return result;
     }
 
