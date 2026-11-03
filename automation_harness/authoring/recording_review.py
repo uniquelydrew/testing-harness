@@ -15,7 +15,7 @@ from automation_harness.core.logical_menu import (
     stage_recorded_menu_capture,
 )
 from automation_harness.core.menu_navigation import navigation_from_path
-from automation_harness.models.gui import default_actions
+from automation_harness.models.gui import ActionType, ObjectType, default_actions
 from automation_harness.recording.session import RecordedInteraction, RepositoryMatch
 
 
@@ -173,6 +173,45 @@ def materialize_recorded_interaction(
             raise ValueError(
                 "recorded interaction has no unique repository component"
             )
+
+        # A TabPane is a collection owner. Its selected Tab is a logical
+        # child rather than an independently resolvable JavaFX Node. Persist
+        # the actual inventory on the unique owner without generating
+        # duplicate top-level tab objects or changing its immutable UUID.
+        if (
+            reviewed.action is ActionType.SELECT_ITEM
+            and reviewed.target.semantic_type() is ObjectType.TAB_CONTAINER
+            and reviewed.repository_match.status == "known_unique"
+        ):
+            definition = repository.get(reviewed.repository_match.component_id)
+            if definition.framework != "javafx":
+                raise ValueError("logical TabPane selection owner must use the JavaFX backend")
+            captured_tabs = dict(reviewed.target.logical_subobjects or {})
+            if not captured_tabs:
+                raise ValueError("recorded TabPane selection is missing its logical tab inventory")
+            merged_subobjects = dict(definition.subobjects)
+            for key, child in captured_tabs.items():
+                existing_child = merged_subobjects.get(key)
+                if existing_child is not None and existing_child.get("kind") != "tab":
+                    raise ValueError("tab inventory conflicts with an existing non-tab subobject")
+                merged_subobjects[key] = dict(child)
+            props = dict(definition.properties or {})
+            tab_inventory = dict(reviewed.target.backend_properties or {}).get("tabs")
+            if isinstance(tab_inventory, (list, tuple)):
+                props["tabs"] = [dict(tab) for tab in tab_inventory if isinstance(tab, dict)]
+            # Historical capture stored TAB_PANE controls as type TAB.
+            # This migration is permitted only after unique owner matching.
+            updated = replace(
+                definition,
+                object_type=ObjectType.TAB_CONTAINER,
+                actions=frozenset((*definition.actions, ActionType.SELECT_ITEM.value)),
+                subobjects=merged_subobjects,
+                properties=props,
+                revision=definition.revision + 1,
+            )
+            if updated != definition:
+                repository = repository.with_component(updated)
+                inventory_changed = True
 
         if reviewed.repository_match.status != "known_subobject":
             definition = repository.get(reviewed.repository_match.component_id)

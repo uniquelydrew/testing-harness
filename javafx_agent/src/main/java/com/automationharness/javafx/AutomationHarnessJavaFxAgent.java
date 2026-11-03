@@ -403,6 +403,7 @@ public final class AutomationHarnessJavaFxAgent {
         private static final Map<Object, TabRecordListener> TAB_RECORD_LISTENERS =
                 new IdentityHashMap<Object, TabRecordListener>();
         private static volatile boolean TAB_RECORD_ACTIVE = false;
+        private static volatile String TAB_RECORD_FAILURE = null;
         private static final int MAX_TAB_RECORD_EVENTS = 1024;
 
         private static final Map<String, PendingMenuClick> PENDING_MENU_CLICKS = new ConcurrentHashMap<String, PendingMenuClick>();
@@ -477,6 +478,7 @@ public final class AutomationHarnessJavaFxAgent {
                 }
                 synchronized (TAB_RECORD_LOCK) {
                     TAB_RECORD_EVENTS.clear();
+                    TAB_RECORD_FAILURE = null;
                 }
                 TAB_RECORD_ACTIVE = true;
                 try {
@@ -501,6 +503,9 @@ public final class AutomationHarnessJavaFxAgent {
                 if (TAB_RECORD_ACTIVE && TAB_RECORD_EVENTS.isEmpty() && wait > 0) {
                     TAB_RECORD_LOCK.wait(wait);
                 }
+                if (TAB_RECORD_FAILURE != null) {
+                    throw new IllegalStateException(TAB_RECORD_FAILURE);
+                }
                 return singleton("observations", drainTabRecordEvents());
             }
         }
@@ -511,6 +516,12 @@ public final class AutomationHarnessJavaFxAgent {
                 clearTabRecordListeners();
                 synchronized (TAB_RECORD_LOCK) {
                     TAB_RECORD_LOCK.notifyAll();
+                    if (TAB_RECORD_FAILURE != null) {
+                        String failure = TAB_RECORD_FAILURE;
+                        TAB_RECORD_FAILURE = null;
+                        TAB_RECORD_EVENTS.clear();
+                        throw new IllegalStateException(failure);
+                    }
                     return singleton("observations", drainTabRecordEvents());
                 }
             });
@@ -587,8 +598,7 @@ public final class AutomationHarnessJavaFxAgent {
                         // selection and producing an inaccurate test plan.
                         TAB_RECORD_ACTIVE = false;
                         TAB_RECORD_EVENTS.clear();
-                        TAB_RECORD_EVENTS.add(singleton("recording_error",
-                                "JavaFX tab recording observation buffer overflow"));
+                        TAB_RECORD_FAILURE = "JavaFX tab recording observation buffer overflow";
                     } else {
                         TAB_RECORD_EVENTS.add(observation);
                     }
@@ -598,6 +608,12 @@ public final class AutomationHarnessJavaFxAgent {
                 // pulse. The read poll discovers their selection models.
             } catch (Throwable failure) {
                 System.err.println("[automation-harness-javafx] tab selection capture failed: " + failure);
+                synchronized (TAB_RECORD_LOCK) {
+                    TAB_RECORD_FAILURE = "JavaFX tab selection capture failed: "
+                            + failure.getClass().getSimpleName() + ": " + failure.getMessage();
+                    TAB_RECORD_ACTIVE = false;
+                    TAB_RECORD_LOCK.notifyAll();
+                }
             }
         }
 

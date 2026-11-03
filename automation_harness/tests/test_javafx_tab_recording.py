@@ -87,6 +87,14 @@ def test_tab_change_creates_one_semantic_step_not_an_owner_click():
     reviewed = materialize_recorded_interaction(repository, interactions[0])
     assert reviewed.error is None
     assert reviewed.resolved
+    assert reviewed.inventory_changed
+    owner = reviewed.repository.get("advanced.details.tabs")
+    assert owner.object_id == repository.get("advanced.details.tabs").object_id
+    assert owner.object_type is ObjectType.TAB_CONTAINER
+    assert owner.subobjects["sessionviewtab"]["criteria"] == {
+        "id": "sessionViewTab", "text": "Active Sessions",
+    }
+    assert owner.subobjects["camera_status"]["criteria"] == {"text": "Camera Status"}
 
 
 def test_idless_camera_status_records_owner_scoped_text_selector():

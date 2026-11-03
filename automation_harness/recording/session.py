@@ -184,14 +184,21 @@ class RecordingSession:
                 if not self._active:
                     return tuple(self._interactions)
             try:
+                stop_errors = []
                 for adapter in reversed(self.adapters):
                     self.diagnostic("adapter_stopping", adapter=_adapter_details(adapter))
                     try:
                         adapter.stop()
                     except Exception as exc:
                         self.diagnostic_exception("adapter_stop_failed", exc, adapter=_adapter_details(adapter))
-                        raise
+                        stop_errors.append(exc)
+                        # A failing JavaFX bridge must not prevent AT-SPI
+                        # listener deregistration, nor vice versa. Stop all
+                        # independent adapters before surfacing the failure.
+                        continue
                     self.diagnostic("adapter_stopped", adapter=_adapter_details(adapter))
+                if stop_errors:
+                    raise stop_errors[0]
             finally:
                 with self._lock:
                     self._active = False

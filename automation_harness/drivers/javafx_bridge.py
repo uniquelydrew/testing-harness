@@ -906,7 +906,11 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         authored_strategy=strategy,
         framework="javafx",
         native_class=native_class,
-        logical_subobjects=_javafx_menu_subobjects(node.get("menu_children")),
+        logical_subobjects=(
+            _javafx_tab_subobjects(node.get("tabs"))
+            if classify_accessibility(role, native_class) is ObjectType.TAB_CONTAINER
+            else _javafx_menu_subobjects(node.get("menu_children"))
+        ),
     )
 
 
@@ -1192,7 +1196,11 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         strategy = ComponentStrategy("javafx", {"identification": _candidate_identification(node)})
     else:
         strategy = None
-    logical_subobjects = _javafx_menu_subobjects(node.get("menu_children"))
+    logical_subobjects = (
+        _javafx_tab_subobjects(node.get("tabs"))
+        if object_type is ObjectType.TAB_CONTAINER
+        else _javafx_menu_subobjects(node.get("menu_children"))
+    )
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("accessible_text") or node.get("text") or node.get("id")), role=role,
@@ -1217,6 +1225,49 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         object_type=object_type, framework=framework, native_class=native_class,
         logical_subobjects=logical_subobjects,
     )
+
+
+def _javafx_tab_subobjects(raw: Any) -> dict[str, Any]:
+    """Persist logical Tabs beneath their uniquely identified TabPane owner.
+
+    A Tab is not a JavaFX Node. The stable model ID or owner-local label is
+    authoritative; the ordinal is corroborating evidence, never global identity.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return {}
+    result = {}
+    for ordinal, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            continue
+        tab_id = item.get("id")
+        label = item.get("text")
+        if tab_id in (None, "") and label in (None, ""):
+            continue
+        base = str(tab_id or label).strip().casefold()
+        key = "".join(char if char.isalnum() else "_" for char in base).strip("_")
+        if not key:
+            key = "tab_%d" % ordinal
+        candidate = key
+        suffix = 2
+        while candidate in result:
+            candidate = "%s_%d" % (key, suffix)
+            suffix += 1
+        criteria = {}
+        if tab_id not in (None, ""):
+            criteria["id"] = str(tab_id)
+        if label not in (None, ""):
+            criteria["text"] = str(label)
+        entry = {
+            "kind": "tab",
+            "display_name": str(label or tab_id),
+            "criteria": criteria,
+            "ordinal": ordinal,
+            "selectable": not bool(item.get("disabled", False)),
+        }
+        if item.get("disabled") is not None:
+            entry["enabled"] = not bool(item["disabled"])
+        result[candidate] = entry
+    return result
 
 
 def _javafx_menu_subobjects(raw: Any) -> dict[str, Any]:
