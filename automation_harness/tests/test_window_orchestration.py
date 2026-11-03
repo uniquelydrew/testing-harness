@@ -250,3 +250,217 @@ def test_orchestrator_rejects_driver_activating_wrong_owner():
             strategy="javafx",
             arguments={"window": "Expected Dialog"},
         )
+
+
+def test_javafx_stage_focus_is_authoritative_when_x11_window_is_unlisted():
+    """X11 can omit _NET_WM_PID or expose a different WM_NAME.
+
+    The JavaFX bridge has already resolved the exact Stage in one JVM,
+    and waited for Stage.isFocused(); unmatched EWMH metadata must not
+    turn that verified focus into a false negative.
+    """
+    from automation_harness.drivers.x11_foreground import X11WindowNotFound
+
+    class UnlistedMonitor(FakeMonitor):
+        def activate(self, **kwargs):
+            self.calls.append(kwargs)
+            raise X11WindowNotFound("no X11 window matched")
+
+    monitor = UnlistedMonitor()
+    orchestrator = WindowOrchestrator(monitor)
+    details = orchestrator.ensure_foreground(
+        component_id="File Menu",
+        object_id="uuid-file-menu",
+        strategy="javafx",
+        driver=SimpleNamespace(activate_window=lambda **kwargs: {
+            "window": "ERSA test.build.0 Main Video Display, TSI.op1, domain 12",
+            "bridge_pid": 5215,
+            "selection": "owning_window",
+            "focused": True,
+        }),
+        arguments={"window": "ERSA test.build.0 Main Video Display, TSI.op1, domain 12"},
+    )
+    assert details["verification"] == "javafx-stage-focused"
+    assert details["native_foreground_verified"] is False
+    assert "X11WindowNotFound" in details["native_lookup_diagnostic"]
+    assert details["window"].startswith("ERSA test.build.0")
+    assert len(monitor.calls) == 1
+
+
+@pytest.mark.parametrize("strategy,selection,focused", [
+    ("atspi", "owning_window", True),
+    ("java_agent", "owning_window", True),
+    ("javafx", "resolved_component", True),
+    ("javafx", "owning_window", False),
+])
+def test_missing_x11_window_fallback_requires_unique_focused_javafx_stage(
+    strategy, selection, focused,
+):
+    from automation_harness.drivers.x11_foreground import X11WindowNotFound
+
+    class UnlistedMonitor(FakeMonitor):
+        def activate(self, **kwargs):
+            raise X11WindowNotFound("no native owner")
+
+    orchestrator = WindowOrchestrator(UnlistedMonitor())
+    with pytest.raises(WindowOrchestrationError, match="X11WindowNotFound"):
+        orchestrator.ensure_foreground(
+            component_id="File Menu", object_id="uuid-file-menu",
+            strategy=strategy,
+            driver=SimpleNamespace(activate_window=lambda **kwargs: {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": selection, "focused": focused,
+            }),
+            arguments={"window": "ERSA Main"},
+        )
+
+
+def test_native_foreground_timeout_must_not_fallback_to_javafx_claim():
+    class TimeoutMonitor(FakeMonitor):
+        def activate(self, **kwargs):
+            raise TimeoutError("native foreground window is different")
+
+    orchestrator = WindowOrchestrator(TimeoutMonitor())
+    with pytest.raises(WindowOrchestrationError, match="native foreground window is different"):
+        orchestrator.ensure_foreground(
+            component_id="File Menu", object_id="uuid-file-menu",
+            strategy="javafx",
+            driver=SimpleNamespace(activate_window=lambda **kwargs: {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": "owning_window", "focused": True,
+            }),
+            arguments={"window": "ERSA Main"},
+        )
+
+
+def test_javafx_native_handoff_precedes_stage_focus_verification_with_terminal_in_front():
+    """An unrelated active terminal must not starve the native focus handoff."""
+    order = []
+    state = {"focused": False, "active": 0x777}
+
+    class ForegroundMonitor:
+        desktop_available = True
+
+        def snapshot(self):
+            return WindowSnapshot(0.0, state["active"], True)
+
+        def activate(self, *, pid, title, timeout):
+            order.append(("x11.activate", pid, title))
+            assert state["focused"] is False
+            assert state["active"] == 0x777
+            state["active"] = 0x111
+            state["focused"] = True
+            return {
+                "native_window_id": "0x111",
+                "native_foreground_verified": True,
+                "active_window": "0x111",
+                "previous_active_window": "0x777",
+            }
+
+    class JavaFx:
+        def request_window_activation(self, **kwargs):
+            order.append(("javafx.request", kwargs.get("window")))
+            return {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": "owning_window", "focused": False,
+                "activation_attempts": 1,
+            }
+
+        def activate_window(self, **kwargs):
+            order.append(("javafx.verify", kwargs.get("window")))
+            assert state["focused"]
+            return {
+                "bridge_pid": 5215, "window": "ERSA Main", "focused": True,
+                "activation_attempts": 1,
+            }
+
+    result = WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
+        component_id="File Menu", object_id="uuid-file",
+        strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+    )
+    assert [entry[0] for entry in order] == [
+        "javafx.request", "x11.activate", "javafx.verify",
+    ]
+    assert result["verification"] == "x11-ewmh"
+    assert result["focused"] is True
+    assert result["previous_active_window"] == "0x777"
+
+
+def test_failed_native_handoff_does_not_attempt_semantic_action_or_focus_poll():
+    calls = []
+
+    class ForegroundMonitor:
+        desktop_available = True
+
+        def activate(self, **kwargs):
+            calls.append("native")
+            raise RuntimeError("terminal remains foreground")
+
+    class JavaFx:
+        def request_window_activation(self, **kwargs):
+            calls.append("request")
+            return {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": "owning_window", "focused": False,
+            }
+
+        def activate_window(self, **kwargs):
+            calls.append("verify")
+            return {"bridge_pid": 5215, "window": "ERSA Main", "focused": True}
+
+    with pytest.raises(WindowOrchestrationError, match="terminal remains foreground"):
+        WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
+            component_id="File Menu", object_id="uuid-file",
+            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+        )
+    assert calls == ["request", "native"]
+
+
+def test_unlisted_x11_window_does_not_grant_unfocused_stage_access():
+    from automation_harness.drivers.x11_foreground import X11WindowNotFound
+
+    class ForegroundMonitor:
+        desktop_available = True
+
+        def activate(self, **kwargs):
+            raise X11WindowNotFound("X11 title mismatch")
+
+    class JavaFx:
+        def request_window_activation(self, **kwargs):
+            return {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": "owning_window", "focused": False,
+            }
+
+        def activate_window(self, **kwargs):
+            raise RuntimeError("JavaFX Stage did not confirm foreground focus")
+
+    with pytest.raises(WindowOrchestrationError, match="native X11 owner is unavailable"):
+        WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
+            component_id="File Menu", object_id="uuid-file",
+            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+        )
+
+
+def test_handoff_rejects_javafx_stage_identity_changes_after_native_activation():
+    class ForegroundMonitor(FakeMonitor):
+        def activate(self, **kwargs):
+            return {
+                "native_window_id": "0x111", "native_foreground_verified": True,
+            }
+
+    class JavaFx:
+        def request_window_activation(self, **kwargs):
+            return {
+                "bridge_pid": 5215, "window": "ERSA Main",
+                "selection": "owning_window", "focused": False,
+            }
+
+        def activate_window(self, **kwargs):
+            return {"bridge_pid": 5216, "window": "ERSA Main", "focused": True}
+
+    with pytest.raises(WindowOrchestrationError, match="identity changed"):
+        WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
+            component_id="File Menu", object_id="uuid-file",
+            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+        )

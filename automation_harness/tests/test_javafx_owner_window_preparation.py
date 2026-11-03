@@ -258,3 +258,49 @@ def test_zero_match_error_includes_resolution_trace(monkeypatch):
     driver = make_driver(monkeypatch, endpoint)
     with pytest.raises(LookupError, match="resolution_stages"):
         driver.resolve("object", identification={"mandatory": {"id": "missing"}})
+
+
+def test_nonblocking_javafx_activation_returns_pending_focus_after_single_request(monkeypatch):
+    endpoint = FakeEndpoint()
+    requests = []
+
+    def pending(operation, **kwargs):
+        requests.append(operation)
+        if operation == "windows":
+            return {"windows": [{"title": WINDOW, "showing": True}]}
+        if operation == "activate_window":
+            return {"operation": "activate_window", "window": WINDOW, "focused": False}
+        raise AssertionError("unexpected request %s" % operation)
+
+    endpoint.request = pending
+    driver = make_driver(monkeypatch, endpoint)
+    result = driver.request_window_activation(window=WINDOW)
+    assert result["window"] == WINDOW
+    assert result["bridge_pid"] == endpoint.pid
+    assert result["focused"] is False
+    assert result["selection"] == "owning_window"
+    assert result["activation_attempts"] == 1
+    assert requests == ["windows", "activate_window"]
+
+
+def test_standalone_javafx_activation_remains_strict(monkeypatch):
+    endpoint = FakeEndpoint()
+    calls = []
+
+    def scripted(operation, **kwargs):
+        calls.append(operation)
+        if operation == "windows":
+            return {"windows": [{"title": WINDOW, "showing": True}]}
+        if operation == "activate_window":
+            return {
+                "operation": "activate_window", "window": WINDOW,
+                "focused": calls.count("activate_window") >= 3,
+            }
+        raise AssertionError("unexpected request")
+
+    endpoint.request = scripted
+    driver = make_driver(monkeypatch, endpoint)
+    result = driver.activate_window(window=WINDOW)
+    assert result["focused"] is True
+    assert result["activation_attempts"] == 3
+    assert calls[0] == "windows"

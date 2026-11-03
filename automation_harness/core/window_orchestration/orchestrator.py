@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping
 
 from automation_harness.core.window_orchestration.monitor import WindowMonitor
+from automation_harness.drivers.x11_foreground import X11WindowNotFound
 
 
 class WindowOrchestrationError(RuntimeError):
@@ -73,7 +74,19 @@ class WindowOrchestrator:
                     last["native_window_id"], 16,
                 ):
                     return dict(last, reused_foreground=True)
-            reported = activate(**dict(arguments))
+            # JavaFX focus acquisition is a two-phase handshake. A Stage can
+            # acknowledge toFront()/requestFocus() while an unrelated terminal
+            # still owns native foreground. Never block inside the JavaFX
+            # driver's focused-state retry before attempting the X11 handoff.
+            request_activation = (
+                getattr(driver, "request_window_activation", None)
+                if strategy == "javafx" else None
+            )
+            phased = callable(request_activation)
+            reported = (
+                request_activation(**dict(arguments))
+                if phased else activate(**dict(arguments))
+            )
             if not isinstance(reported, Mapping):
                 raise WindowOrchestrationError("driver returned no window activation evidence")
             details = dict(reported)
@@ -86,20 +99,79 @@ class WindowOrchestrator:
                 )
             identity = expected_window or reported_window
             pid = details.get("bridge_pid") or details.get("process_id") or details.get("pid")
-            # Native verification is mandatory when a concrete desktop
-            # identity is available. The bridge's claim alone is not enough.
+            # The driver has located a single owning JavaFX Stage, but its
+            # initial focus request can be denied while a terminal is in
+            # front. Raise the native window BEFORE waiting for Stage focus.
+            # Stage identity must be verified again after native activation.
+            native_not_found = None
             if (isinstance(pid, int) and pid > 0 and isinstance(identity, str)
                     and identity and self.monitor.desktop_available):
-                native = self.monitor.activate(pid=pid, title=identity, timeout=timeout)
-                details.update(native)
-                details["verification"] = "x11-ewmh"
-            elif not _positive_focus(details):
-                raise WindowOrchestrationError(
-                    "activation of %r has no verifiable foreground evidence "
-                    "(driver=%s, window=%r, pid=%r)" %
-                    (component_id, strategy, identity, pid)
+                try:
+                    native = self.monitor.activate(pid=pid, title=identity, timeout=timeout)
+                except X11WindowNotFound as exc:
+                    native_not_found = exc
+                    # Only a uniquely resolved JavaFX Stage can independently
+                    # establish focus when the WM exposes no matching XID.
+                    if not (strategy == "javafx"
+                            and details.get("selection") == "owning_window"
+                            and reported_window == identity):
+                        raise
+                else:
+                    details.update(native)
+                    details["verification"] = "x11-ewmh"
+
+            if phased:
+                # This strict second request confirms that the exact Stage
+                # has actually become focused following the native handoff.
+                # Never conflate a successful X11 request with JavaFX focus.
+                try:
+                    verified = activate(**dict(arguments))
+                except Exception as exc:
+                    if native_not_found is not None:
+                        raise WindowOrchestrationError(
+                            "native X11 owner is unavailable (%s); "
+                            "JavaFX Stage did not confirm focus (%s: %s)" %
+                            (native_not_found, type(exc).__name__, exc)
+                        ) from exc
+                    raise
+                if not isinstance(verified, Mapping):
+                    raise WindowOrchestrationError(
+                        "JavaFX Stage focus verification returned no evidence"
+                    )
+                if verified.get("window") != identity or verified.get("bridge_pid") != pid:
+                    raise WindowOrchestrationError(
+                        "JavaFX Stage identity changed during foreground handoff "
+                        "(expected pid=%r window=%r; actual pid=%r window=%r)" %
+                        (pid, identity, verified.get("bridge_pid"), verified.get("window"))
+                    )
+                if verified.get("focused") is not True:
+                    raise WindowOrchestrationError(
+                        "JavaFX Stage did not confirm focus after native handoff"
+                    )
+                details["focused"] = True
+                details["activation_attempts"] = (
+                    details.get("activation_attempts", 0) +
+                    verified.get("activation_attempts", 0)
                 )
-            else:
+
+            if native_not_found is not None:
+                if not (strategy == "javafx"
+                        and details.get("selection") == "owning_window"
+                        and details.get("focused") is True
+                        and reported_window == identity):
+                    raise native_not_found
+                details["verification"] = "javafx-stage-focused"
+                details["native_foreground_verified"] = False
+                details["native_lookup_diagnostic"] = (
+                    "%s: %s" % (type(native_not_found).__name__, native_not_found)
+                )
+            elif "verification" not in details:
+                if not _positive_focus(details):
+                    raise WindowOrchestrationError(
+                        "activation of %r has no verifiable foreground evidence "
+                        "(driver=%s, window=%r, pid=%r)" %
+                        (component_id, strategy, identity, pid)
+                    )
                 details["verification"] = "backend-confirmed"
             if identity:
                 details["window"] = identity
