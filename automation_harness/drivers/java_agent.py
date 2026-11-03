@@ -135,7 +135,16 @@ class JavaAgentDriver:
             "activate_window", _identity_payload(identification),
             transports=self.refresh_transports(),
         )
-        return {"operation": "activate_window", "component": captured.to_dict()}
+        props = dict(captured.backend_properties or {})
+        # Java's requestFocus() is not an OS foreground guarantee. Preserve
+        # exact native identity so WindowOrchestrator can verify it through X11.
+        return {
+            "operation": "activate_window",
+            "component": captured.to_dict(),
+            "window": captured.window,
+            "process_id": props.get("process_id"),
+            "focused": props.get("window_focused") is True or props.get("window_active") is True,
+        }
 
     def close_window(self, *, identification=None, **_kwargs):
         """Request closure of a directly resolved Swing/AWT Window or Dialog."""

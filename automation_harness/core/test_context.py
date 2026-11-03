@@ -13,6 +13,8 @@ from automation_harness.core.resolution_retry import install_component_handle_re
 from automation_harness.core.services import AutomationServices
 from automation_harness.core.step_registry import StepInvocationResult, StepRegistry, load_step_libraries
 from automation_harness.core.variables import VariableRef, VariableStore
+from automation_harness.core.window_orchestration import WindowOrchestrator
+from automation_harness.models.gui import ActionType
 from automation_harness.reference.protocol import ReferenceClient
 from automation_harness.utils.evidence import EvidenceRecorder
 
@@ -34,8 +36,11 @@ class TestContext:
     reference: ReferenceClient | None = None
     services: AutomationServices | None = None
     execution: ExecutionContextStack = field(default_factory=ExecutionContextStack)
+    window_orchestrator: WindowOrchestrator | None = None
 
     def __post_init__(self) -> None:
+        if self.backend == "live-desktop" and self.window_orchestrator is None:
+            self.window_orchestrator = WindowOrchestrator()
         if self.globals is None:
             self.globals = VariableStore(self.evidence)
         if self.services is None:
@@ -129,6 +134,30 @@ class TestContext:
 
     def execution_scope(self, scope: Mapping[str, Any] | None):
         return self.execution.scope(scope)
+
+    def prepare_gui_step(self, step_name: str, inputs: Mapping[str, Any]):
+        """Establish the window precondition before pre-step image capture.
+
+        Non-mutating assertions remain observational; their own evidence
+        contracts handle any necessary window activation. Actions are still
+        rechecked immediately before dispatch by ComponentHandle.execute().
+        """
+        if self.backend != "live-desktop":
+            return None
+        actions = {
+            "gui.button.click": ActionType.CLICK,
+            "gui.text.set": ActionType.SET_TEXT,
+            "gui.selection.select": ActionType.SELECT_ITEM,
+        }
+        if step_name != "gui.object.action" and step_name not in actions:
+            return None
+        component_id = inputs.get("component_id")
+        if not isinstance(component_id, str) or not component_id:
+            return None
+        action = inputs.get("action") if step_name == "gui.object.action" else actions[step_name]
+        return self.component(component_id).prepare_for_interaction(
+            action, strategy=inputs.get("strategy"),
+        )
 
     def run_step(
         self,

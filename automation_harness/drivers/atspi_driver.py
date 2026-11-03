@@ -387,9 +387,21 @@ class AtspiDriver:
         if window is None:
             raise RuntimeError("AT-SPI component has no owning top-level window")
         _grab_focus(window, label="owning window")
+        # AT-SPI grabFocus() acknowledges a request, not OS foreground state.
+        # WindowOrchestrator cross-checks this PID/title against X11.
+        try:
+            state = window.getState()
+            focused = (
+                state.contains(pyatspi.STATE_ACTIVE)
+                or state.contains(pyatspi.STATE_FOCUSED)
+            )
+        except Exception:
+            focused = False
         return {
             "operation": "activate_window",
             "window": str(getattr(window, "name", "") or ""),
+            "process_id": _process_id(window),
+            "focused": bool(focused),
             "resolution_stages": [stage.to_dict() for stage in trace],
         }
 

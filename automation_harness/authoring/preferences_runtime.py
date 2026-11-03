@@ -170,6 +170,24 @@ def _restore_harness_windows(app_instance):
             primary.present()
         except Exception:
             pass
+        # present() requests activation but some X11 window managers retain
+        # foreground ownership after deiconify. Explicitly request the
+        # harness's known native XID without clicking an application control.
+        # The call is asynchronous and cannot delay report rendering.
+        try:
+            if os.environ.get("DISPLAY"):
+                from gi.repository import GdkX11
+                from automation_harness.drivers.x11_foreground import request_window_activation
+                native = primary.get_window()
+                if native is not None:
+                    xid = GdkX11.X11Window.get_xid(native)
+                    if xid:
+                        request_window_activation(int(xid))
+        except Exception:
+            # Platform/WM-dependent focus requests are best-effort. The report
+            # has already been loaded and must remain inspectable even when
+            # the desktop refuses foreground activation.
+            pass
 
 
 def install(app_module):

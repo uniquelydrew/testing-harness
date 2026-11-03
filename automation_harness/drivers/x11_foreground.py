@@ -53,6 +53,29 @@ def find_window(*, pid: int, title: str) -> int:
     return matches[0]
 
 
+def list_windows() -> tuple[dict, ...]:
+    """Read the current EWMH-managed window inventory without changing focus."""
+    windows = []
+    for xid in _window_ids():
+        try:
+            pid, title = _window_properties(xid)
+        except X11ActivationError:
+            continue
+        windows.append({
+            "native_window_id": hex(xid),
+            "process_id": pid,
+            "title": title,
+        })
+    return tuple(windows)
+
+
+def request_window_activation(xid: int) -> None:
+    """Request foreground for a known native window ID without blocking GTK."""
+    if not isinstance(xid, int) or xid <= 0:
+        raise X11ActivationError("native window ID must be a positive integer")
+    _request_activation(xid)
+
+
 def active_window() -> int | None:
     match = re.search(r"0x[0-9a-fA-F]+", _xprop("-root", "_NET_ACTIVE_WINDOW"))
     return int(match.group(), 16) if match else None

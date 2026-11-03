@@ -86,10 +86,9 @@ def preparation_requirement(
     """Return the minimum preconditions for one semantic interaction."""
     semantic = GuiAction.from_value(action)
     if semantic.type is ActionType.CLOSE and object_type in {ObjectType.WINDOW, ObjectType.DIALOG}:
-        # Native close requests are addressed to a uniquely resolved window.
-        # Foreground activation/focus can instead redirect to another dialog
-        # or invoke modal focus handlers, so avoid both preparations.
-        return PreparationRequirement(False, False, require_window_activation=False)
+        # Activate the exact window/dialog without component-level focus.
+        # Never redirect a Close to the currently active unrelated dialog.
+        return PreparationRequirement(True, False, require_window_activation=True)
     if semantic.type in _POINTER_ACTIONS and object_type in {
         ObjectType.MENU_ITEM,
         ObjectType.CHECK_MENU_ITEM,
@@ -107,7 +106,10 @@ def preparation_requirement(
         return PreparationRequirement(True, False, require_window_activation=True)
     if semantic.type in _FOCUS_REQUIRED_ACTIONS:
         return PreparationRequirement(True, True, require_window_activation=True, require_focus=True)
-    return PreparationRequirement(True, True, require_window_activation=True, require_focus=False)
+    # Semantic selection/activation should not focus the child as a side
+    # effect of raising its owning window. Only text/edit and explicit focus
+    # operations request component focus.
+    return PreparationRequirement(True, False, require_window_activation=True, require_focus=False)
 
 
 def validate_preparation(

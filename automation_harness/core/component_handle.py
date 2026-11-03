@@ -370,6 +370,83 @@ class ComponentHandle:
             and strategy in {None, "accessibility", item.type}
         ]
         if not candidates:
+            # Visual targets are actionable only after their canonical owner
+            # has established foreground. A stale coordinate alone cannot
+            # authorize interaction with an arbitrary desktop window.
+            visual = next(
+                (item for item in self.definition.strategies
+                 if item.type == "anchored_visual"), None,
+            )
+            if visual is not None and requirement.activate_window:
+                visited = {self.definition.object_id}
+                owner_id = self.definition.owner_object_id
+                while owner_id:
+                    if owner_id in visited:
+                        raise ComponentResolutionError("cyclic visual object ownership")
+                    visited.add(owner_id)
+                    owner = self.context.components.get(owner_id)
+                    if any(item.type in {
+                        "atspi", "java_accessibility", "javafx", "java_agent",
+                    } for item in owner.strategies):
+                        outcome = ComponentHandle(self.context, owner).prepare_for_interaction(
+                            ActionType.SELECT_MENU_ITEM,
+                        )
+                        preparation = InteractionPreparation(
+                            "visual-owner:" + outcome.strategy,
+                            outcome.window_activation,
+                            PreparationOutcome.skipped("focus", "pointer action on visual child"),
+                        )
+                        self.context.evidence.record(
+                            "interaction_prepared",
+                            component_id=self.definition.component_id,
+                            action=semantic.to_dict(),
+                            preparation=preparation.to_dict(),
+                            owner_object_id=owner.object_id,
+                        )
+                        validate_preparation(requirement, preparation)
+                        return preparation
+                    owner_id = owner.owner_object_id
+                anchor = visual.options.get("anchor_identification")
+                if anchor:
+                    driver = AtspiDriver(self.context)
+                    try:
+                        orchestrator = getattr(self.context, "window_orchestrator", None)
+                        details = (
+                            orchestrator.ensure_foreground(
+                                component_id=self.definition.component_id,
+                                object_id=self.definition.object_id,
+                                driver=driver,
+                                strategy="atspi-anchor",
+                                arguments={"identification": anchor},
+                            )
+                            if orchestrator is not None
+                            else driver.activate_window(identification=anchor)
+                        )
+                        activation = PreparationOutcome(
+                            "activate_window", True, True, details=details,
+                        )
+                    except Exception as exc:
+                        activation = PreparationOutcome(
+                            "activate_window", True, False,
+                            error="%s: %s" % (type(exc).__name__, exc),
+                        )
+                else:
+                    activation = PreparationOutcome(
+                        "activate_window", False, False, supported=False,
+                        error="visual object has no canonical accessibility owner or anchor locator",
+                    )
+                preparation = InteractionPreparation(
+                    "visual-anchor", activation,
+                    PreparationOutcome.skipped("focus", "visual target"),
+                )
+                self.context.evidence.record(
+                    "interaction_prepared",
+                    component_id=self.definition.component_id,
+                    action=semantic.to_dict(),
+                    preparation=preparation.to_dict(),
+                )
+                validate_preparation(requirement, preparation)
+                return preparation
             preparation = InteractionPreparation(
                 "none",
                 PreparationOutcome.skipped("activate_window", "no accessibility-backed strategy"),
@@ -420,7 +497,17 @@ class ComponentHandle:
                 )
             else:
                 try:
-                    details = method(**kwargs)
+                    orchestrator = getattr(self.context, "window_orchestrator", None)
+                    if orchestrator is None:
+                        details = method(**kwargs)
+                    else:
+                        details = orchestrator.ensure_foreground(
+                            component_id=self.definition.component_id,
+                            object_id=self.definition.object_id,
+                            driver=driver,
+                            strategy=selected.type,
+                            arguments=kwargs,
+                        )
                     window = PreparationOutcome("activate_window", True, True, details=details)
                 except Exception as exc:
                     window = PreparationOutcome(

@@ -204,6 +204,16 @@ def execute_plan(
             setattr(context, "execution_node_id", node_id)
             try:
                 with context.execution_scope(call.scope):
+                    # The target's owning window must be ready before evidence
+                    # capture, otherwise a screenshot may show an occluding
+                    # harness window even though dispatch later succeeds.
+                    prepared = context.prepare_gui_step(definition.name, resolved_inputs)
+                    if prepared is not None:
+                        recorder.record(
+                            "step_window_prepared",
+                            node_id=node_id,
+                            preparation=prepared.to_dict(),
+                        )
                     # Evidence is observational: capture before invocation and never
                     # let a collector failure change execution or assertion results.
                     try:

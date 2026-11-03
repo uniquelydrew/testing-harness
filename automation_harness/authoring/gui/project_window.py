@@ -45,6 +45,7 @@ class ProjectWindow(ArtifactWindow):
         self._shown_batch = None
 
         notebook = Gtk.Notebook()
+        self.project_notebook = notebook
         self.root.pack_start(notebook, True, True, 0)
         artifacts_page = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         notebook.append_page(artifacts_page, Gtk.Label(label="Artifacts"))
@@ -280,10 +281,12 @@ class ProjectWindow(ArtifactWindow):
         runs_dir.mkdir(parents=True, exist_ok=True)
         return runs_dir
 
-    def refresh_runs(self):
+    def refresh_runs(self, *, preferred_batch_id=None):
         if self._run_active:
             return
-        previous_batch = getattr(getattr(self, "_shown_batch", None), "batch_id", None)
+        previous_batch = preferred_batch_id or getattr(
+            getattr(self, "_shown_batch", None), "batch_id", None,
+        )
         try:
             self._batches = load_batches(self._runs_dir(), self.path)
         except Exception as exc:
@@ -373,10 +376,14 @@ class ProjectWindow(ArtifactWindow):
         return False
 
     def _batch_finished(self, batch, error):
-        _restore_harness_windows(self)
         self._run_active = False
         self.run_selected_button.set_sensitive(True); self.run_all_button.set_sensitive(True)
-        self.refresh_runs()
+        self.refresh_runs(preferred_batch_id=batch.batch_id if batch is not None else None)
+        # Never leave the user on the Artifacts tab after running a batch.
+        self.project_notebook.set_current_page(1)
+        if batch is not None and len(batch.plans) == 1 and self._visible_plan_records:
+            self.plan_run_tree.get_selection().select_path(0)
+        _restore_harness_windows(self)
         if error is not None:
             self.set_status("Batch run failed")
             self.error("Run Test Plans", "%s: %s" % (type(error).__name__, error))

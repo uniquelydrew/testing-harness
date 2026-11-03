@@ -15,7 +15,9 @@ from automation_harness.authoring.step_order import insert_calls, reorder_calls,
 from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.gui.result_report_viewer import ResultReportViewer
 from automation_harness.reporting.run_reports import list_plan_reports
-from automation_harness.authoring.preferences_runtime import AuthoringPreferences
+from automation_harness.authoring.preferences_runtime import (
+    AuthoringPreferences, _suspend_harness_windows, _restore_harness_windows,
+)
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
 from automation_harness.authoring.plan_repository import assigned_repository_path, load_authoring_repository
@@ -619,19 +621,30 @@ class TestPlanWindow(ArtifactWindow):
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
         self.run_button.set_sensitive(False); self.set_status("Running test…")
+        _suspend_harness_windows(self, Gtk, Gdk)
         plan = self.plan; reusable = dict(self.reusable); repository = components
         def worker():
             try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable, source_plan_path=self.path)
             except Exception as exc: GLib.idle_add(self._run_finished, None, exc); return
             GLib.idle_add(self._run_finished, result, None)
-        threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start()
+        def start_worker():
+            threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start()
+            return False
+        GLib.timeout_add(350, start_worker)
 
     def _run_finished(self, result, error):
         self.run_button.set_sensitive(True)
-        if error is not None: self.set_status("Run failed"); self.error("Run Test", "%s: %s" % (type(error).__name__, error)); return False
-        self.set_status("Run %s: %d passed, %d failed" % ("passed" if result.exit_code == 0 else "failed", result.passed, result.failed))
-        self.refresh_run_reports(preferred_id=result.run_id)
-        self.plan_notebook.set_current_page(1)
+        if result is not None:
+            self.refresh_run_reports(preferred_id=result.run_id)
+            self.plan_notebook.set_current_page(1)
+        _restore_harness_windows(self)
+        if error is not None:
+            self.set_status("Run failed")
+            self.error("Run Test", "%s: %s" % (type(error).__name__, error))
+            return False
+        self.set_status("Run %s: %d passed, %d failed" % (
+            "passed" if result.exit_code == 0 else "failed", result.passed, result.failed,
+        ))
         return False
 
 

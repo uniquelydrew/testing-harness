@@ -16,7 +16,7 @@ from automation_harness.authoring.gui.action_widgets import create_action_input_
 from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.gui.plan_recording_window import RecordingTestPlanWindow
 from automation_harness.authoring.gui.plan_window import _next_node_id
-from automation_harness.authoring.preferences_runtime import AuthoringPreferences
+from automation_harness.authoring.preferences_runtime import AuthoringPreferences, _suspend_harness_windows
 from automation_harness.authoring.visual_match_assets import import_visual_match
 from automation_harness.runner.plan_execution import execute_plan
 from automation_harness.backends.live_desktop import LiveDesktopBackend
@@ -305,11 +305,8 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))
         self.run_button.set_sensitive(False); self.set_status("Running test…")
-        # All authoring toplevels belong to this GTK process; the application
-        # under test is external. Clear every harness window from its surface.
-        for window in Gtk.Window.list_toplevels():
-            if window.get_visible():
-                window.iconify()
+        # Preserve unrelated GTK windows; suspend only harness-owned surfaces.
+        _suspend_harness_windows(self, Gtk, Gdk)
         plan = self.plan; reusable = dict(self.reusable); repository = self.repository
         def worker():
             try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable, source_plan_path=self.path)
@@ -318,5 +315,6 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
         GLib.timeout_add(175, lambda: (threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start() or False))
 
     def _run_finished(self, result, error):
-        self.window.deiconify(); self.window.present()
+        # The common Test Plan completion path restores the harness and loads
+        # the specific run's report before presenting the originating window.
         return super()._run_finished(result, error)
