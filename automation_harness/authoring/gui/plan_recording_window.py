@@ -118,19 +118,51 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
         if threading.current_thread() is threading.main_thread():
             return operation()
         completed = threading.Event()
+        callback_entered = threading.Event()
         result = {}
+        session = self._recording_diagnostic_session
+        started_at = time.monotonic()
 
         def invoke():
+            callback_entered.set()
+            if session is not None:
+                session.diagnostic(
+                    "native_main_thread_unregister_entered",
+                    generation=self._recording_generation,
+                    elapsed_seconds=round(time.monotonic() - started_at, 6),
+                )
             try:
                 result["value"] = operation()
             except BaseException as exc:
                 result["error"] = exc
             finally:
                 completed.set()
+                if session is not None:
+                    session.diagnostic(
+                        "native_main_thread_unregister_completed",
+                        generation=self._recording_generation,
+                        elapsed_seconds=round(time.monotonic() - started_at, 6),
+                        error=str(result.get("error")) if result.get("error") is not None else None,
+                    )
             return False
 
         source_id = GLib.idle_add(invoke)
+        if session is not None:
+            session.diagnostic(
+                "native_main_thread_unregister_queued",
+                generation=self._recording_generation,
+                source_id=source_id,
+                timeout_seconds=float(timeout),
+            )
         if not completed.wait(max(0.1, float(timeout))):
+            if session is not None:
+                session.diagnostic(
+                    "native_main_thread_unregister_timed_out",
+                    generation=self._recording_generation,
+                    source_id=source_id,
+                    callback_entered=callback_entered.is_set(),
+                    elapsed_seconds=round(time.monotonic() - started_at, 6),
+                )
             raise TimeoutError(
                 "native main-thread recording teardown timed out "
                 "(source_id=%s)" % source_id
@@ -445,12 +477,12 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     )
                     watchdog_handle = open(str(watchdog_path), "w")
                     faulthandler.dump_traceback_later(
-                        7.0, repeat=False, file=watchdog_handle,
+                        4.0, repeat=False, file=watchdog_handle,
                     )
                     session.diagnostic(
                         "recording_stop_watchdog_armed",
                         path=str(watchdog_path),
-                        timeout_seconds=7.0,
+                        timeout_seconds=4.0,
                     )
                 completion["interactions"] = tuple(session.stop())
                 completion["error"] = None

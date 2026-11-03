@@ -240,6 +240,12 @@ class RecordingSession:
 
                 target = observation.target
                 action = ActionType.RIGHT_CLICK if observation.button == "secondary" else ActionType.CLICK
+                if target.framework == "javafx" and target.semantic_type() is ObjectType.TAB_CONTAINER:
+                    # A physical click on a JavaFX tab header cannot identify
+                    # which logical Tab was selected. The native bridge emits
+                    # the authoritative SelectionModel change separately.
+                    self.diagnostic("tab_container_pointer_suppressed", observation=observation)
+                    return
                 popup_selection = dict(target.backend_properties or {}).get("popup_selection")
                 if not isinstance(popup_selection, Mapping):
                     # Compatibility for an in-flight older JavaFX agent; the
@@ -390,6 +396,28 @@ class RecordingSession:
 
             if isinstance(observation, StateChanged):
                 target = observation.target
+                if (
+                    observation.property == "tab_selection"
+                    and target is not None
+                    and target.framework == "javafx"
+                    and target.semantic_type() is ObjectType.TAB_CONTAINER
+                    and isinstance(observation.after, Mapping)
+                ):
+                    selected = dict(observation.after)
+                    criteria = {
+                        key: selected[key] for key in ("id", "text", "index")
+                        if key in selected and selected[key] not in (None, "")
+                    }
+                    if not any(isinstance(criteria.get(key), str) and criteria[key]
+                               for key in ("id", "text")):
+                        self.diagnostic("tab_selection_rejected", reason="missing_semantic_identity",
+                                        observation=observation)
+                        return
+                    self._begin(ActionType.SELECT_ITEM, observation, {
+                        "selector": {"kind": "tab", "criteria": criteria},
+                    })
+                    self.diagnostic("tab_selection_recorded", owner=target, criteria=criteria)
+                    return
                 if (
                     self._popup_selection_context is not None
                     and target is not None

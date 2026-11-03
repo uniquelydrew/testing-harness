@@ -575,7 +575,37 @@ class JavaFxBridgeDriver:
             identification=dict(identification or {}), index=index,
         )
         return {"action": "select_item", "bridge_pid": endpoint.pid,
-                "index": response.get("index"), "node": response.get("node")}
+                "index": response.get("index"), "node": response.get("node"),
+                "selection_family": response.get("selection_family")}
+
+    def select_tab(self, criteria: Mapping[str, Any], *, identification=None, **_kwargs) -> dict[str, Any]:
+        """Select a logical JavaFX Tab by ID/text within its owning TabPane."""
+        if not isinstance(criteria, Mapping):
+            raise TypeError("tab selector criteria must be a mapping")
+        allowed = {"id", "text", "index"}
+        if set(criteria) - allowed:
+            raise ValueError("unsupported JavaFX tab selector criteria")
+        tab_id, text = criteria.get("id"), criteria.get("text")
+        if not any(isinstance(value, str) and value for value in (tab_id, text)):
+            raise ValueError("tab selection requires an ID or text")
+        if "index" in criteria and (
+            isinstance(criteria["index"], bool) or not isinstance(criteria["index"], int)
+            or criteria["index"] < 0
+        ):
+            raise ValueError("tab index must be a nonnegative integer")
+        endpoint, _node, _trace = self._find_unique(identification)
+        response = endpoint.request(
+            "select_tab", timeout=5.0,
+            identification=dict(identification or {}), criteria=dict(criteria),
+        )
+        return {
+            "action": "select_item",
+            "bridge_pid": endpoint.pid,
+            "selection_family": response.get("selection_family"),
+            "index": response.get("index"),
+            "tab": response.get("tab"),
+            "node": response.get("node"),
+        }
 
     def count_matches(
         self,
@@ -847,6 +877,8 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         "layout": dict(node.get("layout") or {}) if isinstance(node.get("layout"), Mapping) else {},
         "sibling_index": node.get("sibling_index"),
         "sibling_count": node.get("sibling_count"),
+        **({"tabs": [dict(tab) for tab in node["tabs"] if isinstance(tab, Mapping)]}
+           if isinstance(node.get("tabs"), (list, tuple)) else {}),
     }
     physical_native_class = (
         dict(node.get("backend_properties") or {}).get("physical_native_class")
@@ -1175,6 +1207,8 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             **({"component_path": node["component_path"]} if node.get("component_path") else {}),
             **({"sibling_index": node["sibling_index"]} if node.get("sibling_index") is not None else {}),
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
+            **({"tabs": [dict(tab) for tab in node["tabs"] if isinstance(tab, Mapping)]}
+               if isinstance(node.get("tabs"), (list, tuple)) else {}),
         },
         parent_name=_optional_str(parent.get("name")),
         parent_role=_optional_str(parent.get("role")),

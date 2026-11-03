@@ -182,3 +182,49 @@ def test_combo_selection_executes_authored_selector(monkeypatch, selector, expec
                         lambda _self, _label, method, value: recorded.append((method, value)) or {})
     handle.execute({"type": "select_item", "selector": selector})
     assert recorded == [("select_popup_path", [{"kind": "popup_item", "criteria": expected}])]
+
+
+@pytest.mark.parametrize(("action", "expected"), [
+    ({"type": "select_item", "selector": {"kind": "tab", "criteria": {
+        "id": "sessionViewTab", "text": "Active Sessions", "index": 3,
+    }}}, {"id": "sessionViewTab", "text": "Active Sessions", "index": 3}),
+    ({"type": "select_item", "selector": {"text": "Camera Status"}},
+     {"text": "Camera Status"}),
+    ({"type": "select_item", "value": "Camera Status"},
+     {"text": "Camera Status"}),
+])
+def test_tab_container_selection_uses_owner_scoped_semantic_criteria(monkeypatch, action, expected):
+    definition = ComponentDefinition(
+        "advanced.details.tabs", object_type=ObjectType.TAB_CONTAINER,
+        actions=frozenset({"resolve", "select_item"}),
+    )
+    handle = ComponentHandle(
+        SimpleNamespace(evidence=SimpleNamespace(record=lambda *_args, **_kw: None)),
+        definition,
+    )
+    recorded = []
+    monkeypatch.setattr(ComponentHandle, "prepare_for_interaction",
+                        lambda *_args, **_kw: SimpleNamespace(strategy="none", to_dict=lambda: {}))
+    monkeypatch.setattr(ComponentHandle, "_accessibility_operation",
+                        lambda _self, _label, method, value: recorded.append((method, value)) or {})
+    result = handle.execute(action)
+    assert result.action.value == "select_item"
+    assert recorded == [("select_tab", expected)]
+
+
+def test_tab_container_legacy_numeric_index_selection_is_preserved(monkeypatch):
+    definition = ComponentDefinition(
+        "advanced.details.tabs", object_type=ObjectType.TAB_CONTAINER,
+        actions=frozenset({"resolve", "select_item"}),
+    )
+    handle = ComponentHandle(
+        SimpleNamespace(evidence=SimpleNamespace(record=lambda *_args, **_kw: None)),
+        definition,
+    )
+    invoked = []
+    monkeypatch.setattr(ComponentHandle, "prepare_for_interaction",
+                        lambda *_args, **_kw: SimpleNamespace(strategy="none", to_dict=lambda: {}))
+    monkeypatch.setattr(ComponentHandle, "select_child",
+                        lambda _self, index: invoked.append(index) or {})
+    handle.execute({"type": "select_item", "selector": {"index": 3}})
+    assert invoked == [3]

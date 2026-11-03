@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from automation_harness.drivers.javafx_bridge import (
     HttpJavaFxBridgeTransport,
+    discover_javafx_endpoints,
     _captured_recording_node,
 )
 from automation_harness.models.component import CapturedComponent, ResolvedComponent
@@ -318,9 +319,29 @@ def discover_java_agent_transports(discovery_dir=None):
     return tuple(transports)
 
 
+class _JavaFxTabRecordingTransport:
+    """Adapt the JavaFX JSON-lines bridge to the recording transport protocol."""
+
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.endpoint = "javafx://%s:%s" % (bridge.host, bridge.port)
+        self.token = bridge.token
+        self.pid = bridge.pid
+
+    def request(self, operation, payload):
+        values = dict(payload or {})
+        if operation == "record_read":
+            values["timeout_ms"] = max(0, int(float(values.pop("timeout", 0.25)) * 1000))
+        return self.bridge.request(operation, timeout=3.0, **values)
+
+
 def configured_java_recording_transports():
-    """Return de-duplicated mixed-agent and legacy JavaFX recorders."""
+    """Discover live mixed Java agents and dedicated JavaFX tab recorders."""
     transports = list(configured_java_agent_transports())
+    # The dedicated JavaFX bridge is a separate JSON-lines service, not an
+    # HTTP endpoint. Recording must use that same JVM for model-level tab
+    # selection events; Java 8 mixed-agent builds do not include JavaFxRecorder.
+    transports.extend(_JavaFxTabRecordingTransport(bridge) for bridge in discover_javafx_endpoints())
     urls = os.environ.get(
         "AUTOMATION_HARNESS_JAVAFX_AGENT_URLS",
         os.environ.get("AUTOMATION_HARNESS_JAVAFX_AGENT_URL", ""),

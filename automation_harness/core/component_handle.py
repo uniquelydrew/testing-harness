@@ -166,6 +166,30 @@ class ComponentHandle:
                 if not isinstance(semantic.value, str):
                     raise ValueError("append_text requires a string value")
                 payload = self.set_text(self.get_text() + semantic.value)
+            elif semantic.type == ActionType.SELECT_ITEM and self.definition.object_type is ObjectType.TAB_CONTAINER and (
+                isinstance(semantic.value, str)
+                or semantic.options.get("path") is not None
+                or (
+                    semantic.selector is not None
+                    and any(key in semantic.selector.criteria for key in ("id", "text", "name"))
+                )
+            ):
+                # Logical Tabs do not live in the JavaFX scene graph. Select
+                # within the resolved TabPane model rather than clicking skins
+                # or trusting a stale global tab index.
+                if semantic.selector is not None:
+                    criteria = dict(semantic.selector.criteria)
+                elif semantic.options.get("path") is not None:
+                    path = resolve_navigation(self.definition.subobjects, semantic.options["path"])
+                    selectors = self._menu_path_selectors(path)
+                    if len(selectors) != 1:
+                        raise ValueError("tab selection path must resolve to one logical child")
+                    criteria = dict(selectors[0].get("criteria") or {})
+                else:
+                    criteria = {"text": semantic.value}
+                if "name" in criteria and "text" not in criteria:
+                    criteria["text"] = criteria.pop("name")
+                payload = self._accessibility_operation("select tab", "select_tab", criteria)
             elif semantic.type == ActionType.SELECT_ITEM and (
                 semantic.options.get("path") is not None
                 or isinstance(semantic.value, str)

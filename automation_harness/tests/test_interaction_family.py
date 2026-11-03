@@ -32,3 +32,38 @@ def test_interaction_family_contract(object_type, native_class, expected):
 @pytest.mark.parametrize("object_type", [ObjectType.COMBO_BOX, ObjectType.DATE_PICKER, ObjectType.COLOR_PICKER])
 def test_popup_selector_object_types_keep_select_item_public_action(object_type):
     assert ActionType.SELECT_ITEM in default_actions(object_type)
+
+
+@pytest.mark.parametrize(("role", "native_class", "expected"), [
+    ("TAB_PANE", "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay", ObjectType.TAB_CONTAINER),
+    ("tab pane", "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay", ObjectType.TAB_CONTAINER),
+    ("tabpane", "javafx.scene.control.TabPane", ObjectType.TAB_CONTAINER),
+    ("page tab list", "javax.swing.JTabbedPane", ObjectType.TAB_CONTAINER),
+    ("page tab", "javafx.scene.control.Tab", ObjectType.TAB),
+    ("tab", "javafx.scene.control.Tab", ObjectType.TAB),
+])
+def test_tab_owner_and_logical_tab_are_distinct_object_types(role, native_class, expected):
+    from automation_harness.models.gui import classify_accessibility
+
+    assert classify_accessibility(role, native_class) is expected
+
+
+def test_javafx_custom_tabpane_capture_is_collection_selector_not_single_tab():
+    from automation_harness.drivers.javafx_bridge import _captured_recording_node
+
+    capture = _captured_recording_node({
+        "framework": "javafx",
+        "class": "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay",
+        "accessible_role": "TAB_PANE",
+        "window": "Advanced Details",
+        "tabs": [
+            {"index": 0, "id": None, "text": "Camera Status"},
+            {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
+        ],
+    })
+
+    assert capture.semantic_type() is ObjectType.TAB_CONTAINER
+    assert capture.backend_properties["tabs"][0]["text"] == "Camera Status"
+    assert capture.backend_properties["tabs"][1]["id"] == "sessionViewTab"
+    assert interaction_family(capture.semantic_type(), capture.native_class) is InteractionFamily.COLLECTION_SELECTOR
+    assert ActionType.SELECT_ITEM in default_actions(capture.semantic_type())
