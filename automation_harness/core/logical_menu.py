@@ -107,6 +107,20 @@ def find_logical_menu_targets(
     if not criteria:
         return ()
     definitions = tuple(definitions)
+    metadata = logical_menu_metadata(capture)
+    if metadata is not None:
+        # A live logical owner is authoritative. Matching a terminal label
+        # against every repository menu could silently redirect System Menu
+        # captures to a same-named File Menu subobject.
+        owner_metadata = metadata.get("owner")
+        if not isinstance(owner_metadata, Mapping):
+            return ()
+        owners = _matching_owner_candidates(definitions, owner_metadata)
+        if len(owners) != 1:
+            # Missing or ambiguous ownership must not fall back to a global
+            # terminal-menu search.
+            return ()
+        definitions = tuple(owners)
     matches: list[LogicalMenuTarget] = []
     for definition in definitions:
         normalized = normalize_menu_subobjects(definition.subobjects)
@@ -227,7 +241,16 @@ def _build_recorded_menu_path(
     path: list[str] = []
     persisted_selectors: list[Mapping[str, Any]] = []
     for index, selector in enumerate(selectors):
-        key = _matching_child_key(current, selector) or _subobject_key(selector, index)
+        key = _matching_child_key(current, selector)
+        if key is None:
+            # Repeated labels and duplicate JavaFX IDs must not overwrite a
+            # previously captured sibling with a different semantic identity.
+            base_key = _subobject_key(selector, index)
+            key = base_key
+            suffix = 2
+            while key in current:
+                key = "%s_%d" % (base_key, suffix)
+                suffix += 1
         existing = current.get(key)
         raw = dict(existing) if isinstance(existing, Mapping) else {}
         raw.update({
@@ -413,11 +436,19 @@ def _definition_matches_criteria(definition: ComponentDefinition, criteria: Mapp
                     return candidate
             return None
 
+        actual_id = value("id", "accessible_id")
+        actual_text = value("text", "name", "accessible_text")
         if expected_id not in (None, ""):
-            if str(value("id", "accessible_id") or "") == str(expected_id):
-                return True
-        if expected_text not in (None, ""):
-            if str(value("text", "name", "accessible_text") or "") == str(expected_text):
+            if actual_id in (None, "") or str(actual_id) != str(expected_id):
+                continue
+            # An ID alone may be sufficient when the repository has no text,
+            # but a conflicting recorded text must not identify another menu.
+            if expected_text not in (None, "") and actual_text not in (None, ""):
+                if str(actual_text) != str(expected_text):
+                    continue
+            return True
+        if expected_text not in (None, "") and actual_text not in (None, ""):
+            if str(actual_text) == str(expected_text):
                 return True
     return False
 
@@ -482,15 +513,17 @@ def _walk_subobjects(
 
 
 def _criteria_match(expected: Mapping[str, Any], captured: Mapping[str, Any]) -> bool:
-    expected_id = expected.get("id")
-    captured_id = captured.get("id")
-    if expected_id not in (None, "") and captured_id not in (None, ""):
-        return str(expected_id) == str(captured_id)
-    expected_text = expected.get("text")
-    captured_text = captured.get("text")
-    if expected_text not in (None, "") and captured_text not in (None, ""):
-        return str(expected_text) == str(captured_text)
-    return False
+    # Compare all shared nonempty identity fields, rather than treating an
+    # equal (possibly duplicated) JavaFX ID as proof despite conflicting text.
+    compared = False
+    for key in ("id", "text"):
+        left, right = expected.get(key), captured.get(key)
+        if left in (None, "") or right in (None, ""):
+            continue
+        compared = True
+        if str(left) != str(right):
+            return False
+    return compared
 
 
 def attach_context_menu_invoker(
