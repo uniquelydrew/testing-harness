@@ -9,8 +9,11 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
-from automation_harness.authoring.action_catalog import ActionInput, actions_for
+from automation_harness.authoring.action_catalog import (
+    ActionInput, actions_for, tab_inventory_selector_options,
+)
 from automation_harness.models.component import ComponentDefinition
+from automation_harness.models.gui import ObjectType
 from automation_harness.core.menu_navigation import (
     menu_item_label, navigation_from_path, resolve_navigation, selectors_from_navigation,
 )
@@ -64,6 +67,11 @@ def create_action_input_widget(
 
     if item.value_type == "object":
         options = object_selector_options(component.subobjects)
+        if component.object_type is ObjectType.TAB_CONTAINER:
+            # Prefer the complete live logical inventory when available.
+            # Historical repositories may contain properties.tabs but no
+            # materialized subobjects.
+            options = list(tab_inventory_selector_options(component)) or options
         if options:
             widget = Gtk.ComboBoxText.new_with_entry()
             selected = current if current is not None else item.default
@@ -85,7 +93,12 @@ def create_action_input_widget(
     value = current if current is not None else item.default
     if value is not None:
         widget.set_text(_editable(value))
-    widget.set_placeholder_text(item.description or item.value_type)
+    if item.name == "selector" and component.object_type is ObjectType.TAB_CONTAINER:
+        widget.set_placeholder_text("Tab label or JSON selector, e.g. Camera Status")
+    elif item.name == "selector":
+        widget.set_placeholder_text("Item selector (JSON, label or index)")
+    else:
+        widget.set_placeholder_text(item.description or item.value_type)
     return widget
 
 

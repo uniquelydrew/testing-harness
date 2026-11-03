@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from automation_harness.models.component import ComponentDefinition
 from automation_harness.core.component_catalog import canonical_action_types
-from automation_harness.models.gui import ActionType
+from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
 
 
@@ -131,6 +131,50 @@ def actions_for(definition: ComponentDefinition) -> tuple[ActionDefinition, ...]
         if action in INTERACTIONS
     ]
     return tuple(interactions) + OBSERVATIONS
+
+
+def tab_inventory_selector_options(definition: ComponentDefinition) -> tuple[tuple[dict[str, Any], str], ...]:
+    """Return owner-scoped logical Tab selectors from legacy TabPane inventory.
+
+    Older .ahobjects files retained individual tabs only in properties.tabs,
+    not as logical subobjects. The authoring picker must still expose those
+    known tabs without treating the transient tab-header skin as an object.
+    Index corroborates the ID/text identity; it never identifies the owner.
+    """
+    if definition.object_type is not ObjectType.TAB_CONTAINER:
+        return ()
+    inventory = definition.properties.get("tabs", ())
+    if not isinstance(inventory, (list, tuple)):
+        return ()
+    options = []
+    for position, raw in enumerate(inventory):
+        if not isinstance(raw, Mapping) or bool(raw.get("disabled", False)):
+            continue
+        tab_id = raw.get("id")
+        tab_text = raw.get("text")
+        if not isinstance(tab_id, str) or not tab_id.strip():
+            tab_id = None
+        if not isinstance(tab_text, str) or not tab_text.strip():
+            tab_text = None
+        if tab_id is None and tab_text is None:
+            continue
+        criteria = {}
+        if tab_id is not None:
+            criteria["id"] = tab_id
+        if tab_text is not None:
+            criteria["text"] = tab_text
+        raw_index = raw.get("index")
+        if isinstance(raw_index, int) and not isinstance(raw_index, bool) and raw_index >= 0:
+            criteria["index"] = raw_index
+        else:
+            criteria["index"] = position
+        options.append(({"kind": "tab", "criteria": criteria}, tab_text or tab_id))
+    labels = [label for _selector, label in options]
+    return tuple(
+        (selector, "%s (tab %d)" % (label, selector["criteria"]["index"] + 1)
+         if labels.count(label) > 1 else label)
+        for selector, label in options
+    )
 
 
 def action_by_id(definition: ComponentDefinition, action_id: str) -> ActionDefinition:
