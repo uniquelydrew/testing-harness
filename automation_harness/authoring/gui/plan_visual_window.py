@@ -11,6 +11,7 @@ from gi.repository import GLib, Gtk
 
 from automation_harness.steps import visual_assert_steps as _visual_assert_steps  # noqa: F401
 from automation_harness.authoring.action_catalog import action_by_id, actions_for
+from automation_harness.authoring.step_naming import default_step_name
 from automation_harness.authoring.gui.action_widgets import create_action_input_widget, read_action_input
 from automation_harness.authoring.step_order import insert_calls
 from automation_harness.authoring.gui.plan_recording_window import RecordingTestPlanWindow
@@ -253,6 +254,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                             "minimum_match_percentage": float(match_percentage.get_value()),
                         },
                         group=group,
+                        name=default_step_name("Assert Match", component.component_id, component.object_type),
                     )
                     description = "Assert Match"
                 else:
@@ -267,7 +269,10 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                                 values[name] = item.default
                             continue
                         values[name] = value
-                    call = replace(action.to_step_call(node_id, canonical_id, values), group=group)
+                    call = replace(action.to_step_call(
+                        node_id, canonical_id, values,
+                        object_label=component.component_id, object_type=component.object_type,
+                    ), group=group)
                     if call.step_id == "gui.object.action":
                         GuiAction.from_value(call.inputs["action"])
                     description = action.name
@@ -307,7 +312,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                 window.iconify()
         plan = self.plan; reusable = dict(self.reusable); repository = self.repository
         def worker():
-            try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable)
+            try: result = execute_plan(plan, LiveDesktopBackend(), runs_dir=runs_dir, component_repository=repository, reusable_steps=reusable, source_plan_path=self.path)
             except Exception as exc: GLib.idle_add(self._run_finished, None, exc); return
             GLib.idle_add(self._run_finished, result, None)
         GLib.timeout_add(175, lambda: (threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start() or False))

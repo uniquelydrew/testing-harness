@@ -340,6 +340,8 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             canonical_object_id = self.repository.get(component_id).object_id
             call = replace(definition.to_step_call(
                 _next_node_id(self.plan.steps), canonical_object_id, values,
+                object_label=self.repository.get(component_id).component_id,
+                object_type=self.repository.get(component_id).object_type,
             ), group=group)
             self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1))
         except Exception as exc:

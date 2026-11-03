@@ -35,6 +35,7 @@ from automation_harness.core.test_plan import embed_plan_repository, repository_
 from automation_harness.core.repository_preparation import compose_recording_workspace
 from automation_harness.drivers.java_agent import configured_java_recording_transports
 from automation_harness.recording import RecordingSession, interactions_to_steps
+from automation_harness.authoring.step_naming import default_name_for_call
 from automation_harness.recording.adapters.atspi import AtspiRecordingAdapter
 from automation_harness.recording.adapters.javafx import JavaFxRecordingAdapter
 from automation_harness.recording.observations import PointerInteraction
@@ -801,8 +802,18 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     (reviewed,),
                     start_index=len(self.plan.steps) + len(resolved) + 1,
                 )[0]
-                candidate = replace(call, group="Recorded session")
                 effective_repository = assigned_repository or recording_repository or self.repository
+                # For logical menu subobjects, the selected terminal item's
+                # capture label is more specific than its persistent menu owner.
+                generated_name = (
+                    call.name
+                    if (reviewed.repository_match.status == "known_subobject"
+                        and reviewed.target is not None and reviewed.target.name)
+                    else default_name_for_call(call, effective_repository)
+                )
+                candidate = replace(
+                    call, group="Recorded session", name=generated_name,
+                )
                 issues = validate_plan_components(
                     replace(self.plan, steps=(candidate,)), effective_repository,
                 )
@@ -1019,8 +1030,8 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
             buffer = description.get_buffer()
             result.append(replace(
                 call,
-                name=(entry.get_text().strip() or call.description or call.step_id)
-                if response == Gtk.ResponseType.OK else (call.description or call.step_id),
+                name=(entry.get_text().strip() or call.name or call.step_id)
+                if response == Gtk.ResponseType.OK else (call.name or call.step_id),
                 description=buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True).strip()
                 if response == Gtk.ResponseType.OK else "",
             ))

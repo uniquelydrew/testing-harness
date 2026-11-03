@@ -13,6 +13,7 @@ from automation_harness.models.component import ComponentDefinition
 from automation_harness.core.component_catalog import canonical_action_types
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
+from automation_harness.authoring.step_naming import default_step_name
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ class ActionDefinition:
         node_id: str,
         component_id: str,
         values: Mapping[str, Any] | None = None,
+        *,
+        object_label: str | None = None,
+        object_type: ObjectType | None = None,
     ) -> StepCall:
         supplied = dict(self.defaults)
         supplied.update(values or {})
@@ -54,7 +58,10 @@ class ActionDefinition:
             }
         else:
             supplied = {"component_id": component_id, **supplied}
-        return StepCall(node_id=node_id, step_id=self.executor_step, inputs=supplied)
+        return StepCall(
+            node_id=node_id, step_id=self.executor_step, inputs=supplied,
+            name=default_step_name(self.name, object_label or component_id, object_type),
+        )
 
 
 def _interaction(action: ActionType, name: str, description: str, *inputs: ActionInput) -> ActionDefinition:

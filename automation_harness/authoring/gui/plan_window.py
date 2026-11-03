@@ -444,7 +444,10 @@ class TestPlanWindow(ArtifactWindow):
         if configured is None: return
         inputs, outputs = configured
         group = self.ask_text("Insert Registry Step", "Composed step/group:", definition.name) or definition.name
-        call = StepCall(_next_node_id(self.plan.steps), step_id, inputs=inputs, outputs=outputs, group=group)
+        call = StepCall(
+            _next_node_id(self.plan.steps), step_id, inputs=inputs, outputs=outputs,
+            group=group, name=definition.name,
+        )
         self.plan = insert_calls(self.plan, (call,), after_node_id=self.selected(self.flow_tree, 1)); self.mark_dirty(); self.refresh_all()
 
     def _configure_contract(self, definition):

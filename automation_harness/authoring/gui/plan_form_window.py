@@ -15,6 +15,9 @@ from automation_harness.authoring.gui.action_widgets import (
     read_action_input,
 )
 from automation_harness.authoring.gui.plan_launch_window import LaunchRestoringTestPlanWindow
+from automation_harness.authoring.step_naming import (
+    default_name_for_call, default_step_name, display_name_for_call, humanize_identifier,
+)
 from automation_harness.models.plan import PlanVariableRef
 
 
@@ -47,7 +50,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             self.flow_store.append((
                 call.group or "Ungrouped",
                 call.node_id,
-                call.name or call.step_id,
+                display_name_for_call(call, self.repository),
                 _call_summary(call, self.repository),
             ))
         self._restore_flow_selection(selected)
@@ -79,7 +82,7 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         lines = [
             "Node: %s" % call.node_id,
             "Step: %s" % call.step_id,
-            "Name: %s" % (call.name or "—"),
+            "Name: %s" % display_name_for_call(call, self.repository),
             "Description: %s" % (call.description or "—"),
             "Group: %s" % (call.group or "Ungrouped"),
             "",
@@ -137,8 +140,18 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
         row = _readonly_row(grid, row, "Node", call.node_id)
         row = _readonly_row(grid, row, "Step", call.step_id)
         name_entry = Gtk.Entry()
-        name_entry.set_text(call.name or "")
-        name_entry.set_placeholder_text("Readable step name")
+        initial_default_name = default_name_for_call(call, self.repository)
+        name_entry.set_text(call.name or initial_default_name)
+        name_entry.set_placeholder_text("Action + Object (editable)")
+        # The default follows object/action edits until the user edits the name.
+        name_manually_edited = [bool(call.name and call.name != initial_default_name)]
+        updating_default_name = [False]
+
+        def on_name_changed(*_args):
+            if not updating_default_name[0]:
+                name_manually_edited[0] = True
+
+        name_entry.connect("changed", on_name_changed)
         row = _entry_row(grid, row, "Name", name_entry)
         description_view = Gtk.TextView()
         description_view.set_wrap_mode(Gtk.WrapMode.WORD)
@@ -258,9 +271,27 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
                 else:
                     rebuild_action_inputs()
 
+            def refresh_default_name(*_args):
+                if name_manually_edited[0]:
+                    return
+                component_id = component_entry.get_active_id()
+                action_id = action_combo.get_active_id()
+                if not component_id or not action_id or not self.repository.contains(component_id):
+                    return
+                component = self.repository.get(component_id)
+                generated = default_step_name(action_id, component.component_id, component.object_type)
+                updating_default_name[0] = True
+                try:
+                    name_entry.set_text(generated)
+                finally:
+                    updating_default_name[0] = False
+
             component_entry.connect("changed", rebuild_action_choices)
+            component_entry.connect("changed", refresh_default_name)
             action_combo.connect("changed", rebuild_action_inputs)
+            action_combo.connect("changed", refresh_default_name)
             rebuild_action_choices()
+            refresh_default_name()
             action_editor_initializing[0] = False
         else:
             for name, value in call.inputs.items():
@@ -337,7 +368,9 @@ class FormEditingTestPlanWindow(LaunchRestoringTestPlanWindow):
             )
             updated = replace(
                 call,
-                name=name_entry.get_text().strip(),
+                name=name_entry.get_text().strip() or default_name_for_call(
+                    replace(call, inputs=inputs), self.repository,
+                ),
                 description=description_view.get_buffer().get_text(
                     description_view.get_buffer().get_start_iter(),
                     description_view.get_buffer().get_end_iter(), True,
@@ -388,7 +421,7 @@ def _entry_row(grid, row, label_text, widget):
 
 
 def _humanize(value):
-    return str(value).replace("_", " ").strip().title()
+    return humanize_identifier(value)
 
 
 def _display(value):

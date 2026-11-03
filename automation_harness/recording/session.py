@@ -13,6 +13,7 @@ from automation_harness.core.locator_matching import _javafx_node_matches
 from automation_harness.models.component import CapturedComponent, ComponentDefinition
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
+from automation_harness.authoring.step_naming import default_step_name
 from automation_harness.recording.evidence import parameters_for_pointer
 from automation_harness.recording.diagnostics import RecordingDebugLog
 from automation_harness.recording.observations import (
@@ -824,6 +825,11 @@ def interactions_to_steps(interactions: Iterable[RecordedInteraction], *, start_
             node_id=f"recorded-{index:03d}", step_id="gui.object.action",
             inputs={"component_id": component_id, "action": action},
             description=description,
+            name=default_step_name(
+                action["type"],
+                interaction.target.name if interaction.target is not None else component_id,
+                interaction.target.semantic_type() if interaction.target is not None else None,
+            ),
         ))
     return tuple(result)
 

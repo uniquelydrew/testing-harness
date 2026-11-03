@@ -15,6 +15,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from automation_harness.authoring.action_catalog import action_by_id, actions_for
+from automation_harness.authoring.step_naming import default_name_for_call, display_name_for_call, humanize_identifier
 from automation_harness.authoring.gui.action_widgets import (
     create_action_input_widget,
     read_action_input,
@@ -920,8 +921,12 @@ class AuthoringApp:
         values = self._configure_action(definition, self.repository.get(component_id))
         if values is None:
             return
+        component = self.repository.get(component_id)
         call = replace(
-            definition.to_step_call(_next_node_id(self.plan.steps), component_id, values),
+            definition.to_step_call(
+                _next_node_id(self.plan.steps), component.object_id, values,
+                object_label=component.component_id, object_type=component.object_type,
+            ),
             group=self._current_step_group(),
         )
         self.plan = replace(self.plan, steps=self.plan.steps + (call,))
@@ -1105,6 +1110,7 @@ class AuthoringApp:
                 call = StepCall(
                     node_id=_next_node_id(self.plan.steps), step_id=selected,
                     inputs=inputs, outputs=outputs, group=self._current_step_group(),
+                    name=humanize_identifier(selected.rsplit(".", 1)[-1]) or "Step",
                 )
                 candidate = replace(self.plan, steps=self.plan.steps + (call,))
                 issues = validate_plan(candidate, self.registry)
@@ -1428,6 +1434,7 @@ class AuthoringApp:
                 interactions_to_steps((self.recorded_interactions[int(index)],), start_index=len(self.plan.steps) + 1)[0],
                 group=self._current_step_group(),
             )
+            call = replace(call, name=default_name_for_call(call, self.repository))
         except Exception as exc:
             return self._info("Recording", "This interaction cannot be added yet: %s" % exc)
         self.plan = replace(self.plan, steps=(*self.plan.steps, call))
@@ -1437,7 +1444,7 @@ class AuthoringApp:
     def refresh_plan(self) -> None:
         self.plan = replace(self.plan, name=self.plan_name.get_text().strip() or "new-test-plan")
         self.plan_store.clear()
-        for call in self.plan.steps: self.plan_store.append((call.group or "Ungrouped", call.node_id, call.step_id, json.dumps(_encode_gui(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
+        for call in self.plan.steps: self.plan_store.append((call.group or "Ungrouped", call.node_id, display_name_for_call(call, self.repository), json.dumps(_encode_gui(call.inputs), separators=(",", ":")), json.dumps(dict(call.outputs), separators=(",", ":")), ",".join(call.depends_on)))
 
     def refresh_variables(self) -> None: self._set_text(self.variables_text, json.dumps(dict(self.plan.variables), indent=2, default=str))
 
