@@ -20,7 +20,7 @@ from automation_harness.runtime_paths import ensure_external_runtime_path, runti
 
 
 _PREFERENCES_VERSION = 1
-_RUN_SETTLE_DELAY_MS = 350
+RUN_SETTLE_DELAY_MS = 350
 
 
 def preferences_path():
@@ -370,7 +370,7 @@ def install(app_module):
             ).start()
             return False
 
-        GLib.timeout_add(_RUN_SETTLE_DELAY_MS, start_worker)
+        GLib.timeout_add(RUN_SETTLE_DELAY_MS, start_worker)
 
     def present_result(self, result):
         _restore_harness_windows(self)

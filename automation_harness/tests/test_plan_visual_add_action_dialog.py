@@ -195,3 +195,90 @@ def test_switching_visual_assertion_back_to_select_item_recreates_selector(edito
 
     _run_editor_action(subject, tabs.component_id, "select_item", probe)
     assert subject.plan.steps[0].inputs["action"]["selector"]["criteria"]["text"] == "Camera Status"
+
+
+def test_visual_editor_uses_shared_qualified_launch_and_desktop_settle(monkeypatch, tmp_path):
+    """Editor runs must not diverge from Project Manager focus preparation."""
+    from types import SimpleNamespace
+    import automation_harness.authoring.gui.plan_window as plan_window
+    import automation_harness.authoring.gui.project_window as project_window
+    from automation_harness.authoring.gui.plan_window import TestPlanWindow
+    from automation_harness.authoring.preferences_runtime import RUN_SETTLE_DELAY_MS
+
+    assert VisualTestPlanWindow.run_test is TestPlanWindow.run_test
+    assert plan_window.RUN_SETTLE_DELAY_MS == project_window.RUN_SETTLE_DELAY_MS
+    assert RUN_SETTLE_DELAY_MS == 350
+
+    editor = VisualTestPlanWindow.__new__(VisualTestPlanWindow)
+    editor.plan = TestPlan("unsaved-editor-changes")
+    editor.repository = object()  # Deliberately stale local repository.
+    qualified_repository = object()
+    actions = []
+
+    def qualified():
+        actions.append("qualified")
+        return editor.plan, qualified_repository, []
+
+    editor._qualified_plan = qualified
+    editor._refresh_assigned_repository = lambda: actions.append("refresh_repository")
+    editor.project = None
+    editor.path = tmp_path / "in-progress.ahplan"
+    editor.reusable = {}
+    editor.run_button = SimpleNamespace(
+        set_sensitive=lambda value: actions.append(("enabled", value)),
+    )
+    editor.set_status = lambda value: actions.append(("status", value))
+    editor.error = lambda title, message: pytest.fail(message)
+
+    scheduled = []
+    completed = []
+    monkeypatch.setattr(
+        plan_window.AuthoringPreferences, "load",
+        lambda: SimpleNamespace(resolved_runs_dir=lambda project: tmp_path / "runs"),
+    )
+    monkeypatch.setattr(
+        plan_window, "_suspend_harness_windows",
+        lambda instance, gtk, gdk: actions.append("suspend"),
+    )
+    monkeypatch.setattr(
+        plan_window.GLib, "timeout_add",
+        lambda interval, fn: scheduled.append((interval, fn)) or 7,
+    )
+    monkeypatch.setattr(
+        plan_window.GLib, "idle_add",
+        lambda fn, *args: completed.append((fn, args)) or 8,
+    )
+
+    def execute(plan, backend, **kwargs):
+        actions.append(("execute", plan, kwargs))
+        return SimpleNamespace(run_id="run-from-editor", exit_code=0, passed=1, failed=0)
+
+    monkeypatch.setattr(plan_window, "execute_plan", execute)
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(plan_window.threading, "Thread", ImmediateThread)
+
+    editor.run_test()
+    assert actions[:5] == [
+        "refresh_repository", "qualified", ("enabled", False),
+        ("status", "Running test…"), "suspend",
+    ]
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == RUN_SETTLE_DELAY_MS
+    assert not any(isinstance(item, tuple) and item[0] == "execute" for item in actions)
+
+    assert scheduled[0][1]() is False
+    invocations = [item for item in actions if isinstance(item, tuple) and item[0] == "execute"]
+    assert len(invocations) == 1
+    _, executed_plan, options = invocations[0]
+    assert executed_plan is editor.plan
+    assert options["component_repository"] is qualified_repository
+    assert options["source_plan_path"] == editor.path
+    assert len(completed) == 1
+    assert completed[0][1][0].run_id == "run-from-editor"

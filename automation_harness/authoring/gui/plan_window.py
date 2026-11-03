@@ -16,7 +16,8 @@ from automation_harness.authoring.gui.common import ArtifactWindow
 from automation_harness.authoring.gui.result_report_viewer import ResultReportViewer
 from automation_harness.reporting.run_reports import list_plan_reports
 from automation_harness.authoring.preferences_runtime import (
-    AuthoringPreferences, _suspend_harness_windows, _restore_harness_windows,
+    AuthoringPreferences, RUN_SETTLE_DELAY_MS,
+    _suspend_harness_windows, _restore_harness_windows,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_registry_service import save_plan_selection_to_project_registry
@@ -616,6 +617,10 @@ class TestPlanWindow(ArtifactWindow):
 
     def run_test(self):
         try:
+            # Project Manager resolves its repository from disk for each run.
+            # Refresh an externally edited assigned repository here as well,
+            # before composing the qualified execution repository.
+            self._refresh_assigned_repository()
             expanded, components, issues = self._qualified_plan()
             if issues: return self.error("Run Test", "\n".join(issues))
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
@@ -630,7 +635,7 @@ class TestPlanWindow(ArtifactWindow):
         def start_worker():
             threading.Thread(target=worker, name="automation-plan-window-run", daemon=True).start()
             return False
-        GLib.timeout_add(350, start_worker)
+        GLib.timeout_add(RUN_SETTLE_DELAY_MS, start_worker)
 
     def _run_finished(self, result, error):
         self.run_button.set_sensitive(True)

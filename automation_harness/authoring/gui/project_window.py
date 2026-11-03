@@ -15,7 +15,8 @@ from automation_harness.authoring.gui.result_report_viewer import ResultReportVi
 from automation_harness.reporting.run_reports import load_run_report
 from automation_harness.authoring.plan_repository import assigned_repository_path
 from automation_harness.authoring.preferences_runtime import (
-    AuthoringPreferences, _restore_harness_windows, _suspend_harness_windows,
+    AuthoringPreferences, RUN_SETTLE_DELAY_MS,
+    _restore_harness_windows, _suspend_harness_windows,
 )
 from automation_harness.authoring.project import AuthoringProject, save_authoring_project
 from automation_harness.authoring.project_runs import (
@@ -366,7 +367,7 @@ class ProjectWindow(ArtifactWindow):
             except Exception as exc:
                 GLib.idle_add(self._batch_finished, None, exc)
 
-        GLib.timeout_add(350, lambda: (threading.Thread(target=worker, name="automation-project-batch-run", daemon=True).start(), False)[1])
+        GLib.timeout_add(RUN_SETTLE_DELAY_MS, lambda: (threading.Thread(target=worker, name="automation-project-batch-run", daemon=True).start(), False)[1])
 
     def _show_batch_progress(self, phase, index, total, record):
         if phase == "started":
