@@ -6,7 +6,7 @@ from automation_harness.authoring.capture_property_policy import (
 
 def test_strong_semantic_properties_are_selected_by_default():
     assert property_policy("id", "cameraSelector").selected is True
-    assert property_policy("class", "edu.mit.ll.ersa.FeedPanel").selected is True
+    assert property_policy("class", "org.example.desktop.widgets.FeedPanel").selected is True
     assert property_policy("accessible_text", "Camera Selector").selected is True
     assert property_policy("properties.automation.feed-id", "Camera12").selected is True
 
@@ -45,13 +45,13 @@ def test_mandatory_fallback_stays_selected_even_when_weak():
 def test_inherited_and_common_candidate_evidence_is_locked_but_retained():
     inherited = property_policy(
         "window",
-        "MVD",
+        "SampleDisplay",
         candidate_section="assistive",
         source="inherited",
     )
     common = property_policy(
         "class",
-        "edu.mit.ll.ersa.FeedPanel",
+        "org.example.desktop.widgets.FeedPanel",
         candidate_section="assistive",
         source="common",
     )
@@ -71,7 +71,7 @@ def test_available_properties_collects_broad_evidence_without_dropping_runtime_v
     payload = {
         "ref": "n42",
         "id": "feedPanel",
-        "class": "edu.mit.ll.ersa.FeedPanel",
+        "class": "org.example.desktop.widgets.FeedPanel",
         "visible": True,
         "focused": False,
         "bounds": [1.0, 2.0, 300.0, 200.0],

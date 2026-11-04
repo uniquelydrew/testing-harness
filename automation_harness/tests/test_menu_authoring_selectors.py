@@ -188,10 +188,10 @@ def test_combo_selection_executes_authored_selector(monkeypatch, selector, expec
     ({"type": "select_item", "selector": {"kind": "tab", "criteria": {
         "id": "sessionViewTab", "text": "Active Sessions", "index": 3,
     }}}, {"id": "sessionViewTab", "text": "Active Sessions", "index": 3}),
-    ({"type": "select_item", "selector": {"text": "Camera Status"}},
-     {"text": "Camera Status"}),
-    ({"type": "select_item", "value": "Camera Status"},
-     {"text": "Camera Status"}),
+    ({"type": "select_item", "selector": {"text": "System Status"}},
+     {"text": "System Status"}),
+    ({"type": "select_item", "value": "System Status"},
+     {"text": "System Status"}),
 ])
 def test_tab_container_selection_uses_owner_scoped_semantic_criteria(monkeypatch, action, expected):
     definition = ComponentDefinition(
