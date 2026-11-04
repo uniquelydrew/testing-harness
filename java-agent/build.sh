@@ -9,7 +9,7 @@ SOURCE="$ROOT/src/java8/java"
 rm -rf "$BUILD"
 mkdir -p "$CLASSES"
 
-# MSCT is deployed on Java 8. Compile the instrumentation agent to Java 8
+# Some target applications are deployed on Java 8. Compile the instrumentation agent to Java 8
 # bytecode so the same JAR can be loaded by Java 8 and newer target JVMs.
 # com.sun.net.httpserver is part of JDK 8; it does not require the Java 9+
 # module-system --add-modules option.
@@ -26,7 +26,7 @@ fi
 
 # On JDK 9+ --release 8 constrains both bytecode and the linked Java API
 # surface. Using only -source/-target with a newer JDK can accidentally compile
-# calls to APIs that do not exist in the MSCT Java 8 runtime.
+# calls to APIs that do not exist in the target Java 8 runtime.
 find "$SOURCE" -name '*.java' -print0 |
     xargs -0 javac "${JAVAC_LEVEL[@]}" -d "$CLASSES"
 

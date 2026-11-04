@@ -310,7 +310,7 @@ def _readable_name(value: str) -> str:
     value = re.sub(r"\s+", " ", value).strip()
     if not value:
         return ""
-    # Preserve intentional acronyms such as ``MSCT`` while making identifiers
+    # Preserve intentional acronyms such as ``HTTP`` while making identifiers
     # such as ``mainTabs`` read like the rest of the semantic repository.
     return value[:1].upper() + value[1:]
 

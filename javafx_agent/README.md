@@ -33,26 +33,28 @@ Add the agent before the existing Java arguments:
 java -javaagent:/path/to/automation-harness-javafx-agent.jar ...
 ```
 
-For the ERSA launch scripts, use a command-scoped `JAVA_TOOL_OPTIONS` value so
+For target application launch scripts, use a command-scoped `JAVA_TOOL_OPTIONS` value so
 the agent is applied only to that JavaFX launcher:
 
 ```bash
 source .automation-harness-env
-cd /home/ersauser/Desktop/git-clones/ersa/core/ops/scripts.example
-JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATION_HARNESS_JAVAFX_AGENT" ./runMVD.csh
+cd /path/to/approved/application
+JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATION_HARNESS_JAVAFX_AGENT" ./launch-primary.sh
 ```
 
-and, in another terminal if both applications are required:
+and, in another terminal if two target applications are required:
+
+The launch scripts below are placeholders; substitute approved application launchers.
 
 ```bash
 source /path/to/testing-harness/.automation-harness-env
-cd /home/ersauser/Desktop/git-clones/ersa/core/ops/scripts.example
-JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATION_HARNESS_JAVAFX_AGENT" ./runMosaic.csh
+cd /path/to/approved/application
+JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATION_HARNESS_JAVAFX_AGENT" ./launch-secondary.sh
 ```
 
-Do **not** export this `JAVA_TOOL_OPTIONS` value globally before running the
-combined ERSA startup scripts. The current agent requires Java 11+ and must not
-be injected into the Java 8 Swing/MSCT process. Swing continues to use Java
+Do **not** export this `JAVA_TOOL_OPTIONS` value globally before running
+combined application startup scripts. The current agent requires Java 11+ and must not
+be injected into the Java 8 Swing/MSCT process. Swing applications continue to use Java
 Accessibility + java-atk-wrapper/AT-SPI on Linux.
 
 ## Qualification
@@ -77,7 +79,7 @@ To test the same click-capture path that Object Capture uses:
 automation-javafx capture --timeout 30
 ```
 
-Click a control in MVD or Mosaic. The result should include its JavaFX class,
+Click a control in the instrumented target application. The result should include its JavaFX class,
 Node `id` when present, accessible role/text, screen bounds, state, hierarchy,
 and candidate `javafx` strategy.
 
