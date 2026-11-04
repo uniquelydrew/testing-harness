@@ -10,7 +10,7 @@ from automation_harness.models.component import CapturedComponent, ComponentStat
 def capture(role="frame", name="Main Window", bounds=(10, 20, 300, 200)):
     return CapturedComponent(
         name=name, role=role, description=None, accessible_id=None,
-        application="ersa", hierarchy=(), actions=(), bounds=bounds,
+        application="sample-app", hierarchy=(), actions=(), bounds=bounds,
         state=ComponentState(), backend_properties={"process_id": 123},
     )
 
@@ -18,7 +18,7 @@ def capture(role="frame", name="Main Window", bounds=(10, 20, 300, 200)):
 def test_window_identity_excludes_runtime_pid():
     identity = identify_captured_window(capture())
     assert identity.title == "Main Window"
-    assert identity.application.application_id == "ersa"
+    assert identity.application.application_id == "sample-app"
     assert not hasattr(identity, "process_id")
 
 

@@ -9,7 +9,7 @@ from automation_harness.core.solipsys_identity import (
 def _identity(value="2", key="getTrackId"):
     return {
         "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-        "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+        "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
         "track_identity_key": key,
         "track_identity_value": value,
     }
@@ -33,17 +33,17 @@ def test_field_identity_is_explicitly_disqualified_as_durable_identity():
 def test_locator_matching_ignores_runtime_state():
     assert locators_match(
         dict(_identity(), rendered_object_ref="display-a", position=[737, 480]),
-        {"window": "MSCT"},
+        {"window": "SampleConsole"},
         dict(_identity(), rendered_object_ref="display-b", position=[1297, 227]),
-        {"window": "MSCT"},
+        {"window": "SampleConsole"},
     )
 
 
 def test_locator_matching_rejects_identity_or_scope_conflict():
     assert not locators_match(_identity("2"), {}, _identity("3"), {})
     assert not locators_match(
-        _identity("2"), {"window": "MSCT A"},
-        _identity("2"), {"window": "MSCT B"},
+        _identity("2"), {"window": "SampleConsole A"},
+        _identity("2"), {"window": "SampleConsole B"},
     )
 
 

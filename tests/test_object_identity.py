@@ -8,7 +8,7 @@ from automation_harness.core.object_identity import (
 
 
 def test_window_identity_survives_application_restart():
-    application = ApplicationIdentity(application_id="ersa")
+    application = ApplicationIdentity(application_id="sample-app")
     window = WindowIdentity(application, role="frame", title="Camera Settings")
     component = ComponentIdentity(window, role="combo box", name="Primary Camera")
     first = RuntimeBinding(process_id=123, native_window_id=1001, backend="atspi")
@@ -26,10 +26,10 @@ def test_ownership_distinguishes_missing_evidence_from_mismatch():
 
 def test_semantic_identity_requires_discriminator():
     with pytest.raises(ValueError):
-        WindowIdentity(ApplicationIdentity(executable="ersa"), role="frame")
+        WindowIdentity(ApplicationIdentity(executable="sample-app"), role="frame")
     with pytest.raises(ValueError):
         ComponentIdentity(
-            WindowIdentity(ApplicationIdentity(executable="ersa"), role="frame", title="Main"),
+            WindowIdentity(ApplicationIdentity(executable="sample-app"), role="frame", title="Main"),
             role="button",
         )
 

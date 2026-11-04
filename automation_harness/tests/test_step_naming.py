@@ -16,18 +16,18 @@ from automation_harness.models.plan import StepCall
 
 
 def test_identifier_normalization_preserves_acronyms_and_strips_owner_path():
-    assert humanize_identifier("MSCTDisplay.WatchButton", leaf=True) == "Watch Button"
+    assert humanize_identifier("SampleConsoleDisplay.WatchButton", leaf=True) == "Watch Button"
     assert humanize_identifier("Main_Window.watch_btn", leaf=True) == "Watch Button"
     assert humanize_identifier("HTTPServerURL") == "HTTP Server URL"
-    assert humanize_identifier("MSCT Display") == "MSCT Display"
-    assert humanize_identifier("camera_status_tab") == "Camera Status Tab"
+    assert humanize_identifier("SampleConsole Display") == "SampleConsole Display"
+    assert humanize_identifier("system_status_tab") == "System Status Tab"
     assert humanize_identifier("22222222-2222-4222-8222-222222222222") == ""
 
 
 def test_names_use_action_plus_humanized_object_and_type():
-    assert default_step_name("click", "MSCT Display.WatchButton", ObjectType.BUTTON) == "Click Watch Button"
+    assert default_step_name("click", "SampleConsole Display.WatchButton", ObjectType.BUTTON) == "Click Watch Button"
     assert default_step_name("click", "Watch", ObjectType.BUTTON) == "Click Watch Button"
-    assert default_step_name("close", "SelectSiteWindow", ObjectType.WINDOW) == "Close Select Site Window"
+    assert default_step_name("close", "SelectWorkspaceWindow", ObjectType.WINDOW) == "Close Select Workspace Window"
     assert default_step_name("select_item", "site_choice_box") == "Select Item Site Choice Box"
     assert default_step_name("select_menu_item", "MenuBar.FileMenu", ObjectType.MENU) == "Select Menu Option File Menu"
     assert default_step_name("gui.object.visual.assert", "WatchButton") == "Assert Match Watch Button"
@@ -40,7 +40,7 @@ def test_action_definition_uses_human_label_while_preserving_canonical_uuid():
     object_id = "11111111-1111-4111-8111-111111111111"
     call = INTERACTIONS[ActionType.CLICK].to_step_call(
         "action-1", object_id, {},
-        object_label="MSCTDisplay.watchButton", object_type=ObjectType.BUTTON,
+        object_label="SampleConsoleDisplay.watchButton", object_type=ObjectType.BUTTON,
     )
     assert call.name == "Click Watch Button"
     assert call.inputs["component_id"] == object_id
@@ -49,7 +49,7 @@ def test_action_definition_uses_human_label_while_preserving_canonical_uuid():
 
 def test_readable_call_name_resolves_repository_uuid_and_preserves_manual_rename():
     item = ComponentDefinition(
-        "MSCT Display.WatchButton", object_type=ObjectType.BUTTON,
+        "SampleConsole Display.WatchButton", object_type=ObjectType.BUTTON,
         object_id="11111111-1111-4111-8111-111111111111",
     )
     repository = ComponentRepository({item.component_id: item})
