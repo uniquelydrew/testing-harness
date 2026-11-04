@@ -117,7 +117,7 @@ def test_javafx_capture_remains_usable_when_live_node_disappears():
 def test_semantic_tree_collapses_redundant_javafx_containers():
     target = _node(
         "target",
-        "edu.mit.ll.ersa.FeedPanel",
+        "org.example.desktop.widgets.FeedPanel",
         layout={"grid_row": 1, "grid_column": 2},
     )
     stack = _node("stack", "javafx.scene.layout.StackPane", children=[target])
@@ -189,12 +189,12 @@ def test_progress_bar_is_a_semantic_javafx_object():
 
 
 def test_application_classes_are_not_implicitly_interaction_boundaries():
-    node = _node("feed", "edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController")
+    node = _node("feed", "org.example.desktop.widgets.VideoTileController")
     assert is_semantic_node(node) is False
 
 
 def test_stable_application_container_is_structural_context_only():
-    node = _node("feed", "edu.mit.ll.ersa.FeedPanel", id="primaryFeed")
+    node = _node("feed", "org.example.desktop.widgets.FeedPanel", id="primaryFeed")
     assert is_structural_context_node(node) is True
     assert is_semantic_node(node) is False
 
@@ -350,7 +350,7 @@ def test_common_peer_descriptors_identify_shared_group_properties():
         "a",
         "Feed A",
         {
-            "class": "edu.mit.ll.ersa.FeedPanel",
+            "class": "org.example.desktop.widgets.FeedPanel",
             "accessible_role": "PARENT",
             "layout": {"grid_row": 0, "grid_column": 0},
             "properties": {},
@@ -360,24 +360,24 @@ def test_common_peer_descriptors_identify_shared_group_properties():
         "b",
         "Feed B",
         {
-            "class": "edu.mit.ll.ersa.FeedPanel",
+            "class": "org.example.desktop.widgets.FeedPanel",
             "accessible_role": "PARENT",
             "layout": {"grid_row": 0, "grid_column": 1},
             "properties": {},
         },
     )
-    root = CaptureContextNode("root", "MVD", {"window": "MVD"}, [first, second], is_window_root=True)
+    root = CaptureContextNode("root", "SampleDisplay", {"window": "SampleDisplay"}, [first, second], is_window_root=True)
     context = CaptureContext("javafx", root, "a")
 
     common = context.common_peer_descriptors("a")
 
-    assert common["class"] == "edu.mit.ll.ersa.FeedPanel"
+    assert common["class"] == "org.example.desktop.widgets.FeedPanel"
     assert common["accessible_role"] == "PARENT"
     assert "layout.grid_column" not in common
 
 
 def test_inherited_descriptors_distinguish_parent_from_older_ancestors():
-    target = CaptureContextNode("target", "Feed", {"class": "edu.mit.ll.ersa.FeedPanel"}, is_target=True)
+    target = CaptureContextNode("target", "Feed", {"class": "org.example.desktop.widgets.FeedPanel"}, is_target=True)
     parent = CaptureContextNode(
         "grid",
         "Video Grid",
@@ -390,12 +390,12 @@ def test_inherited_descriptors_distinguish_parent_from_older_ancestors():
         {"id": "contentPane", "class": "javafx.scene.layout.AnchorPane"},
         [parent],
     )
-    root = CaptureContextNode("root", "MVD", {"window": "MVD"}, [ancestor], is_window_root=True)
+    root = CaptureContextNode("root", "SampleDisplay", {"window": "SampleDisplay"}, [ancestor], is_window_root=True)
     context = CaptureContext("javafx", root, "target")
 
     inherited = context.inherited_descriptors("target")
 
-    assert inherited["window"] == "MVD"
+    assert inherited["window"] == "SampleDisplay"
     assert inherited["parent.id"] == "videoGrid"
     assert inherited["parent.class"] == "javafx.scene.layout.GridPane"
     assert inherited["ancestor[0].id"] == "contentPane"
@@ -403,7 +403,7 @@ def test_inherited_descriptors_distinguish_parent_from_older_ancestors():
 
 def test_domain_properties_are_exposed_as_identity_descriptors():
     node = {
-        "class": "edu.mit.ll.ersa.FeedPanel",
+        "class": "org.example.desktop.widgets.FeedPanel",
         "properties": {
             "automation.feed-id": "Camera12",
             "javafx.css.pseudoClassState": "ignored",

@@ -7,7 +7,7 @@ from automation_harness.drivers import x11_foreground as x11
 
 
 def test_xprop_equals_parses_javafx_stage_name_and_process_id(monkeypatch):
-    title = "ERSA test.build.0 Main Video Display, TSI.op1, domain 12"
+    title = "SampleApp build.0 Main Video Display, SITE.op1, domain 12"
     monkeypatch.setattr(x11, "_xprop", lambda *args: (
         "_NET_WM_PID(CARDINAL) = 5215\n"
         '_NET_WM_NAME(UTF8_STRING) = "' + title + '"\n'
@@ -25,7 +25,7 @@ def test_xprop_colon_fixture_remains_compatible(monkeypatch):
 
 
 def test_native_lookup_succeeds_with_standard_equals_properties(monkeypatch):
-    title = "ERSA test.build.0 Main Video Display, TSI.op1, domain 12"
+    title = "SampleApp build.0 Main Video Display, SITE.op1, domain 12"
     def xprop(*args):
         if args[0] == "-root":
             return "_NET_CLIENT_LIST(WINDOW): window id # 0x101, 0x202\n"
@@ -47,17 +47,17 @@ def test_unlisted_title_is_distinct_from_wrong_foreground(monkeypatch):
              '_NET_WM_NAME(UTF8_STRING) = "Different display title"\n'
     ))
     with pytest.raises(x11.X11WindowNotFound, match="No X11 window matched"):
-        x11.find_window(pid=5215, title="ERSA Main Video Display")
+        x11.find_window(pid=5215, title="SampleApp Main Video Display")
 
 
 def test_foreign_process_holding_requested_title_fails_closed(monkeypatch):
     monkeypatch.setattr(x11, "_xprop", lambda *args: (
         "_NET_CLIENT_LIST(WINDOW): window id # 0x101\n" if args[0] == "-root"
         else '_NET_WM_PID(CARDINAL) = 9999\n'
-             '_NET_WM_NAME(UTF8_STRING) = "Select Site"\n'
+             '_NET_WM_NAME(UTF8_STRING) = "Select Workspace"\n'
     ))
     with pytest.raises(x11.X11WindowIdentityConflict, match="another PID"):
-        x11.find_window(pid=5215, title="Select Site")
+        x11.find_window(pid=5215, title="Select Workspace")
 
 
 def test_duplicate_native_identity_fails_closed(monkeypatch):
@@ -65,10 +65,10 @@ def test_duplicate_native_identity_fails_closed(monkeypatch):
         if args[0] == "-root":
             return "_NET_CLIENT_LIST(WINDOW): window id # 0x101, 0x102\n"
         return ('_NET_WM_PID(CARDINAL) = 5215\n'
-                '_NET_WM_NAME(UTF8_STRING) = "Select Site"\n')
+                '_NET_WM_NAME(UTF8_STRING) = "Select Workspace"\n')
     monkeypatch.setattr(x11, "_xprop", xprop)
     with pytest.raises(x11.X11WindowAmbiguous, match="Multiple X11 windows"):
-        x11.find_window(pid=5215, title="Select Site")
+        x11.find_window(pid=5215, title="Select Workspace")
 
 
 def test_x11_activation_timeout_identifies_foreground_terminal(monkeypatch):
@@ -77,7 +77,7 @@ def test_x11_activation_timeout_identifies_foreground_terminal(monkeypatch):
     monkeypatch.setattr(x11, "_request_activation", lambda xid: None)
     monkeypatch.setattr(x11, "_window_properties", lambda xid: (1234, "Terminal"))
     with pytest.raises(x11.X11ActivationError, match="active_title='Terminal'"):
-        x11.activate_window(pid=5215, title="ERSA Main", timeout=0)
+        x11.activate_window(pid=5215, title="SampleApp Main", timeout=0)
 
 
 def test_xprop_uses_python36_compatible_subprocess_options(monkeypatch):

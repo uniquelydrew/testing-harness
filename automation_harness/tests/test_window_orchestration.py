@@ -64,14 +64,14 @@ def test_orchestrator_verifies_exact_window_identity_after_driver_request():
     class Driver:
         def activate_window(self, **kwargs):
             calls.append(kwargs)
-            return {"process_id": 451, "window": "Select Site", "focused": False}
+            return {"process_id": 451, "window": "Select Workspace", "focused": False}
     details = orchestrator.ensure_foreground(
         component_id="site.confirm", object_id="uuid-confirm",
         driver=Driver(), strategy="atspi",
         arguments={"identification": {"mandatory": {"id": "confirm"}}},
     )
     assert calls == [{"identification": {"mandatory": {"id": "confirm"}}}]
-    assert monitor.calls == [(451, "Select Site", 2.0)]
+    assert monitor.calls == [(451, "Select Workspace", 2.0)]
     assert details["verification"] == "x11-ewmh"
     assert details["object_id"] == "uuid-confirm"
     assert details["native_window_id"] == "0xcafe"
@@ -123,7 +123,7 @@ def test_orchestrator_does_not_accept_bridge_focus_over_native_mismatch():
         orchestrator.ensure_foreground(
             component_id="confirm", object_id="uuid-confirm",
             driver=SimpleNamespace(activate_window=lambda: {
-                "focused": True, "window": "Select Site", "process_id": 88,
+                "focused": True, "window": "Select Workspace", "process_id": 88,
             }),
             strategy="javafx", arguments={},
         )
@@ -273,17 +273,17 @@ def test_javafx_stage_focus_is_authoritative_when_x11_window_is_unlisted():
         object_id="uuid-file-menu",
         strategy="javafx",
         driver=SimpleNamespace(activate_window=lambda **kwargs: {
-            "window": "ERSA test.build.0 Main Video Display, TSI.op1, domain 12",
+            "window": "SampleApp build.0 Main Video Display, SITE.op1, domain 12",
             "bridge_pid": 5215,
             "selection": "owning_window",
             "focused": True,
         }),
-        arguments={"window": "ERSA test.build.0 Main Video Display, TSI.op1, domain 12"},
+        arguments={"window": "SampleApp build.0 Main Video Display, SITE.op1, domain 12"},
     )
     assert details["verification"] == "javafx-stage-focused"
     assert details["native_foreground_verified"] is False
     assert "X11WindowNotFound" in details["native_lookup_diagnostic"]
-    assert details["window"].startswith("ERSA test.build.0")
+    assert details["window"].startswith("SampleApp test.build.0")
     assert len(monitor.calls) == 1
 
 
@@ -308,10 +308,10 @@ def test_missing_x11_window_fallback_requires_unique_focused_javafx_stage(
             component_id="File Menu", object_id="uuid-file-menu",
             strategy=strategy,
             driver=SimpleNamespace(activate_window=lambda **kwargs: {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": selection, "focused": focused,
             }),
-            arguments={"window": "ERSA Main"},
+            arguments={"window": "SampleApp Main"},
         )
 
 
@@ -326,10 +326,10 @@ def test_native_foreground_timeout_must_not_fallback_to_javafx_claim():
             component_id="File Menu", object_id="uuid-file-menu",
             strategy="javafx",
             driver=SimpleNamespace(activate_window=lambda **kwargs: {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": "owning_window", "focused": True,
             }),
-            arguments={"window": "ERSA Main"},
+            arguments={"window": "SampleApp Main"},
         )
 
 
@@ -361,7 +361,7 @@ def test_javafx_native_handoff_precedes_stage_focus_verification_with_terminal_i
         def request_window_activation(self, **kwargs):
             order.append(("javafx.request", kwargs.get("window")))
             return {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": "owning_window", "focused": False,
                 "activation_attempts": 1,
             }
@@ -370,13 +370,13 @@ def test_javafx_native_handoff_precedes_stage_focus_verification_with_terminal_i
             order.append(("javafx.verify", kwargs.get("window")))
             assert state["focused"]
             return {
-                "bridge_pid": 5215, "window": "ERSA Main", "focused": True,
+                "bridge_pid": 5215, "window": "SampleApp Main", "focused": True,
                 "activation_attempts": 1,
             }
 
     result = WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
         component_id="File Menu", object_id="uuid-file",
-        strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+        strategy="javafx", driver=JavaFx(), arguments={"window": "SampleApp Main"},
     )
     assert [entry[0] for entry in order] == [
         "javafx.request", "x11.activate", "javafx.verify",
@@ -400,18 +400,18 @@ def test_failed_native_handoff_does_not_attempt_semantic_action_or_focus_poll():
         def request_window_activation(self, **kwargs):
             calls.append("request")
             return {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": "owning_window", "focused": False,
             }
 
         def activate_window(self, **kwargs):
             calls.append("verify")
-            return {"bridge_pid": 5215, "window": "ERSA Main", "focused": True}
+            return {"bridge_pid": 5215, "window": "SampleApp Main", "focused": True}
 
     with pytest.raises(WindowOrchestrationError, match="terminal remains foreground"):
         WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
             component_id="File Menu", object_id="uuid-file",
-            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+            strategy="javafx", driver=JavaFx(), arguments={"window": "SampleApp Main"},
         )
     assert calls == ["request", "native"]
 
@@ -428,7 +428,7 @@ def test_unlisted_x11_window_does_not_grant_unfocused_stage_access():
     class JavaFx:
         def request_window_activation(self, **kwargs):
             return {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": "owning_window", "focused": False,
             }
 
@@ -438,7 +438,7 @@ def test_unlisted_x11_window_does_not_grant_unfocused_stage_access():
     with pytest.raises(WindowOrchestrationError, match="native X11 owner is unavailable"):
         WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
             component_id="File Menu", object_id="uuid-file",
-            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+            strategy="javafx", driver=JavaFx(), arguments={"window": "SampleApp Main"},
         )
 
 
@@ -452,15 +452,15 @@ def test_handoff_rejects_javafx_stage_identity_changes_after_native_activation()
     class JavaFx:
         def request_window_activation(self, **kwargs):
             return {
-                "bridge_pid": 5215, "window": "ERSA Main",
+                "bridge_pid": 5215, "window": "SampleApp Main",
                 "selection": "owning_window", "focused": False,
             }
 
         def activate_window(self, **kwargs):
-            return {"bridge_pid": 5216, "window": "ERSA Main", "focused": True}
+            return {"bridge_pid": 5216, "window": "SampleApp Main", "focused": True}
 
     with pytest.raises(WindowOrchestrationError, match="identity changed"):
         WindowOrchestrator(ForegroundMonitor()).ensure_foreground(
             component_id="File Menu", object_id="uuid-file",
-            strategy="javafx", driver=JavaFx(), arguments={"window": "ERSA Main"},
+            strategy="javafx", driver=JavaFx(), arguments={"window": "SampleApp Main"},
         )

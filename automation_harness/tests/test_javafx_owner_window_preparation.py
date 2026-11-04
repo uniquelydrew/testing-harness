@@ -17,7 +17,7 @@ from automation_harness.models.component import ComponentDefinition, ComponentSt
 from automation_harness.models.gui import ActionType, ObjectType
 
 
-WINDOW = "ERSA Main Video Display"
+WINDOW = "SampleApp Main Video Display"
 
 
 class FakeEndpoint:

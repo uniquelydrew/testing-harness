@@ -35,8 +35,8 @@ def test_popup_selector_object_types_keep_select_item_public_action(object_type)
 
 
 @pytest.mark.parametrize(("role", "native_class", "expected"), [
-    ("TAB_PANE", "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay", ObjectType.TAB_CONTAINER),
-    ("tab pane", "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay", ObjectType.TAB_CONTAINER),
+    ("TAB_PANE", "org.example.desktop.widgets.DetailsPane", ObjectType.TAB_CONTAINER),
+    ("tab pane", "org.example.desktop.widgets.DetailsPane", ObjectType.TAB_CONTAINER),
     ("tabpane", "javafx.scene.control.TabPane", ObjectType.TAB_CONTAINER),
     ("page tab list", "javax.swing.JTabbedPane", ObjectType.TAB_CONTAINER),
     ("page tab", "javafx.scene.control.Tab", ObjectType.TAB),
@@ -53,17 +53,17 @@ def test_javafx_custom_tabpane_capture_is_collection_selector_not_single_tab():
 
     capture = _captured_recording_node({
         "framework": "javafx",
-        "class": "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay",
+        "class": "org.example.desktop.widgets.DetailsPane",
         "accessible_role": "TAB_PANE",
         "window": "Advanced Details",
         "tabs": [
-            {"index": 0, "id": None, "text": "Camera Status"},
+            {"index": 0, "id": None, "text": "System Status"},
             {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
         ],
     })
 
     assert capture.semantic_type() is ObjectType.TAB_CONTAINER
-    assert capture.backend_properties["tabs"][0]["text"] == "Camera Status"
+    assert capture.backend_properties["tabs"][0]["text"] == "System Status"
     assert capture.backend_properties["tabs"][1]["id"] == "sessionViewTab"
     assert interaction_family(capture.semantic_type(), capture.native_class) is InteractionFamily.COLLECTION_SELECTOR
     assert ActionType.SELECT_ITEM in default_actions(capture.semantic_type())

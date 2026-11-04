@@ -15,7 +15,7 @@ _ACRONYMS = {
     "api": "API", "atspi": "AT-SPI", "css": "CSS", "gui": "GUI",
     "html": "HTML", "http": "HTTP", "https": "HTTPS", "id": "ID",
     "io": "IO", "ip": "IP", "jvm": "JVM", "json": "JSON",
-    "msct": "MSCT", "oidc": "OIDC", "sql": "SQL", "ssl": "SSL",
+    "oidc": "OIDC", "sql": "SQL", "ssl": "SSL",
     "tcp": "TCP", "tts": "TTS", "ui": "UI", "url": "URL",
     "uuid": "UUID", "vm": "VM", "xml": "XML", "x11": "X11",
 }

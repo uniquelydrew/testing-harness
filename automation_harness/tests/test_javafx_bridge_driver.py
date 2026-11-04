@@ -27,7 +27,7 @@ _NODE = {
     "focused": False,
     "managed": True,
     "focus_traversable": True,
-    "window": "ERSA Main Video Display",
+    "window": "SampleApp Main Video Display",
     "style_classes": ["button"],
     "text": "Select Camera",
     "bounds": [100.2, 50.8, 120.0, 28.0],
@@ -142,7 +142,7 @@ def _write_discovery(directory: Path, server: _BridgeServer, pid=1234):
             "port": server.port,
             "token": server.token,
             "java_version": "21.0.7",
-            "command": "ERSAMainVideoDisplay.jar",
+            "command": "SampleAppMainVideoDisplay.jar",
         }),
         encoding="utf-8",
     )
@@ -156,7 +156,7 @@ def test_discovers_live_javafx_endpoint(tmp_path):
         endpoints = discover_javafx_endpoints(tmp_path)
         assert len(endpoints) == 1
         assert endpoints[0].port == server.port
-        assert endpoints[0].command == "ERSAMainVideoDisplay.jar"
+        assert endpoints[0].command == "SampleAppMainVideoDisplay.jar"
     finally:
         server.close()
 
@@ -174,7 +174,7 @@ def test_capture_builds_durable_javafx_strategy(tmp_path):
         assert strategy.type == "javafx"
         identity = strategy.options["identification"]
         assert identity["mandatory"] == {"id": "cameraSelectorButton"}
-        assert identity["assistive"]["window"] == "ERSA Main Video Display"
+        assert identity["assistive"]["window"] == "SampleApp Main Video Display"
         assert identity["assistive"]["layout"]["grid_column"] == 2
         assert identity["assistive"]["lineage"] == [
             {"id": "topControlBox", "class": "javafx.scene.layout.GridPane"},
@@ -189,7 +189,7 @@ def test_application_authored_node_property_outranks_generic_class(tmp_path):
     panel = dict(_NODE)
     panel.update({
         "ref": "n42",
-        "class": "edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController",
+        "class": "org.example.desktop.widgets.VideoTileController",
         "simple_class": "VideoPlayerFXMLController",
         "id": None,
         "accessible_role": "PARENT",
@@ -218,7 +218,7 @@ def test_user_data_is_used_before_class_when_no_explicit_id_or_text(tmp_path):
     panel = dict(_NODE)
     panel.update({
         "ref": "n43",
-        "class": "edu.mit.ll.ersa.FeedPanel",
+        "class": "org.example.desktop.widgets.FeedPanel",
         "simple_class": "FeedPanel",
         "id": None,
         "accessible_role": "PARENT",
@@ -232,7 +232,7 @@ def test_user_data_is_used_before_class_when_no_explicit_id_or_text(tmp_path):
         _write_discovery(tmp_path, server)
         captured = JavaFxBridgeDriver(discovery_dir=tmp_path).capture_next_click(timeout=1)
         identity = captured.candidate_strategy().options["identification"]
-        assert identity["mandatory"] == {"user_data": "camera-7", "class": "edu.mit.ll.ersa.FeedPanel"}
+        assert identity["mandatory"] == {"user_data": "camera-7", "class": "org.example.desktop.widgets.FeedPanel"}
     finally:
         server.close()
 
@@ -251,7 +251,7 @@ def test_internal_javafx_menu_skin_class_is_not_persisted(tmp_path):
         "focused": False,
         "managed": True,
         "focus_traversable": False,
-        "window": "ERSA Main Video Display",
+        "window": "SampleApp Main Video Display",
         "style_classes": ["menu-button", "menu"],
         "text": None,
         "bounds": [1561.0, 65.0, 30.0, 27.0],
@@ -385,7 +385,7 @@ def test_javafx_window_activation_uses_distinct_bridge_operation(tmp_path):
         result = driver.activate_window(
             identification={"mandatory": {"id": "cameraSelectorButton"}},
         )
-        assert result["window"] == "ERSA Main Video Display"
+        assert result["window"] == "SampleApp Main Video Display"
         assert result["focused"] is True
     finally:
         server.close()
@@ -414,7 +414,7 @@ def test_window_activation_rejects_unconfirmed_foreground(monkeypatch):
 
         def request(self, operation, **kwargs):
             assert operation == "activate_window"
-            return {"window": "ERSA Main Video Display", "focused": False}
+            return {"window": "SampleApp Main Video Display", "focused": False}
 
     driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
     monkeypatch.setattr(driver, "_find_unique", lambda identification: (Endpoint(), {}, ()))
@@ -430,7 +430,7 @@ def test_window_activation_waits_for_delayed_focus(monkeypatch):
         def request(self, operation, **kwargs):
             assert operation == "activate_window"
             self.attempts += 1
-            return {"window": "ERSA Main Video Display", "focused": self.attempts >= 3}
+            return {"window": "SampleApp Main Video Display", "focused": self.attempts >= 3}
 
     endpoint = Endpoint()
     driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
@@ -445,7 +445,7 @@ def test_window_activation_timeout_reports_last_response(monkeypatch):
         pid = 1234
 
         def request(self, operation, **kwargs):
-            return {"window": "ERSA Main Video Display", "focused": False}
+            return {"window": "SampleApp Main Video Display", "focused": False}
 
     driver = JavaFxBridgeDriver.__new__(JavaFxBridgeDriver)
     monkeypatch.setattr(driver, "_find_unique", lambda identification: (Endpoint(), {}, ()))
@@ -472,14 +472,14 @@ def test_prepared_javafx_menu_identity_remains_immutable_but_executes_via_bridge
         strategies=(ComponentStrategy("javafx", {
             "identification": {
                 "mandatory": {"class": "javafx.scene.control.Menu"},
-                "assistive": {"window": "ERSA Main Video Display",
+                "assistive": {"window": "SampleApp Main Video Display",
                               "lineage": [{"id": "topMenuBar", "class": "javafx.scene.control.MenuBar"}]},
             },
         }),),
         subobjects={"cameraselectormenuitem": {
             "kind": "menu_item",
             "selector": {"kind": "menu_item", "criteria": {
-                "id": "cameraSelectorMenuItem", "text": "Select Site/Camera...",
+                "id": "cameraSelectorMenuItem", "text": "Select Workspace...",
             }},
         }},
     )

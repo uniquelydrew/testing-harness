@@ -32,13 +32,13 @@ def test_legacy_jogl_package_is_recognized():
 
 
 def test_opaque_swing_failure_is_not_misclassified_as_javafx():
-    boundary = classify_capture_boundary(_capture("com.msct.display.TacticalCanvas", framework="swing"))
+    boundary = classify_capture_boundary(_capture("org.example.desktop.display.TacticalCanvas", framework="swing"))
     assert boundary.kind is CaptureBoundaryKind.SWING
     assert boundary.framework != "javafx"
 
 
 def test_javafx_requires_positive_class_or_framework_evidence():
-    unknown = classify_capture_boundary(_capture("com.msct.display.UnknownSurface"))
+    unknown = classify_capture_boundary(_capture("org.example.desktop.display.UnknownSurface"))
     actual = classify_capture_boundary(_capture("javafx.embed.swing.JFXPanel"))
     assert unknown.kind is CaptureBoundaryKind.UNKNOWN
     assert actual.kind is CaptureBoundaryKind.JAVA_FX

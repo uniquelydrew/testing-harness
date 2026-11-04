@@ -18,7 +18,7 @@ class _Transport:
             "semantic_node": {
                 "framework": "swing", "class": "com.jogamp.opengl.awt.GLCanvas",
                 "native_class": "com.jogamp.opengl.awt.GLCanvas", "name": "Display",
-                "accessible_id": "display", "window": "MSCT", "role": "canvas",
+                "accessible_id": "display", "window": "SampleConsole", "role": "canvas",
                 "bounds": [10, 20, 800, 600], "properties": {"opaque_render_surface": True},
             }
         }
@@ -32,7 +32,7 @@ def test_java_agent_resolves_swing_locator_without_atspi(monkeypatch):
 
     capture = driver.inspect(identification={
         "mandatory": {"accessible_id": "display"},
-        "assistive": {"native_class": "com.jogamp.opengl.awt.GLCanvas", "window": "MSCT"},
+        "assistive": {"native_class": "com.jogamp.opengl.awt.GLCanvas", "window": "SampleConsole"},
     })
 
     assert capture.bounds == (10, 20, 800, 600)
@@ -40,7 +40,7 @@ def test_java_agent_resolves_swing_locator_without_atspi(monkeypatch):
     assert transport.calls == [("resolve", {
         "accessible_id": "display",
         "native_class": "com.jogamp.opengl.awt.GLCanvas",
-        "window": "MSCT",
+        "window": "SampleConsole",
     })]
 
 
@@ -116,23 +116,23 @@ def test_java_agent_forwards_solipsys_rendered_identity(monkeypatch):
     driver.inspect(identification={
         "mandatory": {
             "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-            "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+            "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
             "track_identity_key": "getTrackId",
             "track_identity_value": "T-1234",
         },
         "assistive": {
             "native_class": "com.solipsys.view.AWTViewCanvas",
             "accessible_id": "panel0",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
     })
 
     assert transport.calls == [("resolve", {
         "accessible_id": "panel0",
         "native_class": "com.solipsys.view.AWTViewCanvas",
-        "window": "MSCT",
+        "window": "SampleConsole",
         "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-        "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+        "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
         "track_identity_key": "getTrackId",
         "track_identity_value": "T-1234",
     })]
@@ -151,7 +151,7 @@ def test_java_agent_select_menu_path_sends_stable_segment_identity(monkeypatch):
         ],
         identification={
             "mandatory": {"accessible_id": "mainMenu"},
-            "assistive": {"window": "MSCT"},
+            "assistive": {"window": "SampleConsole"},
         },
     )
 
@@ -160,7 +160,7 @@ def test_java_agent_select_menu_path_sends_stable_segment_identity(monkeypatch):
     assert operation == "select_menu_path"
     assert payload == {
         "accessible_id": "mainMenu",
-        "window": "MSCT",
+        "window": "SampleConsole",
         "menu_count": 2,
         "menu_0_id": "fileMenu",
         "menu_0_text": "File",
@@ -198,7 +198,7 @@ class _ValueTransport(_Transport):
                 "native_class": "javax.swing.JTextField",
                 "name": "Username",
                 "accessible_id": "username",
-                "window": "MSCT",
+                "window": "SampleConsole",
                 "role": "text field",
                 "bounds": [10, 20, 200, 24],
                 "properties": {},

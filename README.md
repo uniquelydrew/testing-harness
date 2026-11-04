@@ -1881,7 +1881,7 @@ after activating the bootstrapped environment):
 python -m pip install -e '.[pytest]'
 ```
 
-Example commands (substitute paths to your own plans/project; no ERSA plans
+Example commands (substitute paths to your own plans/project; no private application plans
 are included in this public repository):
 
 ```bash
@@ -1893,7 +1893,7 @@ automation-pytest ./tests/plans \
   --ah-runs-dir="$HOME/.local/state/automation-harness/pytest-runs" \
   --junitxml="$HOME/.local/state/automation-harness/pytest-junit.xml"
 
-automation-pytest ./tests/plans/T1789.ahplan \
+automation-pytest ./tests/plans/SamplePlan001.ahplan \
   --ah-backend=reference \
   --ah-reference-mode=headless
 ```
@@ -2122,11 +2122,11 @@ automation-pytest --collect-only -q ./tests/plans
 automation-pytest ./tests/plans --ah-backend=live-desktop \
   --junitxml=/tmp/automation-pytest-junit.xml
 
-automation-pytest ./tests/plans/T1789.ahplan --ah-project=./tests/project.ahproject \
+automation-pytest ./tests/plans/SamplePlan001.ahplan --ah-project=./tests/project.ahproject \
   --ah-var='camera="North"'
 ```
 
-These paths are examples, not checked-in ERSA assets. See
+These paths are examples, not checked-in private application assets. See
 [`docs/pytest-integration.md`](docs/pytest-integration.md).
 
 ## Python bundles

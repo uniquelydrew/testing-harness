@@ -64,7 +64,7 @@ class TechnologyRouter:
             )
 
         # A JavaFX endpoint is authoritative even when the process also hosts
-        # an AWT/Swing agent (for example an MSCT shell with a JFXPanel).
+        # an AWT/Swing agent (for example a Swing shell with a JFXPanel).
         # Falling back to the canvas loses the JavaFX semantic target.
         if pid is not None and pid in target.javafx_pids:
             return self._require(
