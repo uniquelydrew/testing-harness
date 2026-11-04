@@ -19,7 +19,7 @@ def test_identifier_normalization_preserves_acronyms_and_strips_owner_path():
     assert humanize_identifier("SampleConsoleDisplay.WatchButton", leaf=True) == "Watch Button"
     assert humanize_identifier("Main_Window.watch_btn", leaf=True) == "Watch Button"
     assert humanize_identifier("HTTPServerURL") == "HTTP Server URL"
-    assert humanize_identifier("SampleConsole Display") == "SampleConsole Display"
+    assert humanize_identifier("HTTP Display") == "HTTP Display"
     assert humanize_identifier("system_status_tab") == "System Status Tab"
     assert humanize_identifier("22222222-2222-4222-8222-222222222222") == ""
 
