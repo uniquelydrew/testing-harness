@@ -28,10 +28,10 @@ def editor():
         framework="javafx",
         actions=frozenset({"focus", "select_item"}),
         strategies=(ComponentStrategy("javafx", {"identification": {
-            "mandatory": {"class": "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay"}
+            "mandatory": {"class": "org.example.desktop.widgets.DetailsPane"}
         }}),),
         properties={"tabs": [
-            {"index": 0, "id": None, "text": "Camera Status"},
+            {"index": 0, "id": None, "text": "System Status"},
             {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
         ]},
     )
@@ -188,13 +188,13 @@ def test_switching_visual_assertion_back_to_select_item_recreates_selector(edito
         ]
         assert len(selectors) == 1
         encoded = json.dumps({
-            "kind": "tab", "criteria": {"text": "Camera Status", "index": 0}
+            "kind": "tab", "criteria": {"text": "System Status", "index": 0}
         }, separators=(",", ":"), sort_keys=True)
         assert selectors[0].set_active_id(encoded)
         dialog.response(Gtk.ResponseType.OK)
 
     _run_editor_action(subject, tabs.component_id, "select_item", probe)
-    assert subject.plan.steps[0].inputs["action"]["selector"]["criteria"]["text"] == "Camera Status"
+    assert subject.plan.steps[0].inputs["action"]["selector"]["criteria"]["text"] == "System Status"
 
 
 def test_visual_editor_uses_shared_qualified_launch_and_desktop_settle(monkeypatch, tmp_path):

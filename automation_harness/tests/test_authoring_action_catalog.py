@@ -138,21 +138,21 @@ def test_legacy_tabpane_inventory_exposes_typed_owner_scoped_selector_options():
         object_type=ObjectType.TAB_CONTAINER,
         actions=frozenset({"select_item"}),
         properties={"tabs": [
-            {"index": 0, "id": None, "text": "Camera Status", "disabled": False},
-            {"index": 1, "id": None, "text": "Video Tracker Status", "disabled": False},
-            {"index": 2, "id": "ersaInstanceTab", "text": "ERSA Instance"},
+            {"index": 0, "id": None, "text": "System Status", "disabled": False},
+            {"index": 1, "id": None, "text": "Tracking Status", "disabled": False},
+            {"index": 2, "id": "sampleInstanceTab", "text": "Sample Instance"},
             {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
-            {"index": 4, "id": "cameraHealthViewTab", "text": "Camera Health"},
-            {"index": 5, "id": None, "text": "Camera Commands"},
-            {"index": 6, "id": None, "text": "MVD Messages"},
+            {"index": 4, "id": "deviceHealthViewTab", "text": "Device Health"},
+            {"index": 5, "id": None, "text": "Device Commands"},
+            {"index": 6, "id": None, "text": "SampleDisplay Messages"},
         ]},
     )
 
     options = tab_inventory_selector_options(definition)
     assert len(options) == 7
     assert options[0] == (
-        {"kind": "tab", "criteria": {"text": "Camera Status", "index": 0}},
-        "Camera Status",
+        {"kind": "tab", "criteria": {"text": "System Status", "index": 0}},
+        "System Status",
     )
     assert options[3] == (
         {"kind": "tab", "criteria": {

@@ -20,7 +20,7 @@ def test_legacy_window_exposes_canonical_parameterless_close(kind):
         "Advanced Details Window", object_type=kind,
         actions=frozenset({"resolve", "activate", "focus"}),
         strategies=(ComponentStrategy("javafx", {
-            "identification": {"mandatory": {"class": "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay"},
+            "identification": {"mandatory": {"class": "org.example.desktop.widgets.DetailsPane"},
                                "assistive": {"window": "Advanced Details"}}
         }),),
     )
@@ -261,7 +261,7 @@ def test_javafx_close_failure_provides_dispatcher_evidence_without_forced_hide()
 
 
 def test_legacy_window_proxy_caption_supplies_exact_stage_scope():
-    """ERSA Advanced Details window proxy predates explicit ownership.window."""
+    """SampleApp Advanced Details window proxy predates explicit ownership.window."""
     from automation_harness.core.component_handle import ComponentHandle
 
     definition = ComponentDefinition(
