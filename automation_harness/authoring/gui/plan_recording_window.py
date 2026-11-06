@@ -499,7 +499,9 @@ class RecordingTestPlanWindow(TestPlanAuthoringWindow):
                     watchdog_path = Path(diagnostic_root) / (
                         "recording-stop-hang-%d-%d.log" % (os.getpid(), int(time.time()))
                     )
-                    watchdog_handle = open(str(watchdog_path), "w")
+                    # The handle must outlive session.stop(); the worker's
+                    # finally block cancels the watchdog, flushes, and closes it.
+                    watchdog_handle = watchdog_path.open("w")  # noqa: SIM115
                     faulthandler.dump_traceback_later(
                         4.0, repeat=False, file=watchdog_handle,
                     )

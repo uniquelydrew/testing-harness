@@ -133,7 +133,7 @@ class _BridgeServer:
 
 def _write_discovery(directory: Path, server: _BridgeServer, pid=1234):
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / ("javafx-%s.json" % pid)
+    path = directory / (f"javafx-{pid}.json")
     path.write_text(
         json.dumps({
             "protocol": "automation-harness-javafx/1",

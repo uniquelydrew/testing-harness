@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from pathlib import Path
 
 from automation_harness import codex_runtime
 
@@ -30,13 +31,10 @@ def test_supervisor_records_process_lifecycle(tmp_path, monkeypatch):
     assert manifest["returncode"] == 0
     assert manifest["signal"] is None
     assert manifest["application_pid"] > 0
-    assert open(os.path.join(session, "stdout.log"), "rb").read() == b"runtime-ok"
-    assert open(os.path.join(session, "stderr.log"), "rb").read() == b"runtime-err"
-    events = [
-        json.loads(line)
-        for line in open(os.path.join(session, "runtime.jsonl"))
-        if line.strip()
-    ]
+    assert (Path(session) / "stdout.log").read_bytes() == b"runtime-ok"
+    assert (Path(session) / "stderr.log").read_bytes() == b"runtime-err"
+    with open(os.path.join(session, "runtime.jsonl"), encoding="utf-8") as handle:
+        events = [json.loads(line) for line in handle if line.strip()]
     assert events[0]["event"] == "application_started"
     assert events[-1]["event"] == "application_finished"
 
@@ -70,11 +68,8 @@ def test_supervisor_marks_gdb_ptrace_block_as_diagnostic_blocked(tmp_path, monke
         manifest = json.load(handle)
     assert manifest["state"] == "diagnostic_blocked"
     assert manifest["diagnostic_error"] == "gdb_ptrace_not_permitted"
-    events = [
-        json.loads(line)
-        for line in open(os.path.join(session, "runtime.jsonl"))
-        if line.strip()
-    ]
+    with open(os.path.join(session, "runtime.jsonl"), encoding="utf-8") as handle:
+        events = [json.loads(line) for line in handle if line.strip()]
     assert events[-1]["event"] == "diagnostic_blocked"
 
 
@@ -88,11 +83,13 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(codex_runtime.shutil, "which", lambda name: "/usr/bin/gdb" if name == "gdb" else None)
 
     popen_calls = []
+    popen_streams = []
 
     class DummyPopen:
         def __init__(self, command, stdin=None, stdout=None, stderr=None, env=None,
                      preexec_fn=None, close_fds=None):
             popen_calls.append(command)
+            popen_streams.append((stdin, stdout, stderr))
             self.pid = 43210
 
         def poll(self):
@@ -120,7 +117,7 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
 
     monkeypatch.setenv("AUTOMATION_HARNESS_VENV", str(tmp_path / "venv"))
     os.makedirs(tmp_path / "venv" / "bin")
-    open(tmp_path / "venv" / "bin" / "python", "w").close()
+    (tmp_path / "venv" / "bin" / "python").touch()
 
     args = argparse.Namespace(
         interval=0.25,
@@ -130,6 +127,8 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
     )
 
     assert codex_runtime._launch(args) == 0
+    assert popen_streams
+    assert all(stream.closed for stream in popen_streams[0] if stream is not None)
     manifest = json.loads(capsys.readouterr().out)
     assert manifest["state"] == "running"
 
@@ -148,7 +147,7 @@ def test_launch_gdb_uses_supported_logging_commands(tmp_path, monkeypatch, capsy
         "automation_harness.authoring.entrypoint",
     ]
     assert any(
-        item == "set logging file %s" % os.path.join(session, "gdb-backtrace.txt")
+        item == f"set logging file {os.path.join(session, 'gdb-backtrace.txt')}"
         for item in gdb_command
     )
 
@@ -196,7 +195,7 @@ def test_prepare_runtime_root_falls_back_when_default_is_unwritable(tmp_path, mo
 
     assert root == os.path.join(
         fallback_base,
-        "automation-harness-%d" % os.getuid(),
+        f"automation-harness-{os.getuid()}",
         "codex-runtime",
     )
     assert os.path.isdir(root)
@@ -206,7 +205,7 @@ def test_command_executes_authoring_module_main(tmp_path, monkeypatch):
     venv = str(tmp_path / "venv")
     os.makedirs(os.path.join(venv, "bin"))
     python = os.path.join(venv, "bin", "python")
-    open(python, "w").close()
+    Path(python).touch()
     monkeypatch.setenv("AUTOMATION_HARNESS_VENV", venv)
 
     args = argparse.Namespace(author_command=None)
@@ -260,6 +259,6 @@ def test_preflight_rejects_unreadable_xauthority(monkeypatch):
     monkeypatch.setattr(codex_runtime.os.path, "exists", lambda path: True if path == "/bin/true" else os.path.exists(path))
 
     checks = codex_runtime._preflight(["/bin/true"])
-    xauth = [item for item in checks if item["name"] == "xauthority"][0]
+    xauth = next(item for item in checks if item["name"] == "xauthority")
 
     assert xauth["ok"] is False

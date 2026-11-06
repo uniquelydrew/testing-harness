@@ -176,3 +176,29 @@ def test_assert_exists_failure_records_expected_and_actual_evidence(tmp_path):
     assert by_role["expected"][0]["value"] == {"present": True}
     assert by_role["actual"][0]["value"] == {"present": False}
     assert by_role["diagnostic"][0]["type"] == "exception"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"role": 1, "type": "value"},
+    {"role": "expected", "type": 2},
+])
+def test_assertion_evidence_rejects_nonstring_role_or_type(tmp_path, invalid):
+    recorder = EvidenceRecorder(tmp_path / "events.jsonl")
+    with pytest.raises(TypeError, match="requires string role and type fields"):
+        recorder.record_assertion(
+            "invalid_evidence",
+            passed=False,
+            evidence=(invalid, {"role": "actual", "type": "value"}),
+        )
+    assert not (tmp_path / "events.jsonl").exists()
+
+
+def test_assertion_evidence_preserves_missing_role_value_error(tmp_path):
+    recorder = EvidenceRecorder(tmp_path / "events.jsonl")
+    with pytest.raises(ValueError, match="missing required role"):
+        recorder.record_assertion(
+            "invalid_evidence",
+            passed=False,
+            evidence=({"role": "expected", "type": "value"},),
+        )
+    assert not (tmp_path / "events.jsonl").exists()

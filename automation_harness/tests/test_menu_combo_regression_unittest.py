@@ -246,10 +246,12 @@ class MenuComboRegression(unittest.TestCase):
             return ({"click_token": "item", "terminal_bounds": [1, 2, 3, 4]}
                     if operation == "select_menu_path" else {})
         endpoint = type("Endpoint", (), {"pid": 42, "request": request})()
-        with patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())), \
-             patch("automation_harness.core.pointer_actions.click_bounds", side_effect=RuntimeError("pointer failed")):
-            with self.assertRaisesRegex(RuntimeError, "pointer failed"):
-                JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
+        with (
+            patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())),
+            patch("automation_harness.core.pointer_actions.click_bounds", side_effect=RuntimeError("pointer failed")),
+            self.assertRaisesRegex(RuntimeError, "pointer failed"),
+        ):
+            JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
         self.assertFalse(requests[-1][1]["clicked"])
 
     def test_menu_refuses_to_click_without_rendered_bounds(self):
@@ -257,10 +259,12 @@ class MenuComboRegression(unittest.TestCase):
             "pid": 42,
             "request": lambda self, operation, **kwargs: {"path": [{"id": "open"}]},
         })()
-        with patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())), \
-             patch("automation_harness.core.pointer_actions.click_bounds") as click:
-            with self.assertRaisesRegex(RuntimeError, "owner-scoped rendered bounds"):
-                JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
+        with (
+            patch.object(JavaFxBridgeDriver, "_find_unique", return_value=(endpoint, {}, ())),
+            patch("automation_harness.core.pointer_actions.click_bounds") as click,
+            self.assertRaisesRegex(RuntimeError, "owner-scoped rendered bounds"),
+        ):
+            JavaFxBridgeDriver().select_menu_path([{"criteria": {"id": "open"}}])
         click.assert_not_called()
 
     def test_missing_rendered_bounds_fires_only_resolved_menu_path(self):

@@ -270,7 +270,7 @@ def test_nonblocking_javafx_activation_returns_pending_focus_after_single_reques
             return {"windows": [{"title": WINDOW, "showing": True}]}
         if operation == "activate_window":
             return {"operation": "activate_window", "window": WINDOW, "focused": False}
-        raise AssertionError("unexpected request %s" % operation)
+        raise AssertionError(f"unexpected request {operation}")
 
     endpoint.request = pending
     driver = make_driver(monkeypatch, endpoint)

@@ -16,6 +16,7 @@ import ctypes.util
 import os
 import threading
 import time
+from typing import ClassVar
 from collections import OrderedDict
 
 
@@ -119,7 +120,7 @@ def global_hotkeys_enabled(environ=None):
 
 
 class _XKeyEvent(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar[list[tuple[str, object]]] = [
         ("type", ctypes.c_int),
         ("serial", ctypes.c_ulong),
         ("send_event", ctypes.c_int),
@@ -139,7 +140,7 @@ class _XKeyEvent(ctypes.Structure):
 
 
 class _XEvent(ctypes.Union):
-    _fields_ = [
+    _fields_: ClassVar[list[tuple[str, object]]] = [
         ("type", ctypes.c_int),
         ("xkey", _XKeyEvent),
         ("pad", ctypes.c_long * 24),
@@ -147,7 +148,7 @@ class _XEvent(ctypes.Union):
 
 
 class _XErrorEvent(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar[list[tuple[str, object]]] = [
         ("type", ctypes.c_int),
         ("display", ctypes.c_void_p),
         ("resourceid", ctypes.c_ulong),

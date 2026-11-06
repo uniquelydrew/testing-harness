@@ -20,7 +20,7 @@ def _javafx_capture(component_id="cameraSelectorMenuItem"):
         accessible_id=component_id,
         application="ContextMenu",
         window="ContextMenu",
-        hierarchy=("ContextMenuContent", "MenuItemContainer#%s" % component_id),
+        hierarchy=("ContextMenuContent", f"MenuItemContainer#{component_id}"),
         actions=("activate",),
         bounds=(100, 100, 120, 24),
         state=ComponentState(present=True, visible=True),

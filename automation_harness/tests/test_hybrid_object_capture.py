@@ -420,7 +420,8 @@ def test_transient_popup_cell_capture_cannot_be_persisted():
 
 def test_javafx_definition_validation_is_scoped_to_captured_process():
     class ProcessAware(_JavaFxSuccess):
-        process_ids = []
+        def __init__(self):
+            self.process_ids = []
 
         def assess_identification(self, identification, *, process_id=None):
             self.process_ids.append(process_id)

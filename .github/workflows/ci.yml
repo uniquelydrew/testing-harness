@@ -19,6 +19,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Python lint and full Ruff baseline
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate full lint inventory and enforce baseline gate
+        run: bash scripts/ci/lint.sh
+      - name: Upload full Ruff inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruff-baseline
+          path: artifacts/lint/
+          if-no-files-found: error
+
   python:
     name: Python 3.12 tests
     runs-on: ubuntu-22.04

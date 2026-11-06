@@ -20,3 +20,7 @@ recording-debug/
 # Unapproved visual-baseline review artifacts
 visual/.staging/
 **/visual/.staging/
+
+# Isolated CI lint environment and reports
+.ruff-venv/
+artifacts/lint/

@@ -160,7 +160,7 @@ def test_installed_javafx_regex_wrapper_preserves_process_scope():
         def request(self, operation, **payload):
             self.calls.append((operation, payload))
             return {
-                "matches": [{"ref": "node-%s" % self.pid, "id": "fileMenu"}],
+                "matches": [{"ref": f"node-{self.pid}", "id": "fileMenu"}],
                 "stages": [{
                     "source": "mandatory",
                     "criteria": payload["identification"].get("mandatory", {}),

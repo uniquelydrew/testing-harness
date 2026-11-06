@@ -1,10 +1,12 @@
+from pathlib import Path
+
 from setuptools import find_packages, setup
 
 setup(
     name="automation-harness",
     version="0.5.2",
     description="Local-first automation harness with explicit execution backends and semantic object identity",
-    long_description=open("README.md", encoding="utf-8").read(),
+    long_description=(Path(__file__).resolve().parent / "README.md").read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
     python_requires=">=3.12,<3.13",
     packages=find_packages(include=("automation_harness", "automation_harness.*")),

@@ -215,7 +215,7 @@ def test_verbose_debug_log_omits_reflective_graphs_and_bounds_collections(tmp_pa
         "adapter.normalized_observation",
         target={
             "render_surface_inspection": {"backing_objects": [{"candidate_methods": list(range(500))}]},
-            "track_instance_candidates": {"field-%03d" % index: index for index in range(150)},
+            "track_instance_candidates": {f"field-{index:03d}": index for index in range(150)},
         },
         repeated=list(range(100)),
     )
@@ -375,7 +375,7 @@ def test_repository_matching_rejects_different_solipsys_track_identity():
 
 def _runtime_only_solipsys_capture(track_ref, rendered_ref, bounds):
     return CapturedComponent(
-        name="track@%s" % track_ref, role="rendered_object", description=None,
+        name=f"track@{track_ref}", role="rendered_object", description=None,
         accessible_id=None, application="MSCT Domain 12", window="MSCT Domain 12",
         hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
         actions=("resolve", "click"), bounds=bounds,

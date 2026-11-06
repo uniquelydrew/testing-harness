@@ -33,8 +33,8 @@ def test_collect_runtime_diagnostics_requires_live_agent_discovery(tmp_path):
 
 def test_runtime_lookup_is_pid_specific(tmp_path):
     for pid, version in ((5887, "11.0.24"), (6001, "17.0.12")):
-        (tmp_path / ("java-%s.json" % pid)).write_text("{}", encoding="utf-8")
-        (tmp_path / ("java-%s-runtime.json" % pid)).write_text(
+        (tmp_path / (f"java-{pid}.json")).write_text("{}", encoding="utf-8")
+        (tmp_path / (f"java-{pid}-runtime.json")).write_text(
             json.dumps({"pid": pid, "java_version": version}), encoding="utf-8",
         )
 

@@ -186,6 +186,8 @@ def test_project_membership_publishes_with_repository_and_plan(tmp_path):
     assert loaded_project.test_plans == (plan_path,)
     assert loaded_project.object_repositories == (repo_path,)
     loaded_plan = load_plan(plan_path)
+    assert loaded_plan.execution_mode == "canonical"
+    assert loaded_plan.objects == {}
     usages = project_object_usages(
         loaded_project, repo_path, ComponentRepository.load((repo_path,)),
     )

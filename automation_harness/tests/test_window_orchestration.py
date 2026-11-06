@@ -85,8 +85,8 @@ def test_orchestrator_reuses_only_still_active_verified_foreground():
         def activate_window(self, **kwargs):
             invoked.append(True)
             return {"process_id": 41, "window": "Main"}
-    args = dict(component_id="watch", object_id="uuid-watch",
-                driver=Driver(), strategy="atspi", arguments={})
+    args = {"component_id": "watch", "object_id": "uuid-watch",
+            "driver": Driver(), "strategy": "atspi", "arguments": {}}
     orchestrator.ensure_foreground(**args)
     reused = orchestrator.ensure_foreground(**args)
     assert reused["reused_foreground"] is True

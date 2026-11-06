@@ -37,7 +37,7 @@ def _capture(name="Submit", accessible_id="submit"):
 
 def _runtime_track(track_ref="track-a"):
     return CapturedComponent(
-        name="track@%s" % track_ref,
+        name=f"track@{track_ref}",
         role="rendered_object",
         description=None,
         accessible_id=None,

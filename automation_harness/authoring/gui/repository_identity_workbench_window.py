@@ -395,7 +395,7 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         if self.context is not None and isinstance(self.context.captured_by_key, dict):
             # Replace the synthetic old capture so the next highlight/edit is
             # based on the fresh live object.
-            self.context.captured_by_key[key] = proposed_capture = _capture_from_definition(proposed)
+            self.context.captured_by_key[key] = _capture_from_definition(proposed)
         self.app._mark_repository_dirty(True)
         self._render_properties(self.nodes[key])
         self._set_status("Recaptured %s at revision %s — Save Repository to persist" % (

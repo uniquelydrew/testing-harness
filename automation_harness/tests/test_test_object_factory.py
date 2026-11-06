@@ -7,22 +7,22 @@ from automation_harness.models.gui import ObjectType
 
 
 def _observation(**changes):
-    values = dict(
-        framework=Framework.JAVAFX,
-        process_id=42,
-        window_id="Main",
-        physical_class="javafx.scene.control.Button",
-        semantic_role="button",
-        name="Run",
-        description=None,
-        accessible_id="runButton",
-        application="MSCT",
-        properties={},
-        state=ComponentState(present=True, visible=True, enabled=True),
-        bounds=(1, 2, 30, 20),
-        logical_children={},
-        evidence=CaptureEvidence("javafx", True, ("PID endpoint",)),
-    )
+    values = {
+        "framework": Framework.JAVAFX,
+        "process_id": 42,
+        "window_id": "Main",
+        "physical_class": "javafx.scene.control.Button",
+        "semantic_role": "button",
+        "name": "Run",
+        "description": None,
+        "accessible_id": "runButton",
+        "application": "MSCT",
+        "properties": {},
+        "state": ComponentState(present=True, visible=True, enabled=True),
+        "bounds": (1, 2, 30, 20),
+        "logical_children": {},
+        "evidence": CaptureEvidence("javafx", True, ("PID endpoint",)),
+    }
     values.update(changes)
     return RuntimeObservation(**values)
 

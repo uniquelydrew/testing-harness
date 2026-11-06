@@ -16,7 +16,7 @@ from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.core.compiler import compile_test, load_compiled_test
 from automation_harness.core.visual_baselines import VisualProfile, approve_visual_candidate, reject_visual_candidate, stage_visual_candidate
 from automation_harness.core.step_registry import default_step_registry
-from automation_harness.core.test_plan import derive_execution_state, load_plan, repository_from_plan, validate_plan, validate_plan_components, validate_plan_execution
+from automation_harness.core.test_plan import derive_execution_state, load_plan, validate_plan, validate_plan_components, validate_plan_execution
 from automation_harness.runner.bundle import BundleError, TestBundle
 from automation_harness.runner.execution import execute_bundle
 from automation_harness.runner.plan_execution import execute_plan
@@ -426,7 +426,6 @@ def main(argv: list[str] | None = None) -> int:
             explicit = ComponentRepository.load([selected_components.resolve()])
             canonical_repository = (explicit if canonical_repository is None else
                                     compose_canonical_repositories((canonical_repository, explicit)))
-        component_repository = canonical_repository or repository_from_plan(test_plan)
 
         if args.plan_command == "compile":
             try:
@@ -449,7 +448,6 @@ def main(argv: list[str] | None = None) -> int:
                 test_plan, canonical_repository=canonical_repository, registry=registry,
             )
             issues = list(prepared.issues)
-            component_repository = prepared.repository
             test_plan = prepared.plan
         except Exception as exc:
             issues = ["repository qualification: %s: %s" % (type(exc).__name__, exc)]

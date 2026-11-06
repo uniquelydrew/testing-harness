@@ -69,13 +69,11 @@ def install_component_handle_retry(component_handle_cls):
         interval = object_resolution_interval()
         deadline = time.monotonic() + timeout
         attempts = 0
-        last_error = None
         while True:
             attempts += 1
             try:
                 result = method(self)
             except Exception as exc:
-                last_error = exc
                 now = time.monotonic()
                 if now >= deadline:
                     try:

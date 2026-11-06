@@ -104,7 +104,8 @@ def test_explicit_completion_resolves_plan_variable_references():
             self.events.append((event, fields))
 
     class Globals:
-        values = {"actual": "ready", "expected": "ready"}
+        def __init__(self):
+            self.values = {"actual": "ready", "expected": "ready"}
 
         def get(self, path):
             return self.values[path]

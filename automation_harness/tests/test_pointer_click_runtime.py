@@ -86,7 +86,7 @@ def test_cli_extracts_script_step_manifests(tmp_path):
         "test.yaml",
         "--script-step",
         str(first),
-        "--script-step=%s" % second,
+        f"--script-step={second}",
     ]
     assert live_cli._extract_script_steps(argv) == [first.resolve(), second.resolve()]
 

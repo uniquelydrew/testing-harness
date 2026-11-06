@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import platform
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, ClassVar, Mapping
 
 from automation_harness.drivers.atspi_driver import AtspiDriver
 from automation_harness.models.component import CapturedComponent, ComponentState, ResolvedComponent
@@ -14,11 +14,11 @@ class JavaAccessibilityUnavailable(RuntimeError):
 
 
 class _JabActionInfo(ctypes.Structure):
-    _fields_ = [("name", ctypes.c_wchar * 1024)]
+    _fields_: ClassVar[list[tuple[str, object]]] = [("name", ctypes.c_wchar * 1024)]
 
 
 class _JabActionsToDo(ctypes.Structure):
-    _fields_ = [("actions_count", ctypes.c_int32), ("actions", _JabActionInfo * 256)]
+    _fields_: ClassVar[list[tuple[str, object]]] = [("actions_count", ctypes.c_int32), ("actions", _JabActionInfo * 256)]
 
 
 @dataclass
@@ -108,7 +108,7 @@ class JavaAccessBridgeDriver:
     DLL_NAME = "WindowsAccessBridge.dll"
 
     class _ContextInfo(ctypes.Structure):
-        _fields_ = [
+        _fields_: ClassVar[list[tuple[str, object]]] = [
             ("name", ctypes.c_wchar * 1024),
             ("description", ctypes.c_wchar * 1024),
             ("role", ctypes.c_wchar * 256),

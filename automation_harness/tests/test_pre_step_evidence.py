@@ -1,11 +1,11 @@
-from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 from automation_harness.runner.pre_step_evidence import collect_pre_step_evidence
 
 
 class _Resolved:
-    metadata = {"bounds": (2, 3, 4, 5)}
+    metadata: ClassVar[dict[str, tuple[int, ...]]] = {"bounds": (2, 3, 4, 5)}
 
 
 class _Handle:

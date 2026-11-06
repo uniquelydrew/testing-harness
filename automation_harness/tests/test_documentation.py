@@ -24,8 +24,8 @@ def test_documentation_internal_links_resolve_from_each_document():
             if not target or "://" in target or target.startswith(("mailto:", "data:")):
                 continue
             if not (document.parent / target).resolve().exists():
-                missing.append("%s -> %s" % (document.relative_to(ROOT), raw_target))
-    assert not missing, "broken internal Markdown links:\n%s" % "\n".join(missing)
+                missing.append(f"{document.relative_to(ROOT)} -> {raw_target}")
+    assert not missing, "broken internal Markdown links:\n" + "\n".join(missing)
 
 
 def test_documented_authoring_launch_and_project_schema_match_current_interfaces():

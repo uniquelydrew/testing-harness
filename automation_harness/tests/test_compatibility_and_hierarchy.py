@@ -21,23 +21,23 @@ from automation_harness.models.gui import ObjectType
 
 
 def _captured(**overrides):
-    values = dict(
-        name="Save",
-        role="push button",
-        description="Save the document",
-        accessible_id="save-button",
-        application="Swing Editor",
-        window="Editor",
-        hierarchy=("Swing Editor", "JFrame", "JPanel", "Document", "Save"),
-        actions=("click",),
-        bounds=(10, 20, 80, 24),
-        state=ComponentState(present=True, visible=True, enabled=True),
-        backend_properties={"class": "javax.swing.JButton"},
-        parent_name="Document",
-        parent_role="panel",
-        framework="swing",
-        native_class="javax.swing.JButton",
-    )
+    values = {
+        "name": "Save",
+        "role": "push button",
+        "description": "Save the document",
+        "accessible_id": "save-button",
+        "application": "Swing Editor",
+        "window": "Editor",
+        "hierarchy": ("Swing Editor", "JFrame", "JPanel", "Document", "Save"),
+        "actions": ("click",),
+        "bounds": (10, 20, 80, 24),
+        "state": ComponentState(present=True, visible=True, enabled=True),
+        "backend_properties": {"class": "javax.swing.JButton"},
+        "parent_name": "Document",
+        "parent_role": "panel",
+        "framework": "swing",
+        "native_class": "javax.swing.JButton",
+    }
     values.update(overrides)
     return CapturedComponent(**values)
 
