@@ -6,6 +6,7 @@ VENV_DIR="${AUTOMATION_HARNESS_VENV:-$ROOT_DIR/.venv}"
 SYSTEM_PYTHON="${AUTOMATION_HARNESS_PYTHON:-/usr/bin/python3.12}"
 DNF_TIMEOUT="${AUTOMATION_HARNESS_DNF_TIMEOUT:-180}"
 DNF_NETWORK_TIMEOUT="${AUTOMATION_HARNESS_DNF_NETWORK_TIMEOUT:-30}"
+DNF_PROBE_TIMEOUT="${AUTOMATION_HARNESS_DNF_PROBE_TIMEOUT:-10}"
 PIP_TIMEOUT="${AUTOMATION_HARNESS_PIP_TIMEOUT:-30}"
 PILLOW_VERSION="${AUTOMATION_HARNESS_PILLOW_VERSION:-10.4.0}"
 PYCAIRO_VERSION="${AUTOMATION_HARNESS_PYCAIRO_VERSION:-1.26.1}"
@@ -21,7 +22,12 @@ load_host() { [[ "$(uname -s)" == "Linux" ]] || die "this deployment bootstrap r
 as_root() { if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
 with_timeout() { local seconds="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout --foreground "${seconds}s" "$@"; else "$@"; fi; }
 # Required RPMs are installed directly; only optional RPMs use cached discovery.
-dnf_cached_query() { dnf --cacheonly -q list --available "$@" >/dev/null 2>&1; }
+dnf_cached_query() {
+    # Cache-only is not necessarily noninteractive: DNF plugins can still
+    # attempt to read from stdin. Never let a quiet optional lookup block the
+    # bootstrap on a terminal prompt, and cap its runtime independently.
+    with_timeout "$DNF_PROBE_TIMEOUT" dnf --cacheonly -q list --available "$@" </dev/null >/dev/null 2>&1
+}
 dnf_install() {
     if command -v timeout >/dev/null 2>&1; then
         as_root timeout --foreground "${DNF_TIMEOUT}s" dnf -y --setopt=timeout="$DNF_NETWORK_TIMEOUT" --setopt=retries=2 install "$@"
@@ -51,7 +57,7 @@ install_available_rpms() {
 
     local missing_required=() missing_optional=() available_optional=() package
     for package in "${required[@]}"; do
-        if rpm -q "$package" >/dev/null 2>&1; then
+        if rpm -q "$package" </dev/null >/dev/null 2>&1; then
             log "RPM present: $package"
         else
             missing_required+=("$package")
@@ -68,17 +74,19 @@ install_available_rpms() {
     # Optional packages must never block required native dependency installs.
     # Cache-only discovery avoids network timeouts for unavailable optional RPMs.
     for package in "${optional[@]}"; do
-        if rpm -q "$package" >/dev/null 2>&1; then
+        if rpm -q "$package" </dev/null >/dev/null 2>&1; then
             log "RPM present: $package"
         else
             missing_optional+=("$package")
         fi
     done
     for package in "${missing_optional[@]}"; do
+        log "Checking optional RPM in cached DNF metadata (max ${DNF_PROBE_TIMEOUT}s): $package"
         if dnf_cached_query "$package"; then
+            log "Optional RPM available in DNF cache: $package"
             available_optional+=("$package")
         else
-            warn "Optional RPM not confirmed in local DNF cache: $package (install manually if needed)"
+            warn "Optional RPM not confirmed in local DNF cache: $package (cache miss, error, or ${DNF_PROBE_TIMEOUT}s timeout; install manually if needed)"
         fi
     done
     if (("${#available_optional[@]}")); then
@@ -114,7 +122,7 @@ install_required_pillow() {
         return 0
     fi
     # RHEL's system python3-pillow may target a different Python ABI.
-    "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install "Pillow==$PILLOW_VERSION" || die "required Pillow vision dependency could not be installed"
+    "$py" -m pip --no-input --timeout "$PIP_TIMEOUT" --retries 1 install "Pillow==$PILLOW_VERSION" </dev/null || die "required Pillow vision dependency could not be installed"
     pillow_available || die "Pillow installed but capture modules are not importable"
 }
 native_python_bindings_available() { "$VENV_DIR/bin/python" - <<'PY' >/dev/null 2>&1
@@ -181,19 +189,27 @@ install_required_native_bindings() {
 
         if ! "$py" -c 'import cairo' >/dev/null 2>&1; then
             log "Installing Python 3.12 Pycairo $PYCAIRO_VERSION into the application environment"
-            "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install "pycairo==$PYCAIRO_VERSION" || die "Python 3.12 Pycairo build failed; inspect the compiler output and confirm Python.h and cairo-devel"
+            "$py" -m pip --no-input --timeout "$PIP_TIMEOUT" --retries 1 install "pycairo==$PYCAIRO_VERSION" </dev/null || die "Python 3.12 Pycairo build failed; inspect the compiler output and confirm Python.h and cairo-devel"
         fi
         if ! "$py" -c 'import gi' >/dev/null 2>&1; then
             log "Installing Python 3.12 PyGObject $PYGOBJECT_VERSION into the application environment"
-            "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install --no-build-isolation "PyGObject==$PYGOBJECT_VERSION" || die "Python 3.12 PyGObject build failed; inspect the compiler output and confirm cairo-gobject-devel and GObject Introspection development packages"
+            "$py" -m pip --no-input --timeout "$PIP_TIMEOUT" --retries 1 install --no-build-isolation "PyGObject==$PYGOBJECT_VERSION" </dev/null || die "Python 3.12 PyGObject build failed; inspect the compiler output and confirm cairo-gobject-devel and GObject Introspection development packages"
         fi
     fi
 
     install_pyatspi_from_system || die "Python 3.12 pyatspi installation or import validation failed; review the specific diagnostic and traceback above"
     native_python_bindings_available || die "Python 3.12 native binding qualification failed; verify cairo, gi, pyatspi and the GTK 3 typelib in the application environment"
 }
-install_python_dependencies() { local py="$VENV_DIR/bin/python"; "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install --upgrade pip setuptools wheel || warn "Packaging-tool upgrade failed"; "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install 'typing_extensions>=4.12,<5.0' || die "Python runtime dependencies could not be installed"; install_required_pillow; install_required_native_bindings; (cd "$ROOT_DIR" && "$py" -m pip install -e .) || die "Automation Harness installation failed"; }
-build_javafx_agent() { if ! command -v javac >/dev/null 2>&1 || ! command -v jar >/dev/null 2>&1; then warn "JDK compiler tools are unavailable; Java agents were not built"; return 0; fi; log "Building JavaFX native bridge agent with $(env -u JAVA_TOOL_OPTIONS javac -version 2>&1)"; if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/javafx_agent/build.sh" >/dev/null && [[ -f "$JAVAFX_AGENT_JAR" ]]; then log "JavaFX native bridge agent: $JAVAFX_AGENT_JAR"; else warn "JavaFX native bridge agent build failed"; fi; log "Building Java-8-compatible Swing/JOGL native agent"; if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/java-agent/build.sh" >/dev/null && [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent: $JAVA_AGENT_JAR"; else warn "Java agent build failed; unexposed Swing/JOGL capture is unavailable"; fi; }
+install_python_dependencies() {
+    local py="$VENV_DIR/bin/python"
+    # Never permit package installers to consume interactive terminal input.
+    "$py" -m pip --no-input --timeout "$PIP_TIMEOUT" --retries 1 install --upgrade pip setuptools wheel </dev/null || warn "Packaging-tool upgrade failed"
+    "$py" -m pip --no-input --timeout "$PIP_TIMEOUT" --retries 1 install 'typing_extensions>=4.12,<5.0' </dev/null || die "Python runtime dependencies could not be installed"
+    install_required_pillow
+    install_required_native_bindings
+    (cd "$ROOT_DIR" && "$py" -m pip --no-input install -e . </dev/null) || die "Automation Harness installation failed"
+}
+build_javafx_agent() { if ! command -v javac >/dev/null 2>&1 || ! command -v jar >/dev/null 2>&1; then warn "JDK compiler tools are unavailable; Java agents were not built"; return 0; fi; log "Building JavaFX native bridge agent with $(env -u JAVA_TOOL_OPTIONS javac -version 2>&1)"; if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/javafx_agent/build.sh" </dev/null >/dev/null && [[ -f "$JAVAFX_AGENT_JAR" ]]; then log "JavaFX native bridge agent: $JAVAFX_AGENT_JAR"; else warn "JavaFX native bridge agent build failed"; fi; log "Building Java-8-compatible Swing/JOGL native agent"; if env -u JAVA_TOOL_OPTIONS bash "$ROOT_DIR/java-agent/build.sh" </dev/null >/dev/null && [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent: $JAVA_AGENT_JAR"; else warn "Java agent build failed; unexposed Swing/JOGL capture is unavailable"; fi; }
 verify_native_python_bindings() { "$VENV_DIR/bin/python" - <<'PY'
 modules=("yaml","gi","cairo","pyatspi"); failed=[]
 for module in modules:
@@ -251,20 +267,29 @@ verify_pillow_screen_capture() {
 }
 find_java_atk_wrapper() { local candidate; for candidate in /usr/share/java/java-atk-wrapper.jar /usr/share/java/java-atk-wrapper/java-atk-wrapper.jar /usr/lib64/java-atk-wrapper/java-atk-wrapper.jar; do [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return; }; done; find /usr/share/java /usr/lib/java /usr/lib64/java /usr/lib64/java-atk-wrapper -type f -name 'java-atk-wrapper*.jar' -print -quit 2>/dev/null || true; }
 write_environment() { local wrapper="$(find_java_atk_wrapper)"; { printf '# Generated by bootstrap.sh for the RHEL 8 / Python 3.12 deployment\n'; printf '# Agent paths are exported, but JAVA_TOOL_OPTIONS is intentionally not set.\n'; printf '# Target launchers must inject the appropriate agent explicitly so JavaFX\n'; printf '# applications do not receive the Swing/JOGL agent and vice versa.\n'; printf 'export AUTOMATION_HARNESS_ROOT=%q\n' "$ROOT_DIR"; printf 'export AUTOMATION_HARNESS_VENV=%q\n' "$VENV_DIR"; printf 'export PATH=%q:$PATH\n' "$VENV_DIR/bin"; [[ -n "$wrapper" ]] && printf 'export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=%q\n' "$wrapper"; [[ -f "$JAVAFX_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVAFX_AGENT=%q\n' "$JAVAFX_AGENT_JAR"; [[ -f "$JAVA_AGENT_JAR" ]] && printf 'export AUTOMATION_HARNESS_JAVA_AGENT=%q\n' "$JAVA_AGENT_JAR"; } > "$ROOT_DIR/.automation-harness-env"; }
-qualify() { local run="$VENV_DIR/bin/automation-run"; "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.12"; verify_pillow_screen_capture; if [[ -n "${DISPLAY:-}" ]]; then "$VENV_DIR/bin/automation-author" --smoke-test || die "GTK authoring smoke test failed"; fi; local display_mode=""; [[ -n "${DISPLAY:-}" ]] && display_mode="auto"; [[ -z "$display_mode" ]] && command -v Xvfb >/dev/null 2>&1 && display_mode="virtual"; if [[ -n "$display_mode" ]]; then "$run" selftest --reference-display "$display_mode" || warn "reference GUI self-test did not fully qualify"; "$run" selftest --require-atspi --reference-display "$display_mode" || warn "AT-SPI qualification did not fully qualify"; fi; if [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent ready with automatic secure endpoint discovery."; log "Source '$ROOT_DIR/.automation-harness-env', then launch the target JVM with: automation-java-target --agent swing -- <target-command> [args...]"; fi; }
+qualify() { local run="$VENV_DIR/bin/automation-run"; "$run" steps list >/dev/null || die "Automation Harness cannot import/run under Python 3.12"; verify_pillow_screen_capture; if [[ -n "${DISPLAY:-}" ]]; then "$VENV_DIR/bin/automation-author" --smoke-test </dev/null || die "GTK authoring smoke test failed"; fi; local display_mode=""; [[ -n "${DISPLAY:-}" ]] && display_mode="auto"; [[ -z "$display_mode" ]] && command -v Xvfb >/dev/null 2>&1 && display_mode="virtual"; if [[ -n "$display_mode" ]]; then "$run" selftest --reference-display "$display_mode" </dev/null || warn "reference GUI self-test did not fully qualify"; "$run" selftest --require-atspi --reference-display "$display_mode" </dev/null || warn "AT-SPI qualification did not fully qualify"; fi; if [[ -f "$JAVA_AGENT_JAR" ]]; then log "Java 8+ Swing/JOGL agent ready with automatic secure endpoint discovery."; log "Source '$ROOT_DIR/.automation-harness-env', then launch the target JVM with: automation-java-target --agent swing -- <target-command> [args...]"; fi; }
 main() {
     # Do not leak an inherited Java agent into javac/jar during installation.
     unset JAVA_TOOL_OPTIONS
+    log "Stage 1/9: Validate RHEL host and Python"
     load_host
     verify_python
+    log "Stage 2/9: Provision approved RPM dependencies (sudo may request authentication)"
     install_available_rpms
+    log "Stage 3/9: Verify X11 tools and Python virtual environment"
     verify_x11_client_tools
     create_venv
+    log "Stage 4/9: Install Python packages without interactive stdin"
     install_python_dependencies
+    log "Stage 5/9: Compile Java agents without interactive stdin"
     build_javafx_agent
+    log "Stage 6/9: Verify Python native bindings"
     verify_native_python_bindings || die "required bindings are unavailable"
+    log "Stage 7/9: Write runtime environment"
     write_environment
+    log "Stage 8/9: Qualify GUI and reference runtime without interactive stdin"
     qualify
+    log "Stage 9/9: Finalize"
     log "Bootstrap complete"
     log "Activate with: source '$ROOT_DIR/.automation-harness-env'"
 }

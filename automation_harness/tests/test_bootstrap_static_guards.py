@@ -239,3 +239,75 @@ def test_bootstrap_xprop_preflight_fails_with_actionable_error():
     )
     assert result.returncode != 0
     assert "install the xorg-x11-utils RPM on RHEL 8" in result.stderr
+
+
+def test_bootstrap_never_uses_terminal_stdin_for_optional_install_and_gui_checks():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+    assert '"$py" -m pip --no-input' in source
+    assert '"$py" -m pip --no-input install -e . </dev/null' in source
+    assert 'bash "$ROOT_DIR/javafx_agent/build.sh" </dev/null' in source
+    assert 'bash "$ROOT_DIR/java-agent/build.sh" </dev/null' in source
+    assert '"$VENV_DIR/bin/automation-author" --smoke-test </dev/null' in source
+    assert '"$run" selftest --reference-display "$display_mode" </dev/null' in source
+    assert '"$run" selftest --require-atspi --reference-display "$display_mode" </dev/null' in source
+
+
+def test_bootstrap_annotates_sudo_as_the_only_expected_interactive_stage():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+    assert 'Stage 2/9: Provision approved RPM dependencies (sudo may request authentication)' in source
+    assert 'Stage 4/9: Install Python packages without interactive stdin' in source
+    assert 'Stage 8/9: Qualify GUI and reference runtime without interactive stdin' in source
+    assert 'sudo "$@"' in source
+
+def test_bootstrap_dnf_probe_is_bounded_and_cannot_read_terminal_input():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+    assert 'DNF_PROBE_TIMEOUT="${AUTOMATION_HARNESS_DNF_PROBE_TIMEOUT:-10}"' in source
+    assert 'with_timeout "$DNF_PROBE_TIMEOUT" dnf --cacheonly -q list --available "$@" </dev/null' in source
+    assert 'Checking optional RPM in cached DNF metadata (max ${DNF_PROBE_TIMEOUT}s): $package' in source
+    assert 'sudo "$@"' in source  # Required RPM installation may still authenticate.
+
+
+def test_bootstrap_optional_dnf_query_does_not_consume_inherited_stdin(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    executable = fake_bin / "dnf"
+    record = tmp_path / "read-result"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if IFS= read -r line; then\n'
+        '    printf "READ:%s\\n" "$line" > "$DNF_READ_RESULT"\n'
+        "else\n"
+        '    printf "EOF\\n" > "$DNF_READ_RESULT"\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+    env["DNF_READ_RESULT"] = str(record)
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; dnf_cached_query test-optional-package || true',
+         "bootstrap-test", str(ROOT / "bootstrap.sh")],
+        input="MUST_NOT_BE_READ\n",
+        text=True, capture_output=True, env=env, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8") == "EOF\n"
+
+
+def test_bootstrap_optional_dnf_probe_timeout(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    executable = fake_bin / "dnf"
+    executable.write_text("#!/bin/sh\nexec sleep 5\n", encoding="utf-8")
+    executable.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+    env["AUTOMATION_HARNESS_DNF_PROBE_TIMEOUT"] = "1"
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; dnf_cached_query test-optional-package',
+         "bootstrap-test", str(ROOT / "bootstrap.sh")],
+        capture_output=True, text=True, env=env, timeout=4,
+    )
+    assert result.returncode == 124, result.stderr
