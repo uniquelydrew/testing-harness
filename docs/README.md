@@ -11,7 +11,7 @@ reference. A bundled documentation copy is maintained at
 | [`live-environment-authoring.md`](live-environment-authoring.md) | Current `live-desktop` authoring model, YAML-backed artifact extensions, regex identity, recording, and click semantics |
 | [`script-backed-steps.md`](script-backed-steps.md) | Script-step manifest contract, JSON process protocol, registration, and execution semantics |
 | [`javafx-identity-contract.md`](javafx-identity-contract.md) | JavaFX identity, lineage, matching, and bridge requirements |
-| [`rhel8-deployment.md`](rhel8-deployment.md) | RHEL 8/Python 3.6 bootstrap, optional pytest setup, and qualification |
+| [`rhel8-deployment.md`](rhel8-deployment.md) | RHEL 8/Python 3.12 bootstrap, optional pytest setup, and qualification |
 | [`authoring-safety.md`](authoring-safety.md) | Repository optimistic save protection, safe recapture, and known compatibility boundaries |
 | [`pytest-integration.md`](pytest-integration.md) | Experimental `.ahplan` pytest adapter: installation, CLI options, plan discovery, resource loading, JUnit reporting, limits |
 | [`../javafx_agent/README.md`](../javafx_agent/README.md) | Loopback JavaFX capture/action bridge |

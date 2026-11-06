@@ -8,6 +8,7 @@ on:
       - 'codex/pytest-*'
       - 'codex/repository-*'
       - 'codex/object-*'
+      - 'codex/python-*'
   workflow_dispatch:
 
 permissions:
@@ -19,21 +20,14 @@ concurrency:
 
 jobs:
   python:
-    name: Python 3.6 tests
+    name: Python 3.12 tests
     runs-on: ubuntu-22.04
-    container:
-      image: python:3.6-buster
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Configure archived Debian Buster repositories
-        run: |
-          printf '%s\n' \
-            'deb http://archive.debian.org/debian buster main' \
-            'deb http://archive.debian.org/debian-security buster/updates main' \
-            > /etc/apt/sources.list
-          printf 'Acquire::Check-Valid-Until "false";\n' \
-            > /etc/apt/apt.conf.d/99archive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install Linux desktop build dependencies
         run: |
           apt-get update
@@ -89,21 +83,19 @@ jobs:
           if-no-files-found: error
 
   pytest-plan-adapter:
-    name: Pytest plan adapter (Python 3.6 / headless reference)
+    name: Pytest plan adapter (Python 3.12 / headless reference)
     runs-on: ubuntu-22.04
-    container:
-      image: python:3.6-buster
     timeout-minutes: 20
-    # Ensure the pytester subprocess tests also use the Python 3.6 source loader.
-    env:
-      PYTEST_ADDOPTS: "--assert=plain"
     steps:
       - uses: actions/checkout@v4
-      - name: Install Python 3.6-compatible test dependencies
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python 3.12 test dependencies
         run: |
-          python -m pip install 'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1'
+          python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e '.[pytest]'
-      - name: Verify compatibility-aware automation-pytest entry point
+      - name: Verify automation-pytest entry point
         run: automation-pytest --help > /dev/null
       - name: Verify plan collector, result metadata, teardown, and real reference execution
         run: python -m pytest -q --tb=long automation_harness/tests/test_pytest_plan_adapter.py

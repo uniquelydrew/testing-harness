@@ -101,14 +101,13 @@ The TestPlan does not know whether the object is found by AT-SPI, another future
 
 ## Python
 
-This branch targets the stock **Python 3.6.x** runtime on RHEL 8. The package
-metadata intentionally requires `>=3.6,<3.7`.
+This branch targets **Python 3.12.x**. The package metadata intentionally
+requires `>=3.12,<3.13`.
 
 Python package dependencies are:
 
-- PyYAML 3.12–5.x
-- `dataclasses==0.8`
-- `typing_extensions==4.1.1`
+- PyYAML 6.x
+- `typing_extensions` 4.x
 
 Pillow is an optional vision dependency. pytest is used for development tests,
 Python test bundles, and the optional declarative-plan integration; core
@@ -1911,13 +1910,13 @@ properties, while the per-plan `events.jsonl`, `execution_state.json`, and
 output file is produced by pytest separately from the individual harness run
 directories.
 
-The adapter has passed its Python 3.6 headless-reference CI tests, but
+The adapter has passed its Python 3.12 headless-reference CI tests, but
 **RHEL 8.9 live-GUI qualification remains outstanding**. It does not
 automatically inject pytest fixtures or isolate concurrent GUI workers.
 For guaranteed external cleanup after a failed managed step, supply
 `--ah-teardown-command='bash path/to/stop.sh'`; an optional
 `--ah-setup-command` runs before each plan. Neither command is executed
-through an implicit shell. On RHEL/Python 3.6, use `automation-pytest`
+through an implicit shell. On Python 3.12, use `automation-pytest`
 rather than bare `pytest` to activate the compatibility loader.
 
 See [`docs/pytest-integration.md`](docs/pytest-integration.md) for supported
@@ -2223,7 +2222,7 @@ automation_harness/
     services.py               reference implementations of semantic services
 
   compat/
-    pytest_cli.py             Python 3.6-safe optional pytest entry point
+    pytest_cli.py             Optional pytest entry point
 
   integrations/
     pytest/

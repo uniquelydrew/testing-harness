@@ -30,7 +30,7 @@ steps:
   - id: verify-gui-reference-execution
     step: validation.equal
     inputs:
-      name: python36-gui-reference
+      name: python312-gui-reference
       actual: {$var: expected}
       expected: 42
 YAML

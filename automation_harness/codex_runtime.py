@@ -1,6 +1,6 @@
 """Detached runtime orchestration for Codex-assisted desktop debugging.
 
-This module intentionally uses only the Python 3.6 standard library.  The
+This module intentionally uses only the Python 3.12 standard library.  The
 supervisor survives the shell/codex process that launched it, owns a separate
 GUI process group, and leaves a machine-readable handoff in the runtime root.
 """

@@ -22,8 +22,8 @@ steps: []
 """
 
 
-def test_cli_disables_assertion_rewriting_before_loading_adapter(monkeypatch):
-    """Pytest must not bypass the Python 3.6 source compatibility loader."""
+def test_cli_loads_plan_adapter(monkeypatch):
+    """The CLI must register the harness's plan-adapter plugin."""
     from automation_harness.compat.pytest_cli import main
 
     captured = []
@@ -34,9 +34,7 @@ def test_cli_disables_assertion_rewriting_before_loading_adapter(monkeypatch):
 
     monkeypatch.setattr(pytest, "main", fake_main)
     assert main(["--collect-only", "-q"]) == 0
-    assert captured[:3] == [
-        "--assert=plain", "-p", "automation_harness.integrations.pytest.plugin",
-    ]
+    assert captured[:2] == ["-p", "automation_harness.integrations.pytest.plugin"]
     assert captured[-2:] == ["--collect-only", "-q"]
 
 

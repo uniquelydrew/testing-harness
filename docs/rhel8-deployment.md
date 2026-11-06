@@ -18,11 +18,11 @@ bash bootstrap.sh
 The bootstrap performs the following work automatically:
 
 1. Detects RHEL 8 using `/etc/os-release`.
-2. Verifies the configured system interpreter is Python 3.6.x.
+2. Verifies the configured interpreter is Python 3.12.x.
 3. Installs available GTK 3, AT-SPI, X11/Xvfb, D-Bus, Java ATK wrapper, and Python binding RPMs with `dnf`.
 4. Creates or repairs `.venv` with system site packages enabled.
-5. Pins the last supported Python-3.6 packaging toolchain and compatibility dependencies.
-6. Requires Pillow-backed framebuffer capture. It first uses the RHEL `python3-pillow` package when available, then falls back to the pinned Python-3.6-compatible Pillow release in the application virtual environment.
+5. Installs the current packaging toolchain and Python 3.12 dependencies.
+6. Requires Pillow-backed framebuffer capture. It first uses the RHEL `python3-pillow` package when compatible, then falls back to the pinned Python 3.12-compatible Pillow release in the application virtual environment.
 7. Installs Automation Harness from the source tree in development mode.
 8. Builds the native JavaFX bridge agent when `javac` and `jar` are available.
 9. Locates the Java ATK wrapper without assuming one exact RPM layout.
@@ -46,10 +46,17 @@ The RHEL host must have access to whatever organizational or Red Hat repositorie
 
 ## Python isolation
 
-Do not replace RHEL's `/usr/bin/python3`. This backport deliberately runs on
-the RHEL 8 Python 3.6 ABI so distribution PyGObject, Cairo, and pyatspi bindings
-remain compatible. `AUTOMATION_HARNESS_PYTHON` may point to another interpreter,
-but bootstrap requires that interpreter to be Python 3.6.x.
+Do not replace RHEL's `/usr/bin/python3`. Configure
+`AUTOMATION_HARNESS_PYTHON` to a Python 3.12 interpreter; bootstrap requires
+that interpreter to be Python 3.12.x. The interpreter and any native
+PyGObject, Cairo, and pyatspi bindings must use the same ABI.
+
+By default bootstrap uses `/usr/bin/python3.12`. Set the override when Python
+3.12 is installed elsewhere:
+
+```bash
+AUTOMATION_HARNESS_PYTHON=/opt/python3.12/bin/python3.12 bash bootstrap.sh
+```
 
 The application virtual environment defaults to:
 
@@ -63,7 +70,9 @@ and can be relocated with:
 AUTOMATION_HARNESS_VENV=/opt/automation-harness/venv bash bootstrap.sh
 ```
 
-The Pillow pip fallback defaults to `Pillow==8.4.0`, the final Pillow release that supports Python 3.6. An explicit deployment mirror or validated replacement version can be selected with `AUTOMATION_HARNESS_PILLOW_VERSION`.
+The Pillow pip fallback defaults to `Pillow==10.4.0`, which supports Python
+3.12. An explicit deployment mirror or validated replacement version can be
+selected with `AUTOMATION_HARNESS_PILLOW_VERSION`.
 
 ## Jenkins integration
 
@@ -75,7 +84,7 @@ bash scripts/ci/jenkins.sh agents
 bash scripts/ci/jenkins.sh desktop
 ```
 
-The pipeline expects Jenkins agents labeled `linux && python36` for unit
+The pipeline expects Jenkins agents labeled `linux && python312` for unit
 tests, `linux && jdk11` for agent builds, and `linux && rhel8 && desktop` for
 desktop qualification. The desktop stage is disabled by default; enable the
 `RUN_DESKTOP_QUALIFICATION` build parameter only on a qualified interactive
@@ -99,10 +108,9 @@ python -m pip install -e '.[pytest]'
 automation-pytest --help
 ```
 
-The optional dependency uses pytest 6.2-compatible releases on Python 3.6.
-Use the `automation-pytest` command: it enables the source-compatibility
-loader before pytest loads the plan adapter. Do **not** assume that invoking
-bare `pytest` from the system interpreter initializes this loader.
+The optional dependency uses pytest 8-compatible releases on Python 3.12.
+Use the `automation-pytest` command to load the plan-adapter plugin. Do **not**
+assume that invoking bare `pytest` from another interpreter initializes it.
 
 A basic collection-only invocation does not require launching the target
 desktop or reference backend:
@@ -132,9 +140,9 @@ branch's qualification.
 
 ## AT-SPI and PyGObject
 
-The virtual environment is created with `--system-site-packages` so the RHEL
-Python 3.6 interpreter can use the distribution's ABI-compatible PyGObject,
-Cairo, and pyatspi installations. The resulting environment must pass:
+The virtual environment is created with `--system-site-packages` so the Python
+3.12 interpreter can use ABI-compatible PyGObject, Cairo, and pyatspi
+installations. The resulting environment must pass:
 
 ```bash
 automation-run selftest --require-atspi
@@ -197,7 +205,7 @@ output and verify every capability required by the intended test workload.
 The initial target remains:
 
 - Red Hat Enterprise Linux 8.x, x86_64
-- RHEL system Python 3.6.x in an application virtual environment
+- Python 3.12.x in an application virtual environment
 - X11/Xvfb
 - D-Bus
 - AT-SPI2

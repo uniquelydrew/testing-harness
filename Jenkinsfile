@@ -17,7 +17,7 @@ pipeline {
 
   stages {
     stage('Python unit') {
-      agent { label 'linux && python36' }
+      agent { label 'linux && python312' }
       steps {
         checkout scm
         sh 'bash scripts/ci/jenkins.sh unit'

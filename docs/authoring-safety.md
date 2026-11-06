@@ -145,7 +145,7 @@ stronger deletion safety.
 
 ## Validation
 
-The Python 3.6 CI suite exercises
+The Python 3.12 CI suite exercises
 `test_repository_concurrency.py`, `test_recapture_safety.py`, and
 `test_repository_preparation.py`, including cross-plan reconciliation,
 legacy references, locked execution provenance, and stale-artifact rejection.

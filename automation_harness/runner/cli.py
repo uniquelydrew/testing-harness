@@ -318,8 +318,8 @@ def _run_project_command(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    # Python 3.6's argparse compatibility path cannot enforce required
-    # subparsers. Do not fall through and assume bundle-specific arguments.
+    # Keep an explicit guard so callers get help rather than falling through
+    # and assuming bundle-specific arguments.
     if getattr(args, "command", None) is None:
         build_parser().print_help(sys.stderr)
         return 2
