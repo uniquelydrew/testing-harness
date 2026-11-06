@@ -19,6 +19,7 @@ _SESSION_ONLY = {
     "bridge_port",
     "scene",
     "capture_source",
+    "process_id",
 }
 
 _RUNTIME_KEYS = {
@@ -75,10 +76,13 @@ def property_policy(
         return PropertyPolicy(source, selected, False, source + " tree evidence")
 
     if framework != "javafx" and candidate_section is None:
-        # The current AT-SPI repository validator accepts a narrower locator
-        # vocabulary. Expose extra evidence, but do not let it produce an
-        # invalid locator until that backend grows equivalent matcher support.
-        return PropertyPolicy("diagnostic", False, False, "backend does not author this property")
+        # The native Java agent has a deliberately narrow locator vocabulary.
+        # Keep its richer capture metadata available as read-only diagnostics.
+        java_agent_keys = {
+            "name", "accessible_id", "native_class", "component_path", "window",
+        }
+        if framework not in {"swing", "awt", "java", "jogl"} or normalized not in java_agent_keys:
+            return PropertyPolicy("diagnostic", False, False, "backend does not author this property")
 
     if normalized == "id":
         return PropertyPolicy("very high", True, True, "explicit application id")
@@ -100,8 +104,23 @@ def property_policy(
         return PropertyPolicy("high", True, True, "semantic class")
 
     if normalized == "window" or normalized.startswith("parent.") or normalized.startswith("ancestor") or normalized == "lineage":
-        selected = candidate_section == "mandatory"
+        selected = candidate_section in {"mandatory", "assistive"}
         return PropertyPolicy("high", selected, True, "structural scope")
+    if normalized == "native_class":
+        return PropertyPolicy(
+            "high", candidate_section in {"mandatory", "assistive"},
+            True, "native implementation class",
+        )
+    if normalized == "component_path":
+        return PropertyPolicy(
+            "low", candidate_section in {"mandatory", "assistive"},
+            True, "indexed structural path; susceptible to layout changes",
+        )
+    if normalized in {"name", "accessible_id"}:
+        return PropertyPolicy(
+            "high", candidate_section in {"mandatory", "assistive"},
+            True, "native Java locator",
+        )
 
     if normalized.startswith("layout."):
         selected = candidate_section == "mandatory"
@@ -138,12 +157,23 @@ def available_properties(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = {}
     for key in (
         "id",
+        "name",
+        "accessible_id",
+        "native_class",
+        "component_path",
         "class",
+        "accessible_name",
+        "accessible_description",
         "accessible_role",
         "accessible_text",
         "text",
+        "component_name",
+        "tooltip_text",
+        "semantic_object_type",
+        "framework",
         "user_data",
         "window",
+        "capture_source",
         "visible",
         "disabled",
         "focused",
