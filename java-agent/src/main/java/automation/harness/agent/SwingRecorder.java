@@ -21,6 +21,9 @@ import java.util.concurrent.CompletableFuture;
 import javax.accessibility.AccessibleContext;
 import javax.accessibility.Accessible;
 import javax.swing.AbstractButton;
+import javax.swing.JComponent;
+import javax.swing.JComboBox;
+import javax.swing.JTabbedPane;
 import javax.swing.JLabel;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
@@ -187,11 +190,32 @@ final class SwingRecorder {
         result.put("object_type", objectType(component));
         result.put("actions", actions(component));
         AccessibleContext accessible = component instanceof Accessible value ? value.getAccessibleContext() : null;
-        String name = accessible == null ? component.getName() : accessible.getAccessibleName();
-        if (name == null || name.isBlank()) name = authoredText(component);
+        String accessibleName = accessible == null ? null : accessible.getAccessibleName();
+        String accessibleDescription = accessible == null ? null : accessible.getAccessibleDescription();
+        String componentName = component.getName();
+        String text = authoredText(component);
+        String name = accessibleName;
+        if (name == null || name.isBlank()) name = text;
+        if (name == null || name.isBlank()) name = componentName;
         if (name != null && !name.isBlank()) result.put("name", name);
-        if (component.getName() != null && !component.getName().isBlank()) result.put("accessible_id", component.getName());
-        Window owner = SwingUtilities.getWindowAncestor(component);
+        if (accessibleName != null && !accessibleName.isBlank()) result.put("accessible_name", accessibleName);
+        if (accessibleDescription != null && !accessibleDescription.isBlank()) {
+            result.put("accessible_description", accessibleDescription);
+            result.put("description", accessibleDescription);
+        }
+        if (componentName != null && !componentName.isBlank()) {
+            result.put("component_name", componentName);
+            result.put("accessible_id", componentName);
+        }
+        if (text != null && !text.isBlank()) result.put("text", text);
+        if (accessible != null && accessible.getAccessibleRole() != null) {
+            result.put("accessible_role", accessible.getAccessibleRole().toDisplayString(Locale.ROOT).toLowerCase(Locale.ROOT));
+        }
+        if (component instanceof JComponent value) {
+            String tooltip = value.getToolTipText();
+            if (tooltip != null && !tooltip.isBlank()) result.put("tooltip_text", tooltip);
+        }
+        Window owner = component instanceof Window ? (Window)component : SwingUtilities.getWindowAncestor(component);
         if (owner != null) {
             String title = windowTitle(owner);
             result.put("window", title);
@@ -205,15 +229,20 @@ final class SwingRecorder {
         result.put("sibling_index", siblingIndex(component));
         Component parent = component.getParent();
         if (parent != null) result.put("parent", parentIdentity(parent));
-        result.put("state", Map.of(
-            "present", true,
-            "visible", component.isVisible(),
-            "showing", component.isShowing(),
-            "enabled", component.isEnabled(),
-            "focused", component.isFocusOwner()
-        ));
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("present", true);
+        state.put("visible", component.isVisible());
+        state.put("showing", component.isShowing());
+        state.put("enabled", component.isEnabled());
+        state.put("focused", component.isFocusOwner());
+        if (component instanceof AbstractButton value) state.put("selected", value.isSelected());
+        if (component instanceof JTextComponent value) state.put("editable", value.isEditable());
+        if (component instanceof JComboBox<?> value) state.put("selected_index", value.getSelectedIndex());
+        if (component instanceof JTabbedPane value) state.put("selected_index", value.getSelectedIndex());
+        result.put("state", state);
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("process_id", ProcessHandle.current().pid());
+        properties.put("capture_source", "native_java_agent");
         properties.put("opaque_render_surface", isRenderSurface(component));
         properties.put("window_active", owner != null && owner.isActive());
         properties.put("window_focused", owner != null && owner.isFocused());

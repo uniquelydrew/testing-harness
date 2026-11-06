@@ -127,3 +127,37 @@ def test_javafx_capture_name_uses_semantic_leaf_not_hierarchy():
 
     assert default_component_name(capture) == "File Menu"
     assert "AnchorPane" not in default_component_name(capture)
+
+
+def test_native_application_class_is_used_instead_of_generic_object_name():
+    capture = _capture(
+        name="Object",
+        object_type=ObjectType.MENU,
+        native_class="org.example.trackstate.UiTrackStateDBStatusIndicator",
+    )
+    assert default_component_name(capture) == "Track State DB Status Indicator"
+
+
+def test_serialized_capture_uses_native_class_if_accessible_name_is_generic():
+    assert default_payload_name({
+        "object_type": "menu",
+        "accessible_text": "Object",
+        "native_class": "org.example.trackstate.UiTrackStateDBStatusIndicator",
+    }) == "Track State DB Status Indicator"
+
+
+def test_meaningful_accessible_text_takes_priority_over_class_fallback():
+    capture = _capture(
+        name="Track Alerts",
+        object_type=ObjectType.BUTTON,
+        native_class="org.example.trackstate.UiTrackStateDBStatusIndicator",
+    )
+    assert default_component_name(capture) == "Track Alerts Button"
+
+
+def test_framework_classes_do_not_become_generic_fallback_names():
+    assert default_component_name(_capture(
+        name="Object",
+        object_type=ObjectType.MENU,
+        native_class="javax.swing.JMenu",
+    )) == "Menu"
