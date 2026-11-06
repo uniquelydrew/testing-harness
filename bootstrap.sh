@@ -130,7 +130,35 @@ native_binding_build_prerequisites_available() {
         return 1
     fi
 }
-install_pyatspi_from_system() { local py="$VENV_DIR/bin/python" source_dir destination; "$py" -c 'import pyatspi' >/dev/null 2>&1 && return 0; source_dir="$(rpm -ql python3-pyatspi 2>/dev/null | awk '/\/pyatspi$/ { print; exit }')"; [[ -n "$source_dir" && -d "$source_dir" ]] || return 1; destination="$($py -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; log "Copying the system pyatspi Python sources into the Python 3.12 environment"; cp -a "$source_dir" "$destination/"; "$py" -c 'import pyatspi' >/dev/null 2>&1; }
+install_pyatspi_from_system() {
+    local py="$VENV_DIR/bin/python" source_dir destination
+    if "$py" -c 'import pyatspi' >/dev/null 2>&1; then
+        log "Python 3.12 pyatspi is already importable"
+        return 0
+    fi
+    if ! rpm -q python3-pyatspi >/dev/null 2>&1; then
+        warn "The python3-pyatspi RPM is not installed"
+        return 1
+    fi
+    source_dir="$(rpm -ql python3-pyatspi 2>/dev/null | awk '/\/pyatspi$/ { print; exit }')"
+    if [[ -z "$source_dir" || ! -d "$source_dir" || ! -f "$source_dir/__init__.py" ]]; then
+        warn "Cannot find the installed pyatspi source directory; inspect rpm -ql python3-pyatspi"
+        return 1
+    fi
+    destination="$("$py" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" || return 1
+    [[ -n "$destination" ]] || { warn "Python 3.12 purelib destination is empty"; return 1; }
+
+    log "Preparing a Python 3.12-compatible private pyatspi copy"
+    "$py" "$ROOT_DIR/scripts/patch_pyatspi_legacy.py" "$source_dir" "$destination/pyatspi" || return 1
+
+    # Do not conflate RPM presence with runtime import compatibility. Show the
+    # original Python traceback for any remaining GI/Atspi dependency failure.
+    log "Validating pyatspi import in Python 3.12"
+    if ! "$py" -c 'import pyatspi; print("[bootstrap] pyatspi import OK:", pyatspi.__file__)'; then
+        warn "Copied pyatspi compiles but cannot import; review traceback above"
+        return 1
+    fi
+}
 install_required_native_bindings() {
     local py="$VENV_DIR/bin/python"
     if native_python_bindings_available; then
@@ -154,7 +182,7 @@ install_required_native_bindings() {
         fi
     fi
 
-    install_pyatspi_from_system || die "Python 3.12 pyatspi sources are unavailable; install python3-pyatspi and retry"
+    install_pyatspi_from_system || die "Python 3.12 pyatspi installation or import validation failed; review the specific diagnostic and traceback above"
     native_python_bindings_available || die "Python 3.12 native binding qualification failed; verify cairo, gi, pyatspi and the GTK 3 typelib in the application environment"
 }
 install_python_dependencies() { local py="$VENV_DIR/bin/python"; "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install --upgrade pip setuptools wheel || warn "Packaging-tool upgrade failed"; "$py" -m pip --timeout "$PIP_TIMEOUT" --retries 1 install 'typing_extensions>=4.12,<5.0' || die "Python runtime dependencies could not be installed"; install_required_pillow; install_required_native_bindings; (cd "$ROOT_DIR" && "$py" -m pip install -e .) || die "Automation Harness installation failed"; }

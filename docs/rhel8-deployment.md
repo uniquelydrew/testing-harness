@@ -147,7 +147,7 @@ the system GTK/AT-SPI typelibs. It builds the Python 3.12 Pycairo and
 PyGObject bindings in the virtual environment instead of attempting to import
 the distribution's bindings built for a different Python ABI. The bootstrap
 copies the pure-Python `pyatspi` package from `python3-pyatspi` into the same
-environment. The resulting environment must pass:
+environment. RHEL 8's older `registry.py` uses the now-reserved `async` keyword; bootstrap adapts **only the private virtual-environment copy** using `scripts/patch_pyatspi_legacy.py`, compiles all copied Python modules, then validates the actual import. The installed system RPM remains unchanged. A syntactically compatible copy does not by itself establish working accessibility operations or event delivery. The resulting environment must pass:
 
 ```bash
 automation-run selftest --require-atspi

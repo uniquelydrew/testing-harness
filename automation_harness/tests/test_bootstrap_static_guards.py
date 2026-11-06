@@ -208,3 +208,9 @@ def test_repository_window_wrapper_resolves_project_context_with_imported_path()
 
     assert "from pathlib import Path" in source
     assert "self.host.project_context = Path(project_context).resolve()" in source
+
+
+def test_bootstrap_invokes_pyatspi_legacy_adaptation_before_import():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+    assert 'scripts/patch_pyatspi_legacy.py' in source
+    assert 'Validating pyatspi import in Python 3.12' in source
