@@ -1257,22 +1257,113 @@ public final class AutomationHarnessJavaFxAgent {
             });
         }
 
-        static Map<String, Object> selectPopupPath(final Map<String, Object> identification, final List<Object> selectors) throws Exception {
-            if (selectors.size() != 1 || !(selectors.get(0) instanceof Map)) throw new IllegalArgumentException("popup path requires one selector");
-            @SuppressWarnings("unchecked") Map<String, Object> selector = (Map<String, Object>) selectors.get(0);
-            Object ordinal = selector.get("ordinal");
-            if (ordinal instanceof Number) return selectChild(identification, ((Number) ordinal).intValue());
-            Map<String, Object> criteria = mapValueOrEmpty(selector.get("criteria"));
-            Object wanted = criteria.get("text");
-            NodeMatch root = unique(resolve(identification, true), identification);
-            List<Object> items = listValue(call(root.node, "getItems"));
-            int match = -1;
-            for (int index = 0; index < items.size(); index++) if (String.valueOf(items.get(index)).equals(String.valueOf(wanted))) {
-                if (match >= 0) throw new IllegalArgumentException("popup text is ambiguous: " + wanted);
-                match = index;
+        static Map<String, Object> selectPopupPath(
+                final Map<String, Object> identification, final List<Object> selectors) throws Exception {
+            if (selectors.size() != 1 || !(selectors.get(0) instanceof Map)) {
+                throw new IllegalArgumentException("popup path requires one selector");
             }
-            if (match < 0) throw new IllegalArgumentException("popup item was not found: " + wanted);
-            return selectChild(identification, match);
+            @SuppressWarnings("unchecked")
+            final Map<String, Object> selector = (Map<String, Object>) selectors.get(0);
+            final Map<String, Object> criteria = mapValueOrEmpty(selector.get("criteria"));
+            final Object ordinal = selector.get("ordinal");
+            final Object criteriaIndex = criteria.get("index");
+            final Number requestedIndex = ordinal instanceof Number ? (Number) ordinal
+                    : criteriaIndex instanceof Number ? (Number) criteriaIndex : null;
+            final String wanted = stringValue(criteria.get("text"));
+
+            if ((wanted == null || wanted.isEmpty()) && requestedIndex == null) {
+                throw new IllegalArgumentException(
+                        "popup selection requires text or an explicit numeric index");
+            }
+            return onFx(() -> {
+                NodeMatch root = unique(resolve(identification, true), identification);
+                if (interactionFamily(root.node) != InteractionFamily.POPUP_SELECTOR) {
+                    throw new IllegalArgumentException(
+                            "select_popup_path requires a JavaFX ComboBox or ChoiceBox owner");
+                }
+
+                List<Object> items = listValue(call(root.node, "getItems"));
+                Object converter = call(root.node, "getConverter");
+                List<Integer> matches = new ArrayList<Integer>();
+                List<String> inventory = new ArrayList<String>();
+                for (int index = 0; index < items.size(); index++) {
+                    Object item = items.get(index);
+                    String modelText = String.valueOf(item);
+                    String displayText = popupItemDisplayText(converter, item);
+                    if (wanted != null && !wanted.isEmpty()
+                            && (wanted.equals(modelText) || wanted.equals(displayText))) {
+                        matches.add(index);
+                    }
+                    if (index < 25) {
+                        inventory.add(index + ":" + boundedPopupLabel(displayText)
+                                + (displayText.equals(modelText) ? ""
+                                : " [model=" + boundedPopupLabel(modelText) + "]"));
+                    }
+                }
+
+                int match;
+                if (requestedIndex != null) {
+                    match = requestedIndex.intValue();
+                    if (match < 0 || match >= items.size()) {
+                        throw new IllegalArgumentException(
+                                "popup selection index " + match + " outside " + items.size() + " items");
+                    }
+                    // An index is never allowed to override contradictory
+                    // semantic text. A stale index must fail closed.
+                    if (wanted != null && !wanted.isEmpty() && !matches.contains(match)) {
+                        throw new IllegalArgumentException(
+                                "popup index " + match + " does not match text " + wanted
+                                + "; available=" + inventory);
+                    }
+                } else {
+                    if (matches.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "popup item was not found: " + wanted + "; item_count="
+                                + items.size() + "; available=" + inventory
+                                + (items.size() > 25 ? " ... (first 25 shown)" : ""));
+                    }
+                    if (matches.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "popup text is ambiguous: " + wanted + "; matching_indices=" + matches);
+                    }
+                    match = matches.get(0);
+                }
+
+                Object model = call(root.node, "getSelectionModel");
+                Class.forName("javafx.scene.control.SelectionModel")
+                        .getMethod("select", int.class).invoke(model, match);
+                Object selectedIndex = call(model, "getSelectedIndex");
+                if (!(selectedIndex instanceof Number)
+                        || ((Number) selectedIndex).intValue() != match) {
+                    throw new IllegalStateException(
+                            "popup selection was not confirmed: requested_index=" + match
+                            + "; selected_index=" + selectedIndex);
+                }
+
+                Map<String, Object> result = new LinkedHashMap<String, Object>();
+                result.put("action", "select_item");
+                result.put("index", match);
+                result.put("selection_family", "popup_selector");
+                result.put("selected_text", popupItemDisplayText(converter, items.get(match)));
+                result.put("node", nodePayload(root.node, root.window));
+                return result;
+            });
+        }
+
+        private static String popupItemDisplayText(Object converter, Object item) throws Exception {
+            if (converter == null) return String.valueOf(item);
+            // Invoking the public JavaFX API avoids reflective access problems
+            // with private application-defined converter implementations.
+            Method convert = Class.forName("javafx.util.StringConverter")
+                    .getMethod("toString", Object.class);
+            Object display = convert.invoke(converter, item);
+            return display == null ? "" : String.valueOf(display);
+        }
+
+        private static String boundedPopupLabel(String label) {
+            if (label == null) return "<null>";
+            String safe = label.replace("\r", "\\r").replace("\n", "\\n");
+            return safe.length() <= 100 ? safe : safe.substring(0, 100) + "...";
         }
 
         private static Object menuChild(Object parent, Map<String, Object> selector) throws Exception {
