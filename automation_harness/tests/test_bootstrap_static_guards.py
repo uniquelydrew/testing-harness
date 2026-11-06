@@ -214,3 +214,28 @@ def test_bootstrap_invokes_pyatspi_legacy_adaptation_before_import():
     source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
     assert 'scripts/patch_pyatspi_legacy.py' in source
     assert 'Validating pyatspi import in Python 3.12' in source
+
+
+def test_bootstrap_requires_xorg_x11_utils_and_validates_xprop():
+    source = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+
+    assert "dbus-x11 xorg-x11-xauth xorg-x11-utils gcc" in source
+    assert "verify_x11_client_tools() {" in source
+    assert "command -v xprop >/dev/null 2>&1" in source
+    assert 'install the xorg-x11-utils RPM on RHEL 8' in source
+    assert source.index("    install_available_rpms") < source.index("    verify_x11_client_tools") < source.index("    create_venv")
+
+
+def test_bootstrap_xprop_preflight_fails_with_actionable_error():
+    script = (
+        'source "$1"; '
+        'command() { if [[ "$1" == "-v" && "$2" == "xprop" ]]; then return 1; fi; '
+        'builtin command "$@"; }; '
+        'verify_x11_client_tools'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bootstrap-test", str(ROOT / "bootstrap.sh")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "install the xorg-x11-utils RPM on RHEL 8" in result.stderr

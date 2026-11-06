@@ -19,7 +19,7 @@ The bootstrap performs the following work automatically:
 
 1. Detects RHEL 8 using `/etc/os-release`.
 2. Verifies the configured interpreter is Python 3.12.x.
-3. Installs available GTK 3, AT-SPI, X11/Xvfb, D-Bus, Java ATK wrapper, and native build RPMs with `dnf`.
+3. Installs required GTK 3, AT-SPI, X11 client tools (`xorg-x11-utils`, including `xprop`), D-Bus, and native build RPMs with `dnf`, plus available optional Xvfb and Java ATK wrapper RPMs.
 4. Creates or repairs `.venv` with system site packages enabled.
 5. Installs the current packaging toolchain, Pillow, and Python-3.12-compatible Pycairo/PyGObject bindings in the application virtual environment. It copies the distribution-provided pure-Python `pyatspi` sources into that environment after installing its `gi` dependency.
 6. Requires Pillow-backed framebuffer capture. It uses an already importable Pillow installation when available; otherwise it installs the pinned Python 3.12-compatible release with pip in the application virtual environment. It does not attempt to install the RHEL `python3-pillow` RPM, which may target a different Python ABI.
@@ -187,6 +187,25 @@ For an organization-specific location:
 ```bash
 export AUTOMATION_HARNESS_JAVA_ATK_WRAPPER=/absolute/path/to/java-atk-wrapper.jar
 ```
+
+## X11 window management dependencies
+
+The foreground driver (`automation_harness/drivers/x11_foreground.py`) calls
+the external `xprop` binary for EWMH window enumeration, process ownership,
+titles, and active-window verification. RHEL 8 provides this binary in the
+`xorg-x11-utils` package. Bootstrap installs that required RPM in its
+bounded DNF transaction and fails early with an actionable diagnostic if
+`xprop` is not on `PATH`. Confirm it with:
+
+```bash
+command -v xprop
+xprop -root _NET_CLIENT_LIST
+xprop -root _NET_ACTIVE_WINDOW
+```
+
+The commands that query window properties require a valid X11 `DISPLAY`,
+a reachable X server, and appropriate authorization; installing the binary
+alone does not establish foreground activation.
 
 ## D-Bus and virtual display
 

@@ -40,7 +40,7 @@ install_available_rpms() {
 
     local required=(
         python3-pyatspi at-spi2-core at-spi2-atk gtk3
-        dbus-x11 xorg-x11-xauth gcc pkgconf-pkg-config
+        dbus-x11 xorg-x11-xauth xorg-x11-utils gcc pkgconf-pkg-config
         cairo-devel cairo-gobject-devel gobject-introspection-devel
         glib2-devel libffi-devel
     )
@@ -85,6 +85,13 @@ install_available_rpms() {
         log "Installing optional RPM(s): ${available_optional[*]}"
         dnf_install "${available_optional[@]}" || warn "Optional RPM installation failed; continuing to capability checks"
     fi
+}
+verify_x11_client_tools() {
+    # X11 foreground orchestration uses xprop to inspect EWMH window identity
+    # and active-window state. libX11 and xauth alone do not provide it.
+    command -v xprop >/dev/null 2>&1 ||
+        die "X11 foreground orchestration requires xprop; install the xorg-x11-utils RPM on RHEL 8"
+    log "X11 foreground utility available: $(command -v xprop)"
 }
 create_venv() { if [[ -x "$VENV_DIR/bin/python" ]] && ! "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then warn "Removing an existing non-Python-3.12 virtual environment"; rm -rf "$VENV_DIR"; fi; if [[ ! -x "$VENV_DIR/bin/python" ]]; then log "Creating Python 3.12 virtual environment with RHEL system packages visible"; "$SYSTEM_PYTHON" -m venv --system-site-packages "$VENV_DIR" || die "python3 -m venv failed"; fi; }
 python_headers_available() {
@@ -251,6 +258,7 @@ main() {
     load_host
     verify_python
     install_available_rpms
+    verify_x11_client_tools
     create_venv
     install_python_dependencies
     build_javafx_agent
