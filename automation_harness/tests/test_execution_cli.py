@@ -20,7 +20,7 @@ def _plan(path, name="CLI test"):
 def _project(path, plans):
     path.write_text(
         "version: 2\nname: CLI project\ntest_plans:\n" +
-        "".join("  - %s\n" % item.name for item in plans) +
+        "".join(f"  - {item.name}\n" for item in plans) +
         "step_registries: []\nobject_repositories: []\n",
         encoding="utf-8",
     )

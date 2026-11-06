@@ -5,6 +5,7 @@ __pycache__/
 
 # Local virtual environments and package build metadata
 .venv/
+.wheel-smoke/
 .idea/
 *.egg-info/
 build/
@@ -19,3 +20,7 @@ recording-debug/
 # Unapproved visual-baseline review artifacts
 visual/.staging/
 **/visual/.staging/
+
+# Isolated CI lint environment and reports
+.ruff-venv/
+artifacts/lint/

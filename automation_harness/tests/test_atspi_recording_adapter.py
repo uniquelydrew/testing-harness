@@ -542,7 +542,8 @@ def test_physical_press_rejects_javafx_window_beneath_topmost_application():
 
     class JavaFxDriver:
         def capture_at_point(self, x, y, *, process_id=None):
-            raise LookupError("no JavaFX endpoint for owning process")
+            assert process_id == 701
+            return underneath
 
     adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
 
@@ -562,7 +563,8 @@ def test_structural_topmost_window_blocks_javafx_window_beneath_it():
 
     class JavaFxDriver:
         def capture_at_point(self, x, y, *, process_id=None):
-            raise LookupError("no JavaFX endpoint for owning process")
+            assert process_id == 701
+            return underneath
 
     adapter = AtspiRecordingAdapter(_Driver(topmost), javafx_driver=JavaFxDriver())
 

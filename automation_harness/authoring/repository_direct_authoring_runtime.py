@@ -111,7 +111,7 @@ def _add_captured_object(self, component_id, captured):
     if component_id in repository.components:
         self.app._error("Capture object", "Object %r already exists." % component_id); return False
     try:
-        repository, definition, _created = materialize_capture(
+        repository, _, _ = materialize_capture(
             self.app.capture, repository, component_id, captured,
             visual_leaf=captured.candidate_strategy().type == "anchored_visual",
         )

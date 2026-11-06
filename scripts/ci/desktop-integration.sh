@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 ARTIFACTS="${CI_ARTIFACTS_DIR:-$ROOT/artifacts/desktop}"
+PYTHON="${PYTHON:-python3.12}"
 mkdir -p "$ARTIFACTS"
 
 cleanup() {
@@ -25,8 +26,8 @@ if [[ -z "${DISPLAY:-}" ]]; then
   done
 fi
 
-python3 -m pip install --upgrade 'pip==21.3.1' 'setuptools==59.6.0' 'wheel==0.37.1'
-python3 -m pip install -e '.[test,vision]'
+"$PYTHON" -m pip install --upgrade pip setuptools wheel
+"$PYTHON" -m pip install -e '.[test,vision]'
 
 bash scripts/ci/build-agents.sh
 
@@ -34,6 +35,6 @@ bash scripts/ci/build-agents.sh
 # Uses its own synthetic reference GUI, not private application resources.
 bash scripts/ci/pytest-plan-desktop.sh
 
-python3 -m pytest -m "ui or integration" --junitxml="$ARTIFACTS/pytest.xml"
+"$PYTHON" -m pytest -m "ui or integration" --junitxml="$ARTIFACTS/pytest.xml"
 automation-run selftest --reference-display virtual 2>&1 | tee "$ARTIFACTS/selftest.log"
 automation-run selftest --require-atspi --reference-display virtual 2>&1 | tee "$ARTIFACTS/selftest-atspi.log"

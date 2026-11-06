@@ -46,4 +46,4 @@ def test_catalog_never_advertises_semantic_actions_without_public_definition():
     public.update(action.value for action in INTERACTIONS)
     for key, spec in component_catalog()["types"].items():
         unknown = set(spec.get("actions", ())) - public
-        assert unknown == set(), "%s exposes unsupported actions %r" % (key, unknown)
+        assert unknown == set(), f"{key} exposes unsupported actions {unknown!r}"

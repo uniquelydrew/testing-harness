@@ -1384,7 +1384,6 @@ def _normalize_javafx_menu_node(node: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(node)
     native_class = str(result.get("native_class") or result.get("class") or "")
     simple_class = native_class.rsplit(".", 1)[-1].casefold()
-    role = str(result.get("role") or result.get("accessible_role") or "").replace("_", " ").casefold()
     if simple_class != "menubarbutton" and not (
         simple_class == "menubutton" and native_class.startswith("com.sun.javafx.")
     ):

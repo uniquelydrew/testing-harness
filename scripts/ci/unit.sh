@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-PYTHON="${PYTHON:-python3}"
+PYTHON="${PYTHON:-python3.12}"
 ARTIFACTS="${CI_ARTIFACTS_DIR:-$ROOT/artifacts/unit}"
 mkdir -p "$ARTIFACTS"
 

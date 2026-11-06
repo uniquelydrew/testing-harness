@@ -22,8 +22,8 @@ steps: []
 """
 
 
-def test_cli_disables_assertion_rewriting_before_loading_adapter(monkeypatch):
-    """Pytest must not bypass the Python 3.6 source compatibility loader."""
+def test_cli_loads_plan_adapter(monkeypatch):
+    """The CLI must register the harness's plan-adapter plugin."""
     from automation_harness.compat.pytest_cli import main
 
     captured = []
@@ -34,9 +34,7 @@ def test_cli_disables_assertion_rewriting_before_loading_adapter(monkeypatch):
 
     monkeypatch.setattr(pytest, "main", fake_main)
     assert main(["--collect-only", "-q"]) == 0
-    assert captured[:3] == [
-        "--assert=plain", "-p", "automation_harness.integrations.pytest.plugin",
-    ]
+    assert captured[:2] == ["-p", "automation_harness.integrations.pytest.plugin"]
     assert captured[-2:] == ["--collect-only", "-q"]
 
 
@@ -198,7 +196,7 @@ def test_teardown_runs_after_failed_execution(pytester, monkeypatch):
     marker = pytester.path / "teardown.marker"
     script = pytester.path / "teardown.py"
     script.write_text(
-        "from pathlib import Path\nPath(%r).write_text('done')\n" % str(marker),
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('done')\n",
         encoding="utf-8",
     )
     command = shlex.quote(sys.executable) + " " + shlex.quote(str(script))
@@ -222,7 +220,7 @@ def test_teardown_runs_even_if_setup_fails(pytester):
     marker = pytester.path / "cleaned.marker"
     teardown = pytester.path / "teardown.py"
     teardown.write_text(
-        "from pathlib import Path\nPath(%r).write_text('cleaned')\n" % str(marker),
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('cleaned')\n",
         encoding="utf-8",
     )
     result = pytester.runpytest_inprocess(

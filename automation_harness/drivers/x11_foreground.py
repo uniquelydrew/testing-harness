@@ -9,6 +9,7 @@ import ctypes.util
 import re
 import subprocess
 import time
+from typing import ClassVar
 
 
 class X11ActivationError(RuntimeError):
@@ -130,15 +131,15 @@ def _request_activation(xid: int) -> None:
         raise X11ActivationError("libX11 is unavailable")
     xlib = ctypes.CDLL(library)
     class XClientMessageData(ctypes.Union):
-        _fields_ = [("b", ctypes.c_char * 20), ("s", ctypes.c_short * 10),
+        _fields_: ClassVar[list[tuple[str, object]]] = [("b", ctypes.c_char * 20), ("s", ctypes.c_short * 10),
                     ("l", ctypes.c_long * 5)]
     class XClientMessageEvent(ctypes.Structure):
-        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong),
+        _fields_: ClassVar[list[tuple[str, object]]] = [("type", ctypes.c_int), ("serial", ctypes.c_ulong),
                     ("send_event", ctypes.c_int), ("display", ctypes.c_void_p),
                     ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
                     ("format", ctypes.c_int), ("data", XClientMessageData)]
     class XEvent(ctypes.Union):
-        _fields_ = [("xclient", XClientMessageEvent), ("pad", ctypes.c_long * 24)]
+        _fields_: ClassVar[list[tuple[str, object]]] = [("xclient", XClientMessageEvent), ("pad", ctypes.c_long * 24)]
     xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
     xlib.XOpenDisplay.restype = ctypes.c_void_p
     xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]

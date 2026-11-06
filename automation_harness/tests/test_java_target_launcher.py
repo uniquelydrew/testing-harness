@@ -20,7 +20,7 @@ def test_scoped_swing_launcher_preserves_non_harness_java_options(tmp_path):
 
     assert "-Xmx1g" in env["JAVA_TOOL_OPTIONS"]
     assert "-Ddemo=true" in env["JAVA_TOOL_OPTIONS"]
-    assert "-javaagent:%s" % jar in env["JAVA_TOOL_OPTIONS"]
+    assert f"-javaagent:{jar}" in env["JAVA_TOOL_OPTIONS"]
     assert env["AUTOMATION_HARNESS_SCOPED_AGENT"] == "swing"
 
 
@@ -48,5 +48,5 @@ def test_scoped_javafx_launcher_uses_only_javafx_agent(tmp_path):
         "AUTOMATION_HARNESS_JAVAFX_AGENT": str(javafx),
     })
 
-    assert "-javaagent:%s" % javafx in env["JAVA_TOOL_OPTIONS"]
+    assert f"-javaagent:{javafx}" in env["JAVA_TOOL_OPTIONS"]
     assert str(swing) not in env["JAVA_TOOL_OPTIONS"]

@@ -16,8 +16,21 @@ pipeline {
   }
 
   stages {
+    stage('Python lint') {
+      agent { label 'linux && python312' }
+      steps {
+        checkout scm
+        sh 'bash scripts/ci/lint.sh'
+      }
+      post {
+        always {
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'artifacts/lint/**'
+        }
+      }
+    }
+
     stage('Python unit') {
-      agent { label 'linux && python36' }
+      agent { label 'linux && python312' }
       steps {
         checkout scm
         sh 'bash scripts/ci/jenkins.sh unit'

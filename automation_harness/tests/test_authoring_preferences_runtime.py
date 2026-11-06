@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 from automation_harness.authoring.preferences_runtime import (
     AuthoringPreferences,
@@ -44,7 +45,7 @@ class _Window:
 
 
 class _WindowType:
-    windows = []
+    windows: ClassVar[list[_Window]] = []
 
     @classmethod
     def list_toplevels(cls):

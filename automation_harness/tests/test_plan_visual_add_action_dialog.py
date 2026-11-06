@@ -91,7 +91,9 @@ def _run_editor_action(editor, object_id, action_id, probe):
             object_combo = next(item for item in combos if item.get_active_id() == object_id)
             action_combo = next(item for item in combos if item.get_active_id() == action_id)
             probe(dialog, object_combo, action_combo)
-        except Exception as exc:
+        # GTK callbacks do not propagate failures into the calling test.
+        # Capture every exception, close the dialog, and re-raise from pytest.
+        except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             dialog.response(Gtk.ResponseType.CANCEL)
         return False

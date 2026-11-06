@@ -20,9 +20,8 @@ class EvidenceRecorder:
     def record(self, event: str, **fields: Any) -> None:
         payload = {"timestamp": utc_now(), "event": event, **fields}
         line = json.dumps(payload, sort_keys=True, default=str)
-        with self._lock:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        with self._lock, self.path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
     def record_assertion(
         self,
@@ -54,14 +53,13 @@ class EvidenceRecorder:
             role = payload.get("role")
             evidence_type = payload.get("type")
             if not isinstance(role, str) or not isinstance(evidence_type, str):
-                raise ValueError("assertion evidence requires string role and type fields")
+                raise TypeError("assertion evidence requires string role and type fields")
             roles.add(role)
             normalized.append(payload)
         missing = {"expected", "actual"} - roles
         if missing:
             raise ValueError(
-                "assertion evidence is missing required role(s): %s"
-                % ", ".join(sorted(missing))
+                f"assertion evidence is missing required role(s): {', '.join(sorted(missing))}"
             )
         payload_fields = dict(fields)
         payload_fields.update(

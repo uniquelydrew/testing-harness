@@ -20,13 +20,13 @@ class OfflineDriver:
 
 
 def captured(**overrides):
-    defaults = dict(
-        name="Save", role="push button", description="", accessible_id="save",
-        application="Example", window="Main", hierarchy=("Toolbar",),
-        actions=("click",), bounds=(10, 20, 30, 40),
-        state=ComponentState(present=True), backend_properties={},
-        framework="atspi", native_class="Button",
-    )
+    defaults = {
+        "name": "Save", "role": "push button", "description": "", "accessible_id": "save",
+        "application": "Example", "window": "Main", "hierarchy": ("Toolbar",),
+        "actions": ("click",), "bounds": (10, 20, 30, 40),
+        "state": ComponentState(present=True), "backend_properties": {},
+        "framework": "atspi", "native_class": "Button",
+    }
     defaults.update(overrides)
     return CapturedComponent(**defaults)
 

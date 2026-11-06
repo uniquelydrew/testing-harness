@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=39.2,<60", "wheel<0.38"]
+requires = ["setuptools>=69", "wheel>=0.41"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
@@ -12,3 +12,13 @@ markers = [
   "integration: crosses process/service boundaries",
   "protected: may only run against an explicitly enabled protected backend",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Incremental blocking gate: syntax, undefined names, unused bindings,
+# mutable class state, and file lifetime. Other legacy findings remain in
+# the full diagnostic inventory for tracked remediation.
+select = ["E9", "F821", "F841", "RUF059", "RUF012", "SIM115"]

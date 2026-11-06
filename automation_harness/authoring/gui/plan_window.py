@@ -517,7 +517,7 @@ class TestPlanWindow(ArtifactWindow):
 
     def validate(self):
         try:
-            expanded, components, issues = self._qualified_plan()
+            _, _, issues = self._qualified_plan()
         except Exception as exc: issues = ["%s: %s" % (type(exc).__name__, exc)]
         if issues: return self.error("Plan Validation", "\n".join(issues))
         self.info("Plan Validation", "Plan is structurally valid after reusable-step expansion.")
@@ -621,7 +621,7 @@ class TestPlanWindow(ArtifactWindow):
             # Refresh an externally edited assigned repository here as well,
             # before composing the qualified execution repository.
             self._refresh_assigned_repository()
-            expanded, components, issues = self._qualified_plan()
+            _, components, issues = self._qualified_plan()
             if issues: return self.error("Run Test", "\n".join(issues))
             prefs = AuthoringPreferences.load(); runs_dir = prefs.resolved_runs_dir(self.project); runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc: return self.error("Run Test", "%s: %s" % (type(exc).__name__, exc))

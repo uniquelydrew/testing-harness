@@ -1,6 +1,6 @@
 """Detached runtime orchestration for Codex-assisted desktop debugging.
 
-This module intentionally uses only the Python 3.6 standard library.  The
+This module intentionally uses only the Python 3.12 standard library.  The
 supervisor survives the shell/codex process that launched it, owns a separate
 GUI process group, and leaves a machine-readable handoff in the runtime root.
 """
@@ -88,7 +88,7 @@ def _process_identity(pid=None):
 
 def _enable_core_dumps():
     try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
         target = hard if hard != resource.RLIM_INFINITY else resource.RLIM_INFINITY
         resource.setrlimit(resource.RLIMIT_CORE, (target, hard))
     except (ValueError, OSError):
@@ -299,8 +299,6 @@ def _supervise(args):
         _write_json(_active_path(root), manifest)
         return 2
 
-    out = open(stdout_path, "ab", 0)
-    err = open(stderr_path, "ab", 0)
     started = _utc()
     try:
         child_env = _desktop_environment()
@@ -313,10 +311,13 @@ def _supervise(args):
             except OSError:
                 pass
         child_env["AUTOMATION_HARNESS_DIAGNOSTIC_DIR"] = diagnostic_dir
-        process = subprocess.Popen(
-            command, cwd=args.cwd, env=child_env,
-            stdout=out, stderr=err, preexec_fn=_enable_core_dumps,
-        )
+        # Popen duplicates redirected descriptors; the supervisor does not
+        # need to retain its own copies while waiting for the child.
+        with open(stdout_path, "ab", 0) as out, open(stderr_path, "ab", 0) as err:
+            process = subprocess.Popen(
+                command, cwd=args.cwd, env=child_env,
+                stdout=out, stderr=err, preexec_fn=_enable_core_dumps,
+            )
     except Exception as exc:
         manifest = {
             "version": 1, "state": "launch_failed", "started_at": started,
@@ -387,8 +388,6 @@ def _supervise(args):
         })
     with open(os.path.join(session, "process-tree-final.txt"), "w") as handle:
         handle.write(_process_tree(process.pid))
-    out.close()
-    err.close()
     return 0
 
 
@@ -428,12 +427,11 @@ def _launch(args):
         "--runtime-root", root, "--session", session, "--cwd", os.getcwd(),
         "--interval", str(args.interval), "--",
     ] + command
-    devnull = open(os.devnull, "rb")
-    detached = open(os.path.join(session, "supervisor.log"), "ab", 0)
-    proc = subprocess.Popen(
-        supervisor, stdin=devnull, stdout=detached, stderr=detached,
-        env=_desktop_environment(), preexec_fn=os.setsid, close_fds=True,
-    )
+    with open(os.devnull, "rb") as devnull, open(os.path.join(session, "supervisor.log"), "ab", 0) as detached:
+        proc = subprocess.Popen(
+            supervisor, stdin=devnull, stdout=detached, stderr=detached,
+            env=_desktop_environment(), preexec_fn=os.setsid, close_fds=True,
+        )
     deadline = time.time() + 5.0
     manifest = None
     while time.time() < deadline:

@@ -86,12 +86,14 @@ def test_editable_text_remains_the_semantic_target():
     text = FakeAccessible("Search", "text")
     text.queryEditableText = lambda: object()
     field = FakeAccessible(None, "panel", children=[text])
+    assert text.parent is field
     assert _semantic_accessible(text) is text
 
 
 def test_actionable_leaf_is_not_promoted():
     button = FakeAccessible("2", "push button", "digit-two")
     window = FakeAccessible("Calculator", "frame", children=[button])
+    assert button.parent is window
     assert _semantic_accessible(button) is button
 
 

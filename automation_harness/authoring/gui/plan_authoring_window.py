@@ -80,7 +80,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             selected = selected.resolve()
             if not selected.is_file():
                 raise ValueError("object repository does not exist")
-            assigned = ComponentRepository.load((selected,))
+            ComponentRepository.load((selected,))
             self.plan = assign_repositories(self.plan, self.path, (
                 RepositoryAssociation(selected, RepositoryScope.LOCAL),
             ))
@@ -223,7 +223,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
     def save(self):
         """Persist direct objects first, then add transitive Registry dependencies."""
         try:
-            portable = self._save_portable_plan()
+            self._save_portable_plan()
             if self.project_context:
                 project = AuthoringProject.load(self.project_context).with_test_plan(self.path)
                 repository_path = assigned_repository_path(self.plan, self.path)
