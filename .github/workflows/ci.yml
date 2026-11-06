@@ -30,8 +30,8 @@ jobs:
           python-version: '3.12'
       - name: Install Linux desktop build dependencies
         run: |
-          apt-get update
-          apt-get install --yes --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
             gcc \
             gir1.2-gtk-3.0 \
             libcairo2-dev \
@@ -41,6 +41,12 @@ jobs:
             xauth
       - name: Run Python test suite
         run: bash scripts/ci/unit.sh
+      - name: Build and smoke-test a distributable wheel
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+          python -m venv .wheel-smoke
+          .wheel-smoke/bin/python -m pip install dist/automation_harness-*.whl
+          .wheel-smoke/bin/automation-run --help > /dev/null
       - name: Exercise Test Plan GTK action dialog under virtual X11
         run: xvfb-run -a python -m pytest -q --tb=long automation_harness/tests/test_plan_visual_add_action_dialog.py automation_harness/tests/test_action_widget_values.py automation_harness/tests/test_result_report_viewer.py
 

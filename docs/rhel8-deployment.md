@@ -19,10 +19,10 @@ The bootstrap performs the following work automatically:
 
 1. Detects RHEL 8 using `/etc/os-release`.
 2. Verifies the configured interpreter is Python 3.12.x.
-3. Installs available GTK 3, AT-SPI, X11/Xvfb, D-Bus, Java ATK wrapper, and Python binding RPMs with `dnf`.
+3. Installs available GTK 3, AT-SPI, X11/Xvfb, D-Bus, Java ATK wrapper, and native build RPMs with `dnf`.
 4. Creates or repairs `.venv` with system site packages enabled.
-5. Installs the current packaging toolchain and Python 3.12 dependencies.
-6. Requires Pillow-backed framebuffer capture. It first uses the RHEL `python3-pillow` package when compatible, then falls back to the pinned Python 3.12-compatible Pillow release in the application virtual environment.
+5. Installs the current packaging toolchain, Pillow, and Python-3.12-compatible Pycairo/PyGObject bindings in the application virtual environment. It copies the distribution-provided pure-Python `pyatspi` sources into that environment after installing its `gi` dependency.
+6. Requires Pillow-backed framebuffer capture. It uses an already importable Pillow installation when available; otherwise it installs the pinned Python 3.12-compatible release with pip in the application virtual environment. It does not attempt to install the RHEL `python3-pillow` RPM, which may target a different Python ABI.
 7. Installs Automation Harness from the source tree in development mode.
 8. Builds the native JavaFX bridge agent when `javac` and `jar` are available.
 9. Locates the Java ATK wrapper without assuming one exact RPM layout.
@@ -40,9 +40,11 @@ The generated environment file also exports `AUTOMATION_HARNESS_JAVA_ATK_WRAPPER
 
 ## RHEL privilege and repository requirements
 
-Native RPM installation requires root privileges. The bootstrap uses the current process when already running as root; otherwise it uses `sudo`.
+Native RPM installation requires root privileges. The bootstrap uses the current process when already running as root; otherwise it uses `sudo`. Missing required native RPMs are installed in **one DNF transaction**, without individual repository-availability queries. Optional Xvfb and Java ATK wrapper RPMs are installed only when visible in locally cached DNF metadata; if necessary, install these separately on deployments where they are not cached. The transaction-wide timeout defaults to 180 seconds (`AUTOMATION_HARNESS_DNF_TIMEOUT`) and each DNF network operation uses a 30-second timeout (`AUTOMATION_HARNESS_DNF_NETWORK_TIMEOUT`).
 
-The RHEL host must have access to whatever organizational or Red Hat repositories are required to retrieve the RPMs. The bootstrap cannot bypass repository, subscription, proxy, or network policy. If `python3-pillow` is unavailable from those repositories, the virtual environment must be able to obtain the configured Pillow release through pip.
+The RHEL host must have access to whatever organizational or Red Hat repositories are required to retrieve the RPMs. The bootstrap cannot bypass repository, subscription, proxy, or network policy. Compiling Python 3.12 GTK bindings requires matching CPython development headers (`Python.h`, typically from `python3.12-devel` when using RHEL's packaged interpreter) and the native development RPMs `cairo-devel`, `cairo-gobject-devel`, `gobject-introspection-devel`, `glib2-devel`, and `libffi-devel`. The bootstrap checks for Python headers in the configured interpreter's include path and verifies `pkg-config` modules `cairo`, `cairo-gobject`, `gobject-introspection-1.0`, `glib-2.0`, and `libffi` before native compilation. It reports missing capabilities with actionable diagnostics.
+
+If the packages are not visible, verify that your approved RHEL repositories are enabled; CodeReady Builder may be required in some environments. The script does not change subscription-manager repository configuration. If `python3-pillow` is unavailable from those repositories, the virtual environment must be able to obtain the configured Pillow release through pip.
 
 ## Python isolation
 
@@ -140,9 +142,12 @@ branch's qualification.
 
 ## AT-SPI and PyGObject
 
-The virtual environment is created with `--system-site-packages` so the Python
-3.12 interpreter can use ABI-compatible PyGObject, Cairo, and pyatspi
-installations. The resulting environment must pass:
+The virtual environment is created with `--system-site-packages` for access to
+the system GTK/AT-SPI typelibs. It builds the Python 3.12 Pycairo and
+PyGObject bindings in the virtual environment instead of attempting to import
+the distribution's bindings built for a different Python ABI. The bootstrap
+copies the pure-Python `pyatspi` package from `python3-pyatspi` into the same
+environment. The resulting environment must pass:
 
 ```bash
 automation-run selftest --require-atspi
@@ -209,8 +214,8 @@ The initial target remains:
 - X11/Xvfb
 - D-Bus
 - AT-SPI2
-- PyGObject/PyCairo compatible with the application Python
-- `pyatspi` importable by that same Python runtime
+- PyGObject 3.44.2 and Pycairo 1.26.1 built for the application Python
+- `pyatspi` copied from `python3-pyatspi` and importable by that same Python runtime
 - Pillow with working `ImageGrab` framebuffer capture
 - Java ATK wrapper for Swing/JavaFX accessibility
 

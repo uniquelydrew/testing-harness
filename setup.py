@@ -8,7 +8,9 @@ setup(
     long_description_content_type="text/markdown",
     python_requires=">=3.12,<3.13",
     packages=find_packages(include=("automation_harness", "automation_harness.*")),
-    include_package_data=True,
+    # Package data is declared explicitly below.  Do not let setuptools infer
+    # namespace-like example/resource directories from the source tree.
+    include_package_data=False,
     package_data={
         "automation_harness": [
             "resources/**/*.yaml",
@@ -27,8 +29,8 @@ setup(
         "vision": ["Pillow>=10.4,<11.0"],
         "test": [
             "Pillow>=10.4,<11.0",
-            "PyGObject>=3.48,<4.0; platform_system == 'Linux'",
-            "pycairo>=1.26,<2.0; platform_system == 'Linux'",
+            "PyGObject==3.44.2; platform_system == 'Linux'",
+            "pycairo==1.26.1; platform_system == 'Linux'",
             "pytest>=8.0,<9.0",
         ],
     },
