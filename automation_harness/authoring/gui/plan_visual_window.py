@@ -20,6 +20,7 @@ from automation_harness.core.test_plan import validate_plan_components
 from automation_harness.core.component_repository import ComponentRepository
 from automation_harness.models.plan import StepCall
 from automation_harness.models.gui import GuiAction
+from automation_harness.extensions.runtime import load_registry_from_environment
 
 
 class VisualTestPlanWindow(RecordingTestPlanWindow):
@@ -32,6 +33,10 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
         action changes. GTK's changed callbacks must rebuild parameter fields
         without destroying widgets later reused by the Assert Match option.
         """
+        try:
+            extension_registry = load_registry_from_environment()
+        except (OSError, ValueError, KeyError) as exc:
+            return self.error("Extension Configuration", "%s: %s" % (type(exc).__name__, exc))
         self.refresh_objects()
         if not self.repository.components:
             return self.info(
@@ -157,7 +162,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                 return
             if selected_action == "assert_match":
                 return
-            action = action_by_id(definition, selected_action)
+            action = action_by_id(definition, selected_action, registry=extension_registry)
             if not action.inputs:
                 caption = Gtk.Label(label="No parameters required for this action.")
                 caption.set_xalign(0)
@@ -183,7 +188,12 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
             if definition is None:
                 rebuild_inputs()
                 return
-            definitions = actions_for(definition)
+            try:
+                definitions = actions_for(definition, registry=extension_registry)
+            except (ValueError, KeyError) as exc:
+                self.error("Extension Configuration", "%s: %s" % (type(exc).__name__, exc))
+                rebuild_inputs()
+                return
             for action in definitions:
                 action_combo.append(action.action_id, "%s — %s" % (action.name, action.category))
             action_combo.append("assert_match", "Assert Match — Assertion")
@@ -254,7 +264,7 @@ class VisualTestPlanWindow(RecordingTestPlanWindow):
                     )
                     description = "Assert Match"
                 else:
-                    action = action_by_id(component, selected_action)
+                    action = action_by_id(component, selected_action, registry=extension_registry)
                     values = {}
                     for name, (item, entry) in input_entries.items():
                         present, value = read_action_input(item, entry)

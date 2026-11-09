@@ -1,13 +1,37 @@
 {
   "id": "org.automation-harness.msct.messaging_status",
-  "extends": "context_menu",
+  "extends": "panel",
   "display_name": "Messaging Status",
-  "capabilities": ["inspect", "read_fields", "assert_fields"],
-  "interaction": {"reveal": "owner_trigger", "selection": false},
-  "observation": {"behavior": "org.automation-harness.msct.label_value_reader", "fresh_runtime_required": true},
+  "capabilities": [
+    "inspect",
+    "read_fields",
+    "assert_fields"
+  ],
+  "interaction": {
+    "reveal": "owner_trigger",
+    "selection": false
+  },
+  "observation": {
+    "behavior": "org.automation-harness.msct.label_value_reader",
+    "fresh_runtime_required": true
+  },
   "fields": [
-    {"id": "packets_received", "label": "Packets Received:", "type": "integer"},
-    {"id": "errors_detected", "label": "Errors Detected:", "type": "integer"},
-    {"id": "packet_receive_rate", "label": "Packet Receive Rate:", "type": "decimal", "unit": "pkt/s"}
-  ]
+    {
+      "id": "packets_received",
+      "label": "Packets Received:",
+      "type": "integer"
+    },
+    {
+      "id": "errors_detected",
+      "label": "Errors Detected:",
+      "type": "integer"
+    },
+    {
+      "id": "packet_receive_rate",
+      "label": "Packet Receive Rate:",
+      "type": "decimal",
+      "unit": "pkt/s"
+    }
+  ],
+  "framework": "swing"
 }

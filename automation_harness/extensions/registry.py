@@ -126,5 +126,16 @@ class ExtensionRegistry:
         return package.read_bytes(path)
 
     @property
+    def component_ids(self) -> tuple[str, ...]:
+        """Namespaced, deterministic IDs of registered component profiles."""
+        return tuple(sorted(self._components))
+
+    def package_for_component(self, component_id: str) -> ExtensionPackage:
+        """Return the owning versioned archive for a validated profile."""
+        self.dependency_order()
+        extension_id, _path = self._components[component_id]
+        return self._packages[extension_id]
+
+    @property
     def packages(self) -> tuple[ExtensionPackage, ...]:
         return tuple(self._packages[key] for key in sorted(self._packages))

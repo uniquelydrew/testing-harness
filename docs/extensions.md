@@ -111,3 +111,59 @@ In particular, MSCT's menu-shaped status popup is **read-only data**, not a
 menu-item selector. The monitor profile is a declaration for a future
 label-to-value observer, not an implemented extraction engine. Assertions must
 read fresh runtime snapshots, never historical capture metadata.
+
+## Opt-in runtime authoring integration (phase 2)
+
+Component specializations are **never inferred from native class names or
+installed archives**. Set `AUTOMATION_HARNESS_EXTENSIONS` to an OS-path-separated
+list of `.ahext` archives before launching the GTK authoring application:
+
+```bash
+export AUTOMATION_HARNESS_EXTENSIONS="/opt/harness/extensions/solipsys.ahext:/opt/harness/extensions/msct.ahext"
+automation-author
+```
+
+The loader validates each package and its transitive dependencies and fails
+closed for absent/incompatible versions. There is no plugin-code import, native
+adapter installation, arbitrary Python execution, global registry mutation, or
+ambient directory scanning.
+
+When using the **Object Repository Workbench**, a compatible persisted object
+can explicitly select an **Extension Profile** and click **Apply Profile**.
+The binding resides in the existing component's `properties` mapping:
+
+```yaml
+properties:
+  automation_harness.extension:
+    component_id: org.automation-harness.msct.messaging_status
+    version: 0.1.0
+```
+
+This operation preserves `object_id`, `component_id`, `object_type`, authored
+strategies and locator conditions. It only increments revision; saving the
+repository remains an explicit user action. Removing a binding leaves the
+original component definition intact.
+
+The canonical component catalog can resolve `component_spec(extension_id,
+registry=registry)` without modifying its built-in types. The Test Plan action
+picker narrows actions according to the profile, so a menu-shaped read-only
+status monitor does **not** incorrectly offer Click or Select Menu Option.
+Installed but unbound profiles have no effect on standard objects.
+
+Field declarations are available through `component_options(definition,
+registry)`. They are definitions rather than observed values. Optional
+`observation.execution_state: runtime_component_property` and each field's
+`property_key` can narrow existing `Read Property`, `Assert State`, and `Wait
+for State` authoring inputs to enum choices **only when the values are already
+obtainable through the generic live `component.property` interface**. The
+MSCT example intentionally does *not* declare this execution state because
+its Swing popup label-to-value reader is not yet implemented. A declared
+`read_fields`/`assert_fields` capability is therefore not advertised as an
+executable action.
+
+Execution-time enforcement of extension capability restrictions, live popup
+field reading/assertions, project-level package pinning, user-controlled trust
+for bundled Python/JAR adapters, visual matching against package assets, and
+migration of legacy Solipsys adapter logic are separate subsequent milestones.
+The existing Solipsys adapter remains in core until equivalent extension-driven
+runtime behavior is qualified.

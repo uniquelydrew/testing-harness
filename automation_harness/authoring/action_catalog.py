@@ -6,11 +6,12 @@ selected repository object and are converted into executable plan calls.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from automation_harness.models.component import ComponentDefinition
 from automation_harness.core.component_catalog import canonical_action_types
+from automation_harness.extensions.runtime import resolve_extension
 from automation_harness.models.gui import ActionType, ObjectType
 from automation_harness.models.plan import StepCall
 from automation_harness.authoring.step_naming import default_step_name
@@ -129,16 +130,46 @@ OBSERVATIONS = (
 )
 
 
-def actions_for(definition: ComponentDefinition) -> tuple[ActionDefinition, ...]:
-    """Return canonical user-facing actions applicable to one repository object."""
-    allowed = canonical_action_types(definition.object_type)
+def actions_for(
+    definition: ComponentDefinition, *, registry=None,
+) -> tuple[ActionDefinition, ...]:
+    """Return actions supported by the canonical type and pinned profile.
+
+    Extensions only narrow existing executable actions; they cannot invent an
+    action executor by declaring a capability in a JSON descriptor.
+    """
+    profile = resolve_extension(definition, registry)
+    allowed = canonical_action_types(
+        profile["id"], registry=registry,
+    ) if profile is not None else canonical_action_types(definition.object_type)
     available = definition.semantic_actions
     interactions = [
         INTERACTIONS[action]
         for action in sorted(allowed & available, key=lambda item: item.value)
         if action in INTERACTIONS
     ]
-    return tuple(interactions) + OBSERVATIONS
+    observations = OBSERVATIONS
+    if profile is not None:
+        observation = profile.get("observation", {})
+        if observation.get("execution_state") == "runtime_component_property":
+            property_keys = tuple(
+                item["property_key"] for item in profile.get("fields", ())
+                if isinstance(item, Mapping)
+                and isinstance(item.get("property_key"), str)
+                and item["property_key"]
+            )
+            if property_keys:
+                observations = tuple(
+                    replace(action, inputs=tuple(
+                        replace(field, value_type="enum", choices=property_keys)
+                        if field.name in {"property_name", "state_name"}
+                        else field
+                        for field in action.inputs
+                    )) if action.action_id in {"read_property", "assert_state", "wait_for_state"}
+                    else action
+                    for action in OBSERVATIONS
+                )
+    return tuple(interactions) + observations
 
 
 def tab_inventory_selector_options(definition: ComponentDefinition) -> tuple[tuple[dict[str, Any], str], ...]:
@@ -185,8 +216,10 @@ def tab_inventory_selector_options(definition: ComponentDefinition) -> tuple[tup
     )
 
 
-def action_by_id(definition: ComponentDefinition, action_id: str) -> ActionDefinition:
-    for action in actions_for(definition):
+def action_by_id(
+    definition: ComponentDefinition, action_id: str, *, registry=None,
+) -> ActionDefinition:
+    for action in actions_for(definition, registry=registry):
         if action.action_id == action_id:
             return action
     raise ValueError("action %r is not available for object %r" % (action_id, definition.component_id))
