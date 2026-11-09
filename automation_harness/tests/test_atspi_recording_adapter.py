@@ -46,6 +46,11 @@ class _Driver:
         self.source_snapshots.append(source)
         return self.source_target
 
+    def capture_text_event_source_snapshot(self, source):
+        # Text capture must not invoke the pointer-resolution path.
+        self.sources.append(("text_source", source))
+        return self.source_target
+
 
 def _target():
     return CapturedComponent(
@@ -1005,3 +1010,52 @@ def test_partial_listener_unregister_only_retries_remaining_listeners():
     adapter.stop()
     assert registry.removed == ["first", "second"]
     assert lease.closed
+
+def test_text_callback_never_enters_pointer_or_desktop_resolution():
+    target = replace(
+        _target(), role="text field", actions=("set_text",),
+        state=ComponentState(True, editable=True),
+    )
+    driver = _Driver(target)
+    adapter = AtspiRecordingAdapter(driver, acknowledgement_seconds=0)
+    adapter._pointer_worker.start()
+    results = []
+    adapter._emit = results.append
+    with adapter._callback_condition:
+        adapter._callbacks_accepting = True
+    source = object()
+    adapter._text(SimpleNamespace(type="object:text-changed:insert", any_data="abc", source=source))
+    adapter._pointer_worker.stop_and_drain()
+    assert driver.sources == [("text_source", source)]
+    assert driver.point_snapshots == []
+    assert [type(item).__name__ for item in results] == ["TextChanged"]
+
+
+def test_timed_out_callback_retains_registry_lease(monkeypatch):
+    # Trigger the timeout deterministically, without a five-second wait.
+    import automation_harness.recording.adapters.atspi as module
+    adapter = AtspiRecordingAdapter(_Driver(_target()), acknowledgement_seconds=0)
+    closed = []
+    adapter._lease = SimpleNamespace(close=lambda: closed.append(True))
+    adapter._pyatspi = SimpleNamespace(Registry=SimpleNamespace(
+        deregisterEventListener=lambda callback, event_type: None))
+    adapter._active_callbacks = 1
+    adapter._listeners = []
+    adapter._pointer_worker.start()
+    with adapter._callback_condition:
+        adapter._active_callback_details[1] = {"kind": "text", "phase": "snapshot_source"}
+    ticks = iter((100, 101, 102, 103, 104, 106, 108, 110, 112))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks, 114))
+    try:
+        adapter.stop()
+        assert False, "the adapter must report the undrained callback"
+    except RuntimeError as exc:
+        assert "callback drain timed out" in str(exc)
+    assert closed == []
+    assert adapter._lease is not None
+    assert adapter._active_callbacks == 1
+    try:
+        adapter.start(lambda item: None)
+        assert False, "cannot reuse lease while callback remains active"
+    except RuntimeError as exc:
+        assert "not safely drained" in str(exc)
