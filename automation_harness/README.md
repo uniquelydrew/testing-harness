@@ -13,6 +13,10 @@ capture, AT-SPI and native JavaFX recording, the Object Identity Workbench,
 optional property-level regular expressions, inline plan dependencies,
 script-backed steps, declarative TestPlans, and managed execution.
 
+The first-stage, data-only `.ahext` extension packaging format is documented in
+[`docs/extensions.md`](../docs/extensions.md). Use `automation-extension` to
+build, verify, and inspect packages. Runtime adapter loading is not enabled.
+
 `live-desktop` is the normal execution backend. It operates on the current
 desktop session and does not own or select an application; object definitions
 carry their own application/window lineage. The synthetic `reference` and

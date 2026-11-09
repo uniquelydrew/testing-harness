@@ -1,0 +1,14 @@
+{
+  "format": "automation-harness-extension",
+  "format_version": 1,
+  "extension": {"id": "org.automation-harness.msct", "name": "MSCT Components", "version": "0.1.0"},
+  "requires": {"harness": ">=0.5.2,<0.6.0"},
+  "dependencies": [{"id": "org.automation-harness.solipsys", "version": ">=0.1.0,<1.0.0"}],
+  "resources": {
+    "components": ["components/messaging_status.json", "components/process_status.json"],
+    "behaviors": ["behaviors/label_value_reader.json"],
+    "assets": [],
+    "schemas": []
+  },
+  "adapters": []
+}

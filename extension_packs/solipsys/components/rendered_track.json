@@ -1,0 +1,13 @@
+{
+  "id": "org.automation-harness.solipsys.rendered_track",
+  "extends": "custom",
+  "display_name": "Rendered Track",
+  "framework": "solipsys_rendered",
+  "capabilities": ["inspect", "resolve"],
+  "identity": {
+    "required_semantic_keys": ["rendered_class", "track_class", "track_identity_key", "track_identity_value"],
+    "runtime_only_keys": ["position", "bounds", "rendered_object_ref", "track_runtime_ref", "surface_ref"],
+    "require_unique_visible_identity": true
+  },
+  "adapter": "legacy.solipsys_rendered"
+}
