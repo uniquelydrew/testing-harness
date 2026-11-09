@@ -9,7 +9,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
-from automation_harness.authoring.plan_open import inspect_plan_open, PlanOpenState
+from automation_harness.authoring.plan_open import (\n    inspect_plan_open, PlanOpenState, qualify_migration_repository_selection,\n)
 from automation_harness.authoring.diagnostic_events import emit, artifact_fingerprint
 from automation_harness.authoring.gui.action_widgets import (
     create_action_input_widget,
@@ -126,11 +126,23 @@ class TestPlanAuthoringWindow(TestPlanWindow):
         if not selected.is_file():
             return self.error("Migrate Embedded Objects", "The destination repository does not exist.")
         current_path = assigned_repository_path(self.plan, self.path)
-        if current_path is not None and current_path.resolve() != selected:
-            return self.error("Migrate Embedded Objects",
-                "This plan already owns an external repository (%s). Reconcile the existing "
-                "repositories first; embedded-only migration cannot safely replace that assignment."
-                % current_path)
+        try:
+            recovering_missing = qualify_migration_repository_selection(
+                self.plan, self.path, selected,
+            )
+        except ValueError as exc:
+            return self.error("Migrate Embedded Objects", str(exc))
+        if recovering_missing:
+            # A missing repository is not a license to arbitrarily reassign
+            # object identity. Require explicit recovery consent before the
+            # existing conflict-review and atomic publication gates.
+            if not self.confirm("Recover Missing Repository Assignment",
+                    "The plan's previous repository is missing:\\n%s\\n\\n"
+                    "Use %s as a replacement only through reviewed migration? "
+                    "Cancellation leaves all files and assignments unchanged."
+                    % (current_path, selected)):
+                emit("migration_cancelled", state="missing_repository_recovery")
+                return
         try:
             if repository_fingerprint(self.path) != self._loaded_plan_fingerprint:
                 raise ValueError("the plan changed on disk; reopen it before migration")
@@ -175,6 +187,9 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                    len(proposal.added_ids), len(proposal.reused_ids))):
             return
         try:
+            # Fail closed if the previous missing repository appeared while
+            # the operator was reviewing collision decisions.
+            qualify_migration_repository_selection(self.plan, self.path, selected)
             baselines = {
                 selected: repository_baseline,
                 self.path: self._loaded_plan_fingerprint,

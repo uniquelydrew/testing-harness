@@ -60,3 +60,63 @@ def test_authoring_window_gates_unmigrated_legacy_without_composing_repository()
     assert "if self._defer_repository_composition:" in body
     assert "if self._legacy_pending:" in authoring
     assert "self._defer_repository_composition = False" in authoring
+
+
+def test_missing_association_can_be_recovered_only_through_reviewed_migration(tmp_path):
+    from automation_harness.authoring.plan_open import qualify_migration_repository_selection
+    from automation_harness.authoring.plan_repository import assign_repositories
+    from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
+    from automation_harness.core.component_repository import ComponentRepository
+    path = tmp_path / "legacy.ahplan"
+    old = tmp_path / "missing.ahobjects"
+    new = tmp_path / "verified.ahobjects"
+    ComponentRepository({}).save(new)
+    plan = TestPlan(name="legacy", objects={"Main": _embedded("Main")})
+    plan = assign_repositories(
+        plan, path, (RepositoryAssociation(old, RepositoryScope.LOCAL),),
+    )
+    save_plan(plan, path)
+    before = path.read_bytes()
+    assert qualify_migration_repository_selection(plan, path, new) is True
+    assert path.read_bytes() == before
+    # The original assignment is still present; this step authorizes only
+    # proceeding into the explicit review/confirmation and atomic publisher.
+    from automation_harness.authoring.plan_repository import assigned_repository_path
+    assert assigned_repository_path(plan, path).resolve() == old.resolve()
+
+
+def test_existing_repository_cannot_be_swapped_by_embedded_migration(tmp_path):
+    import pytest
+    from automation_harness.authoring.plan_open import qualify_migration_repository_selection
+    from automation_harness.authoring.plan_repository import assign_repositories
+    from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
+    from automation_harness.core.component_repository import ComponentRepository
+    path = tmp_path / "legacy.ahplan"
+    old = tmp_path / "old.ahobjects"
+    new = tmp_path / "new.ahobjects"
+    ComponentRepository({}).save(old)
+    ComponentRepository({}).save(new)
+    plan = assign_repositories(TestPlan(name="legacy", objects={"Main": _embedded("Main")}),
+        path, (RepositoryAssociation(old, RepositoryScope.LOCAL),))
+    with pytest.raises(ValueError, match="already owns an existing"):
+        qualify_migration_repository_selection(plan, path, new)
+    assert qualify_migration_repository_selection(plan, path, old) is False
+
+
+def test_migration_recovery_rechecks_previously_missing_repository(tmp_path):
+    import pytest
+    from automation_harness.authoring.plan_open import qualify_migration_repository_selection
+    from automation_harness.authoring.plan_repository import assign_repositories
+    from automation_harness.core.repository_scope import RepositoryAssociation, RepositoryScope
+    from automation_harness.core.component_repository import ComponentRepository
+    path = tmp_path / "legacy.ahplan"
+    old = tmp_path / "old.ahobjects"
+    new = tmp_path / "new.ahobjects"
+    ComponentRepository({}).save(new)
+    plan = assign_repositories(TestPlan(name="legacy", objects={"Main": _embedded("Main")}),
+        path, (RepositoryAssociation(old, RepositoryScope.LOCAL),))
+    assert qualify_migration_repository_selection(plan, path, new)
+    # During modal review, the previous repository is restored externally.
+    ComponentRepository({}).save(old)
+    with pytest.raises(ValueError, match="already owns an existing"):
+        qualify_migration_repository_selection(plan, path, new)
