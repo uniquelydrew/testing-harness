@@ -221,7 +221,7 @@ class ObjectIdentityWorkbench:
             if identity is None:
                 identity = (
                     strategy.options.get("identification")
-                    if strategy.type == "javafx"
+                    if strategy.type in {"javafx", "java_agent"}
                     else captured.candidate_identification().to_dict()
                 )
             if not isinstance(identity, Mapping):
@@ -565,7 +565,7 @@ class ObjectIdentityWorkbench:
                     strategy = captured.candidate_strategy()
                     identity = (
                         strategy.options.get("identification")
-                        if strategy.type == "javafx"
+                        if strategy.type in {"javafx", "java_agent"}
                         else captured.candidate_identification().to_dict()
                     )
                 component_id = self.names.get(key) or self._default_component_id(node)

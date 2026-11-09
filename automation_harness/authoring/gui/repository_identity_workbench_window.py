@@ -13,6 +13,7 @@ from gi.repository import GLib, Gtk
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
 from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
+from automation_harness.core.component_naming import default_payload_name
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
@@ -469,6 +470,25 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         common = self.context.common_peer_descriptors(node.key) if self.context else {}
         framework = str(getattr(captured, "framework", "") or "")
         self._build_property_inventory(node, identity, inherited, common, framework)
+        current_name = self.names.get(node.key, definition.component_id)
+        if current_name.casefold() in {"object", "component", "unknown", "unnamed"}:
+            suggested = default_payload_name(_capture_payload(captured, definition))
+            if suggested and suggested.casefold() != current_name.casefold():
+                suggestion = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                suggestion.pack_start(
+                    Gtk.Label(label="Native-class name suggestion: %s" % suggested),
+                    False, False, 0,
+                )
+                apply_button = Gtk.Button(label="Use Suggested Name")
+                apply_button.connect(
+                    "clicked", lambda _button: self.name_entry.set_text(suggested),
+                )
+                suggestion.pack_start(apply_button, False, False, 0)
+                self.properties_box.pack_start(suggestion, False, False, 0)
+        self._add_message(
+            "Stored repository definition, not live target inspection. "
+            "Recapture Selected to refresh accessibility and runtime evidence."
+        )
         self.properties_box.show_all()
 
     def _save_node(self, node, component_id, identity):
@@ -633,13 +653,14 @@ def _capture_from_definition(definition: ComponentDefinition) -> CapturedCompone
     framework = definition.framework or strategy.type
     if framework == "java_accessibility":
         framework = "java"
+    scope = dict(definition.scope or {})
     return CapturedComponent(
         name=str(value("name", "text", "accessible_text") or definition.component_id),
         role=str(value("role", "accessible_role") or definition.object_type.value),
         description=definition.description,
         accessible_id=str(value("accessible_id", "id")) if value("accessible_id", "id") is not None else None,
-        application=str(value("application")) if value("application") is not None else None,
-        window=str(value("window")) if value("window") is not None else None,
+        application=str(value("application") or scope.get("application")) if (value("application") or scope.get("application")) is not None else None,
+        window=str(value("window") or scope.get("window")) if (value("window") or scope.get("window")) is not None else None,
         hierarchy=tuple(definition.component_id.split(".")),
         actions=tuple(definition.actions),
         bounds=None,
@@ -660,14 +681,38 @@ def _capture_from_definition(definition: ComponentDefinition) -> CapturedCompone
 def _capture_payload(capture: CapturedComponent, definition: ComponentDefinition):
     strategy = _editable_strategy(definition)
     identity = strategy.options.get("identification", {}) if isinstance(strategy.options, Mapping) else {}
+    properties = dict(definition.properties or {})
+    scope = dict(definition.scope or {})
+    parts = identity if isinstance(identity, Mapping) else {}
+    mandatory = parts.get("mandatory", parts)
+    assistive = parts.get("assistive", {})
+    conditions = {
+        **(dict(assistive) if isinstance(assistive, Mapping) else {}),
+        **(dict(mandatory) if isinstance(mandatory, Mapping) else {}),
+    }
+    # This view is reconstructed from a persistent definition, not a fresh
+    # interrogation of the target process. Only show captured accessibility
+    # values if they were actually persisted as observations.
     return {
         "repository_component_id": definition.component_id,
         "repository_object_id": definition.object_id,
         "id": capture.accessible_id,
-        "accessible_role": capture.role,
-        "accessible_text": capture.name,
+        "name": conditions.get("name"),
+        "accessible_name": properties.get("accessible_name"),
+        "accessible_role": properties.get("accessible_role"),
+        "accessible_text": properties.get("accessible_text"),
+        "accessible_description": properties.get("accessible_description"),
+        "text": properties.get("text"),
+        "component_name": properties.get("component_name"),
+        "tooltip_text": properties.get("tooltip_text"),
+        "semantic_object_type": definition.object_type.value,
+        "framework": definition.framework or strategy.type,
         "class": definition.native_class,
-        "properties": dict(definition.properties),
+        "native_class": definition.native_class,
+        "component_path": conditions.get("component_path"),
+        "window": capture.window or scope.get("window"),
+        "capture_source": "stored_repository_definition",
+        "properties": properties,
         "identification": identity,
     }
 
@@ -683,7 +728,7 @@ def _editable_strategy(definition: ComponentDefinition) -> ComponentStrategy:
 
 def _editable_strategy_index(definition: ComponentDefinition):
     for index, strategy in enumerate(definition.strategies):
-        if strategy.type in {"javafx", "atspi", "java_accessibility"}:
+        if strategy.type in {"javafx", "java_agent", "atspi", "java_accessibility"}:
             return index
     return 0 if definition.strategies else None
 
