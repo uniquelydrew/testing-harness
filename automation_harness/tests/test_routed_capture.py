@@ -13,7 +13,7 @@ def _capture(*, framework="swing", pid=42, window="Main"):
     )
     return CapturedComponent(
         name="Run", role="button", description=None, accessible_id="run",
-        application="MSCT", window=window, hierarchy=(), actions=("click",),
+        application="SampleConsole", window=window, hierarchy=(), actions=("click",),
         bounds=(1, 2, 30, 20), state=ComponentState(present=True),
         backend_properties={"process_id": pid}, framework=framework,
         native_class=native_class,

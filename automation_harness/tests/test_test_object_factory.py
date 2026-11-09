@@ -16,7 +16,7 @@ def _observation(**changes):
         "name": "Run",
         "description": None,
         "accessible_id": "runButton",
-        "application": "MSCT",
+        "application": "SampleConsole",
         "properties": {},
         "state": ComponentState(present=True, visible=True, enabled=True),
         "bounds": (1, 2, 30, 20),
@@ -37,13 +37,13 @@ def test_factory_creates_backend_neutral_object_with_diagnostic_evidence():
     assert definition.strategies[0].options["identification"] == {
         "mandatory": {"accessible_id": "runButton", "semantic_role": "button"},
         "assistive": {
-            "name": "Run", "window_id": "Main", "application": "MSCT",
+            "name": "Run", "window_id": "Main", "application": "SampleConsole",
             "physical_class": "javafx.scene.control.Button",
         },
     }
     assert definition.properties["capture_evidence"]["authoritative"] is True
     assert "process_id" not in definition.scope
-    assert definition.scope["application"] == "MSCT"
+    assert definition.scope["application"] == "SampleConsole"
 
 
 def test_factory_promotes_javafx_menu_button_to_logical_menu_owner():

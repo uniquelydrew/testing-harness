@@ -11,13 +11,13 @@ from automation_harness.models.component import (
 from automation_harness.models.gui import ObjectType
 
 
-def _capture(framework, ancestors, *, window="MVD"):
+def _capture(framework, ancestors, *, window="SampleDisplay"):
     return CapturedComponent(
         name="Username",
         role="text field",
         description=None,
         accessible_id="username",
-        application="MVD",
+        application="SampleDisplay",
         window=window,
         hierarchy=(),
         actions=("click", "focus", "set_text"),
@@ -39,17 +39,17 @@ def test_semantic_hierarchy_discards_structural_swing_panels():
         {
             "framework": "swing",
             "object_type": "window",
-            "name": "MSCT",
+            "name": "SampleConsole",
             "native_class": "javax.swing.JFrame",
             "component_path": "JFrame[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
         {
             "framework": "swing",
             "object_type": "panel",
             "native_class": "javax.swing.JPanel",
             "component_path": "JFrame[0]/JPanel[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
         {
             "framework": "swing",
@@ -58,9 +58,9 @@ def test_semantic_hierarchy_discards_structural_swing_panels():
             "accessible_id": "mainTabs",
             "native_class": "javax.swing.JTabbedPane",
             "component_path": "JFrame[0]/JPanel[0]/JTabbedPane[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
-    ], window="MSCT")
+    ], window="SampleConsole")
 
     descriptors = semantic_ancestor_descriptors(capture)
 
@@ -69,7 +69,7 @@ def test_semantic_hierarchy_discards_structural_swing_panels():
         "tab_container",
     ]
     assert [item.get("name") for item in descriptors] == [
-        "MSCT",
+        "SampleConsole",
         "Main Tabs",
     ]
 
@@ -79,10 +79,10 @@ def test_materialized_semantic_ancestors_form_real_owner_chain():
         {
             "framework": "swing",
             "object_type": "window",
-            "name": "MSCT",
+            "name": "SampleConsole",
             "native_class": "javax.swing.JFrame",
             "component_path": "JFrame[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
         {
             "framework": "swing",
@@ -91,16 +91,16 @@ def test_materialized_semantic_ancestors_form_real_owner_chain():
             "accessible_id": "mainTabs",
             "native_class": "javax.swing.JTabbedPane",
             "component_path": "JFrame[0]/JTabbedPane[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
-    ], window="MSCT")
+    ], window="SampleConsole")
 
     repository, owner_id, created = materialize_semantic_ancestors(
         ComponentRepository({}), capture,
     )
 
-    assert created == ("MSCT Window", "Main Tabs")
-    window = repository.get("MSCT Window")
+    assert created == ("SampleConsole Window", "Main Tabs")
+    window = repository.get("SampleConsole Window")
     tabs = repository.get("Main Tabs")
     assert tabs.owner_object_id == window.object_id
     assert owner_id == tabs.object_id
@@ -113,10 +113,10 @@ def test_repeated_materialization_reuses_same_semantic_ancestors():
         {
             "framework": "swing",
             "object_type": "window",
-            "name": "MSCT",
+            "name": "SampleConsole",
             "native_class": "javax.swing.JFrame",
             "component_path": "JFrame[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
         {
             "framework": "swing",
@@ -125,9 +125,9 @@ def test_repeated_materialization_reuses_same_semantic_ancestors():
             "accessible_id": "mainTabs",
             "native_class": "javax.swing.JTabbedPane",
             "component_path": "JFrame[0]/JTabbedPane[0]",
-            "window": "MSCT",
+            "window": "SampleConsole",
         },
-    ], window="MSCT")
+    ], window="SampleConsole")
 
     repository, owner_id, _created = materialize_semantic_ancestors(
         ComponentRepository({}), capture,
@@ -147,8 +147,8 @@ def test_javafx_outer_scene_root_becomes_resolvable_window_proxy():
         role="TEXT_FIELD",
         description=None,
         accessible_id="username",
-        application="MVD",
-        window="MVD",
+        application="SampleDisplay",
+        window="SampleDisplay",
         hierarchy=(),
         actions=("click", "focus", "set_text"),
         bounds=(100, 200, 160, 24),
@@ -176,8 +176,8 @@ def test_javafx_outer_scene_root_becomes_resolvable_window_proxy():
         ComponentRepository({}), capture,
     )
 
-    assert created == ("MVD Window", "Main Tabs")
-    window = repository.get("MVD Window")
+    assert created == ("SampleDisplay Window", "Main Tabs")
+    window = repository.get("SampleDisplay Window")
     tabs = repository.get("Main Tabs")
     assert window.properties["window_proxy"] is True
     assert tabs.owner_object_id == window.object_id

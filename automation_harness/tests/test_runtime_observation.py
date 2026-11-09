@@ -5,7 +5,7 @@ from automation_harness.models.component import CapturedComponent, ComponentStat
 def test_capture_conversion_preserves_runtime_evidence_without_creating_identity():
     captured = CapturedComponent(
         name="File", role="menu", description="Application menu",
-        accessible_id="fileMenu", application="MSCT", window="Main",
+        accessible_id="fileMenu", application="SampleConsole", window="Main",
         hierarchy=("Main Window", "Menu Bar"), actions=("activate",),
         bounds=(10, 20, 40, 20),
         state=ComponentState(present=True, visible=True, enabled=True),
@@ -36,7 +36,7 @@ def test_capture_conversion_preserves_runtime_evidence_without_creating_identity
 def test_adapter_does_not_override_explicit_rendered_framework():
     captured = CapturedComponent(
         name="track", role="rendered_object", description=None,
-        accessible_id=None, application="MSCT", window="Scope",
+        accessible_id=None, application="SampleConsole", window="Scope",
         hierarchy=(), actions=("click",), bounds=(1, 2, 3, 4),
         state=ComponentState(present=True), framework="solipsys_rendered",
         native_class="com.solipsys.Track",
