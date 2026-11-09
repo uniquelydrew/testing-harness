@@ -243,7 +243,7 @@ def _runtime_only_solipsys_definition(
     """Retain a discovered live track without claiming durable resolution.
 
     Runtime correlation is useful for review, inspection, and de-duplication in
-    the current MSCT process.  The durable capture service continues to reject
+    the current target application process.  The durable capture service continues to reject
     this strategy if a user later attempts to promote it as executable identity.
     """
     properties = dict(capture.backend_properties or {})
@@ -253,13 +253,13 @@ def _runtime_only_solipsys_definition(
         "cross_session_resolution": False,
         "persistence_warning": (
             "Captured track has no validated durable identity; its runtime "
-            "reference is valid only for the current MSCT process."
+            "reference is valid only for the current target application process."
         ),
     })
     actions = frozenset(capture.actions or ("resolve", "click"))
     return ComponentDefinition(
         component_id=component_id,
-        description=capture.description or capture.name or "Captured MSCT track (runtime only)",
+        description=capture.description or capture.name or "Captured rendered object (runtime only)",
         strategies=(capture.candidate_strategy(),),
         actions=actions,
         object_type=capture.semantic_type(),

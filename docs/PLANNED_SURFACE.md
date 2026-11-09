@@ -16,7 +16,7 @@ These names originated in the preserved architecture skeleton but are intentiona
 - `drivers/hooks/estalt_driver.py`
 - `drivers/hooks/flightplan_driver.py`
 - `drivers/hooks/modes_driver.py`
-- `drivers/hooks/msct_hook_driver.py`
+- `drivers/hooks/rendered_canvas_hook_driver.py`
 - `drivers/hooks/session_manager_driver.py`
 - `drivers/hooks/tcc_driver.py`
 
@@ -24,7 +24,7 @@ These remain protected-environment work and are not to be fabricated in the publ
 
 ## Utilities and domain steps
 
-- `steps/msct_steps.py`
+- `steps/rendered_surface_steps.py`
 - `utils/dds_utils.py`
 - `utils/geometry.py`
 - `utils/video_utils.py`

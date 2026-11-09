@@ -41,17 +41,17 @@ are not required.
 
 ## Discovering and selecting plans
 
-Examples below use placeholder paths representing privately maintained ERSA
+Examples below use placeholder paths representing privately maintained application
 assets; those files do **not** ship in the public repository.
 
 ```bash
-automation-pytest --collect-only -q ./tests/ersa/plans
-automation-pytest -q ./tests/ersa/plans/T1789.ahplan
-automation-pytest -k T1789 --collect-only ./tests/ersa/plans
+automation-pytest --collect-only -q ./tests/sample-app/plans
+automation-pytest -q ./tests/sample-app/plans/SamplePlan001.ahplan
+automation-pytest -k SamplePlan001 --collect-only ./tests/sample-app/plans
 ```
 
-A file named `T1789.ahplan` appears as
-`T1789.ahplan::T1789`. The filename, not its editable human-readable plan
+A file named `SamplePlan001.ahplan` appears as
+`SamplePlan001.ahplan::SamplePlan001`. The filename, not its editable human-readable plan
 name, defines the collected item ID.
 
 pytest collection loads the plan to check the schema. Syntax/schema failures
@@ -66,9 +66,9 @@ declarative plans using `-m ahplan`, or filter by filename with `-k`.
 ## Running plans
 
 ```bash
-automation-pytest ./tests/ersa/plans \
+automation-pytest ./tests/sample-app/plans \
   --ah-backend=live-desktop \
-  --ah-project=./tests/ersa/project.ahproject \
+  --ah-project=./tests/sample-app/project.ahproject \
   --ah-runs-dir="$HOME/.local/state/automation-harness/pytest-runs" \
   --junitxml="$HOME/.local/state/automation-harness/pytest-junit.xml"
 ```
@@ -107,7 +107,7 @@ The usual pytest flags also apply, including `--collect-only`, `-k`,
 `--ah-var` names must be unique and must not contain dots. For example:
 
 ```bash
-automation-pytest ./tests/ersa/plans/T1789.ahplan \
+automation-pytest ./tests/sample-app/plans/SamplePlan001.ahplan \
   --ah-var='site=42' \
   --ah-var='camera="North"' \
   --ah-var='enabled=true'
@@ -122,10 +122,10 @@ lifecycle. For external GUI applications, use explicit setup and teardown
 commands around each collected plan when a guaranteed cleanup action is needed:
 
 ```bash
-automation-pytest ./tests/ersa/plans \
+automation-pytest ./tests/sample-app/plans \
   --ah-backend=live-desktop \
-  --ah-setup-command='bash extensions/applications/ersa/launch.sh' \
-  --ah-teardown-command='bash extensions/applications/ersa/stop.sh' \
+  --ah-setup-command='bash extensions/applications/sample-app/launch.sh' \
+  --ah-teardown-command='bash extensions/applications/sample-app/stop.sh' \
   --ah-lifecycle-timeout=90
 ```
 
@@ -206,7 +206,7 @@ artifact directories in your CI artifact collection.
 
 - **RHEL GUI not yet qualified:** Python 3.12 CI includes real
   headless reference-backend execution, but even a passing run does not qualify
-  X11/AT-SPI/JavaFX/ERSA live-desktop execution on RHEL 8.9.
+  X11/AT-SPI/JavaFX live-desktop execution on RHEL 8.9.
 - **No implicit fixture injection:** Declarative `.ahplan` items do not
   automatically receive Python pytest fixtures. Teardown is explicit via
   `--ah-teardown-command`.
@@ -239,9 +239,9 @@ labels. The workflow is intentionally **manual** so absent desktop runners
 do not leave ordinary pull requests waiting indefinitely.
 
 This manual test has been **added but not executed on a RHEL runner**;
-successful Python 3.12 headless CI is not proof of GUI or ERSA compatibility.
+successful Python 3.12 headless CI is not proof of GUI or protected application compatibility.
 The synthetic smoke exercises backend lifecycle and JUnit/artifact integration,
-not native ERSA component identity or action playback. ERSA test validation
+not protected application component identity or action playback. protected application test validation
 remains a separate internal environment qualification task.
 
 ### Adapter regression test command
