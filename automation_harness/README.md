@@ -133,6 +133,7 @@ automation-plan
 automation-javafx
 automation-java-target
 automation-codex-runtime
+automation-extension
 ```
 
 The optional `automation-pytest` command becomes usable after installing
