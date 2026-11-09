@@ -10,6 +10,7 @@ from gi.repository import Gdk, Gtk
 
 from automation_harness.authoring.action_catalog import actions_for
 from automation_harness.authoring.plan_open import inspect_plan_open, PlanOpenState
+from automation_harness.authoring.diagnostic_events import emit, artifact_fingerprint
 from automation_harness.authoring.gui.action_widgets import (
     create_action_input_widget,
     interaction_actions,
@@ -149,15 +150,20 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
         choices = review_embedded_repository(self.window, self.plan, canonical, migrate=True)
         if choices is None:
+            emit("migration_cancelled")
             return
         resolutions, renames, distinct = choices
         try:
+            emit("migration_prepare_started", plan_fingerprint=self._loaded_plan_fingerprint.__dict__
+                 if hasattr(self._loaded_plan_fingerprint, "__dict__") else artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             proposal = prepare_embedded_migration(
                 self.plan, self.path, canonical, selected,
                 resolutions=resolutions, renames=renames,
                 approved_distinct=distinct,
             )
         except Exception as exc:
+            emit("migration_prepare_failed", error_type=type(exc).__name__)
             return self.error("Migration Preview", "%s: %s" % (type(exc).__name__, exc))
         if not self.confirm("Publish Canonical Migration",
                 "Migrate %d embedded object(s) into %s?\\n"
@@ -175,11 +181,16 @@ class TestPlanAuthoringWindow(TestPlanWindow):
             }
             if self.project_context:
                 baselines[self.project_context] = project_baseline
+            emit("migration_publish_started", plan_fingerprint=artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             publish_embedded_migration(
                 proposal, repository_path=selected, plan_path=self.path,
                 expected_fingerprints=baselines,
                 project_path=self.project_context, project=projected_project,
             )
+            emit("migration_publish_completed", imported_count=len(proposal.added_ids),
+                 reused_count=len(proposal.reused_ids), plan_fingerprint=artifact_fingerprint(self.path),
+                 repository_fingerprint=artifact_fingerprint(selected))
             self.plan = proposal.plan
             self._legacy_pending = False
             self._defer_repository_composition = False
@@ -190,6 +201,7 @@ class TestPlanAuthoringWindow(TestPlanWindow):
                 self.project = projected_project
             self.repository = resolve_plan_resources(self.plan, self.path, project=self.project).repository
         except Exception as exc:
+            emit("migration_publish_failed", error_type=type(exc).__name__)
             return self.error("Migrate Embedded Objects", "%s: %s" % (type(exc).__name__, exc))
         self.mark_dirty(False)
         self.refresh_all()
