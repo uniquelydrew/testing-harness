@@ -152,9 +152,6 @@ class ExecutionResult:
 
 
 DEFAULT_ACTIONS: dict[ObjectType, frozenset[ActionType]] = {
-    ObjectType.WINDOW: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
-    ObjectType.DIALOG: frozenset({ActionType.FOCUS, ActionType.ACTIVATE, ActionType.CLOSE}),
-    ObjectType.TAB_CONTAINER: frozenset({ActionType.FOCUS, ActionType.SELECT_ITEM}),
     ObjectType.BUTTON: frozenset({ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.FOCUS, ActionType.SHOW_CONTEXT_MENU, ActionType.ACTIVATE}),
     ObjectType.TOGGLE_BUTTON: frozenset({ActionType.CLICK, ActionType.TOGGLE, ActionType.FOCUS}),
     ObjectType.CHECK_BOX: frozenset({ActionType.CLICK, ActionType.TOGGLE, ActionType.FOCUS}),
@@ -189,17 +186,28 @@ def default_actions(object_type: ObjectType) -> frozenset[ActionType]:
 
 
 def classify_accessibility(role: str | None, native_class: str | None = None) -> ObjectType:
-    value = " ".join(
-        f"{role or ''} {native_class or ''}".replace("_", " ").replace("-", " ").casefold().split()
-    )
+    value = f"{role or ''} {native_class or ''}".casefold()
     rules = (
+        # JavaFX and Swing frequently expose native class names without
+        # whitespace; classify exact control families before generic buttons,
+        # checkboxes and menus.
+        ("jcheckboxmenuitem", ObjectType.CHECK_MENU_ITEM),
+        ("jradiobuttonmenuitem", ObjectType.RADIO_MENU_ITEM),
         ("check menu item", ObjectType.CHECK_MENU_ITEM),
         ("radio menu item", ObjectType.RADIO_MENU_ITEM),
         ("page tab list", ObjectType.TAB_CONTAINER),
         ("tab list", ObjectType.TAB_CONTAINER),
         ("tabbedpane", ObjectType.TAB_CONTAINER),
+        ("jmenubar", ObjectType.MENU_BAR),
+        ("jmenuitem", ObjectType.MENU_ITEM),
+        ("menuitem", ObjectType.MENU_ITEM),
+        ("choicebox", ObjectType.COMBO_BOX),
+        ("choice box", ObjectType.COMBO_BOX),
+        ("jtextfield", ObjectType.TEXT_FIELD),
+        ("text field", ObjectType.TEXT_FIELD),
+        ("entry", ObjectType.TEXT_FIELD),
+        ("jtextarea", ObjectType.TEXT_AREA),
         ("tabpane", ObjectType.TAB_CONTAINER),
-        ("tab pane", ObjectType.TAB_CONTAINER),
         ("page tab", ObjectType.TAB),
         ("toolbar", ObjectType.TOOLBAR),
         ("tool bar", ObjectType.TOOLBAR),

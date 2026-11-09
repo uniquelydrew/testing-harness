@@ -93,3 +93,103 @@ def test_resolved_existence_is_independent_of_visibility():
     assert resolved.observed_state("exists") is True
     assert resolved.observed_state("visible") is False
     assert resolved.observed_state("focused") is None
+
+
+def test_native_identity_can_resolve_without_visual_geometry(monkeypatch):
+    from automation_harness.core.object_resolution import ObjectResolution, resolve_repository_object
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    captured = CapturedComponent(
+        name="Search", role="text field", description=None, accessible_id="search",
+        application="Demo", hierarchy=(), actions=("set_text",),
+        bounds=None, state=ComponentState(present=True), object_type=ObjectType.TEXT_FIELD,
+    )
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: captured)
+    definition = ComponentDefinition(
+        "Search", object_type=ObjectType.TEXT_FIELD,
+        strategies=(ComponentStrategy("atspi", {"identification": {"mandatory": {"accessible_id": "search"}}}),),
+    )
+    result = resolve_repository_object(None, ComponentRepository({"Search": definition}), definition)
+    assert result.exists
+    assert result.bounds is None
+    assert result.has_visual_bounds is False
+    from automation_harness.core.visual_projection import VisualProjectionError, project_visual_target
+    with pytest.raises(VisualProjectionError, match="no verified visual"):
+        project_visual_target(result, operation="highlight")
+
+
+def test_native_semantic_type_mismatch_is_rejected(monkeypatch):
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: CapturedComponent(
+        name="Label", role="label", description=None, accessible_id="label",
+        application="Demo", hierarchy=(), actions=(), bounds=(10, 20, 20, 10),
+        state=ComponentState(present=True),
+    ))
+    definition = ComponentDefinition("ExpectedButton", object_type=ObjectType.BUTTON,
+        strategies=(ComponentStrategy("atspi", {"identification": {"mandatory": {"accessible_id": "label"}}}),))
+    with pytest.raises(ObjectResolutionError, match="incompatible semantic type"):
+        resolve_repository_object(None, ComponentRepository({"ExpectedButton": definition}), definition)
+
+
+def test_verified_visual_projection_uses_resolved_bounds():
+    from automation_harness.core.object_resolution import ObjectResolution
+    from automation_harness.core.visual_projection import project_visual_target
+    result = ObjectResolution(definition=ComponentDefinition("Button"), bounds=(1, 2, 30, 40), strategy="atspi")
+    visual = project_visual_target(result, operation="highlight")
+    assert visual.bounds == (1, 2, 30, 40)
+    assert visual.semantic is result
+
+
+@pytest.mark.parametrize("framework,native_class,role,expected", [
+    ("javafx", "javafx.scene.control.MenuButton", "push button", "menu"),
+    ("javafx", "javafx.scene.control.Menu", "menu", "menu"),
+    ("javafx", "javafx.scene.control.ChoiceBox", "button", "combo_box"),
+    ("javafx", "javafx.scene.control.ComboBox", "combo box", "combo_box"),
+    ("swing", "javax.swing.JMenu", "menu", "menu"),
+    ("swing", "javax.swing.JMenuBar", "unknown", "menu_bar"),
+    ("swing", "javax.swing.JMenuItem", "unknown", "menu_item"),
+    ("swing", "javax.swing.JComboBox", "unknown", "combo_box"),
+    ("swing", "javax.swing.JToggleButton", "unknown", "toggle_button"),
+    ("atspi", "GtkEntry", "entry", "text_field"),
+    ("atspi", "GtkCheckMenuItem", "check menu item", "check_menu_item"),
+    ("atspi", "GtkTextView", "text area", "text_area"),
+])
+def test_framework_native_identity_resolves_to_expected_semantic_type(
+        monkeypatch, framework, native_class, role, expected):
+    from automation_harness.models.gui import ObjectType
+    import automation_harness.core.object_resolution as module
+    object_type = ObjectType(expected)
+    captured = CapturedComponent(
+        name="Target", role=role, description=None, accessible_id="target",
+        application="AUT", hierarchy=(), actions=("click",),
+        bounds=(1, 2, 30, 40), state=ComponentState(present=True),
+        native_class=native_class, framework=framework,
+    )
+    assert captured.semantic_type() == object_type
+    monkeypatch.setattr(module, "resolve_live_capture", lambda *args, **kwargs: captured)
+    definition = ComponentDefinition(
+        "Target", object_type=object_type,
+        strategies=(ComponentStrategy(framework if framework != "swing" else "java_agent",
+            {"identification": {"mandatory": {"accessible_id": "target"}}}),),
+    )
+    assert resolve_repository_object(None,
+        ComponentRepository({"Target": definition}), definition).exists
+
+
+@pytest.mark.parametrize("expected,actual,allowed", [
+    ("menu_item", "menu_item", True),
+    ("menu_item", "check_menu_item", True),
+    ("menu_item", "radio_menu_item", True),
+    ("check_menu_item", "menu_item", False),
+    ("menu", "menu_item", False),
+    ("button", "toggle_button", False),
+    ("combo_box", "menu", False),
+    ("text_field", "label", False),
+    ("text_field", "text_area", False),
+    ("window", "dialog", True),
+])
+def test_semantic_family_allowlist_remains_fail_closed(expected, actual, allowed):
+    from automation_harness.core.object_resolution import semantic_type_compatible
+    from automation_harness.models.gui import ObjectType
+    assert semantic_type_compatible(ObjectType(expected), ObjectType(actual)) is allowed
