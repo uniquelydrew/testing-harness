@@ -33,8 +33,8 @@ Add the agent before the existing Java arguments:
 java -javaagent:/path/to/automation-harness-javafx-agent.jar ...
 ```
 
-For target application launch scripts, use a command-scoped `JAVA_TOOL_OPTIONS` value so
-the agent is applied only to that JavaFX launcher:
+For target application launch scripts, use a command-scoped `JAVA_TOOL_OPTIONS`
+value so the agent is applied only to that JavaFX launcher:
 
 ```bash
 source .automation-harness-env
@@ -42,9 +42,9 @@ cd /path/to/approved/application
 JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATION_HARNESS_JAVAFX_AGENT" ./launch-primary.sh
 ```
 
-and, in another terminal if two target applications are required:
-
-The launch scripts below are placeholders; substitute approved application launchers.
+The launch scripts in these examples are placeholders; substitute approved
+application launchers. If two target applications are required, launch the
+second in another terminal:
 
 ```bash
 source /path/to/testing-harness/.automation-harness-env
@@ -54,7 +54,7 @@ JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$AUTOMATI
 
 Do **not** export this `JAVA_TOOL_OPTIONS` value globally before running
 combined application startup scripts. The current agent requires Java 11+ and must not
-be injected into the Java 8 Swing/MSCT process. Swing applications continue to use Java
+be injected into the Java 8 Swing process. Swing applications continue to use Java
 Accessibility + java-atk-wrapper/AT-SPI on Linux.
 
 ## Qualification
