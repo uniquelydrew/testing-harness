@@ -28,6 +28,11 @@ def semantic_type_compatible(expected, actual):
         return True
     if expected in (ObjectType.WINDOW, ObjectType.DIALOG):
         return actual in (ObjectType.WINDOW, ObjectType.DIALOG)
+    # A generic menu-item action applies to checked/radio menu items, but
+    # those specialized persisted types must still be matched exactly.
+    if expected is ObjectType.MENU_ITEM:
+        return actual in (ObjectType.MENU_ITEM, ObjectType.CHECK_MENU_ITEM,
+                          ObjectType.RADIO_MENU_ITEM)
     return expected is actual
 
 
