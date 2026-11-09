@@ -103,3 +103,60 @@ def test_non_javafx_extra_properties_are_diagnostic_until_backend_supports_them(
     policy = property_policy("focused", False, framework="atspi")
     assert policy.selectable is False
     assert policy.selected is False
+
+
+def test_native_java_locator_fields_remain_editable_but_are_not_automatically_added():
+    native_class = property_policy(
+        "native_class", "org.example.trackstate.UiTrackStateDBStatusIndicator",
+        candidate_section="mandatory", framework="swing",
+    )
+    path = property_policy(
+        "component_path", "javax.swing.JFrame[0]/javax.swing.JMenu[0]",
+        candidate_section="assistive", framework="swing",
+    )
+    window = property_policy(
+        "window", "Demo Display", framework="swing",
+    )
+    assert native_class.selected and native_class.selectable
+    assert path.selected and path.selectable and path.stability == "low"
+    assert not window.selected and window.selectable
+
+
+def test_native_java_observation_fields_are_read_only_diagnostics():
+    for key, value in (
+        ("accessible_name", "Object"),
+        ("accessible_description", "Status indicator"),
+        ("accessible_role", "menu"),
+        ("tooltip_text", "Track state"),
+        ("properties.semantic_ancestors", [{"name": "Menu Bar"}]),
+    ):
+        policy = property_policy(key, value, framework="swing")
+        assert not policy.selected and not policy.selectable
+        assert policy.stability == "diagnostic"
+
+
+def test_transient_process_id_is_never_an_authored_locator():
+    policy = property_policy(
+        "properties.process_id", 5908, framework="swing",
+    )
+    assert policy.stability == "session"
+    assert not policy.selectable
+
+
+def test_available_properties_carries_native_accessibility_evidence():
+    values = available_properties({
+        "name": "Object",
+        "native_class": "org.example.trackstate.UiTrackStateDBStatusIndicator",
+        "accessible_name": "Object",
+        "accessible_description": "Track state indicator",
+        "accessible_role": "menu",
+        "component_name": "trackStateIndicator",
+        "tooltip_text": "Track state",
+        "window": "Demo Display",
+        "capture_source": "stored_repository_definition",
+    })
+    assert values["native_class"].endswith("UiTrackStateDBStatusIndicator")
+    assert values["accessible_name"] == "Object"
+    assert values["accessible_description"] == "Track state indicator"
+    assert values["window"] == "Demo Display"
+    assert values["capture_source"] == "stored_repository_definition"

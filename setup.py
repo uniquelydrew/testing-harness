@@ -45,6 +45,7 @@ setup(
             "automation-javafx=automation_harness.javafx_cli:main",
             "automation-java-target=automation_harness.compat.java_target:main",
             "automation-codex-runtime=automation_harness.codex_runtime:main",
+            "automation-extension=automation_harness.extensions.__main__:main",
             "automation-pytest=automation_harness.compat.pytest_cli:main",
         ]
     },

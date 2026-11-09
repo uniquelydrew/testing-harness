@@ -134,3 +134,30 @@ def test_dedicated_javafx_agent_exposes_native_tab_recording_lifecycle():
     assert 'getMethod("removeListener", listener.listenerClass)' in source
     assert '"tab_selection"' in source
     assert 'MAX_TAB_RECORD_EVENTS' in source
+
+
+def test_swing_snapshot_emits_accessibility_provenance_on_both_agent_targets():
+    for implementation in ("java8/java", "main/java"):
+        source = (
+            ROOT / "java-agent" / "src" / implementation
+            / "automation" / "harness" / "agent" / "SwingRecorder.java"
+        ).read_text(encoding="utf-8")
+        for field in (
+            '"accessible_name"',
+            '"accessible_description"',
+            '"accessible_role"',
+            '"component_name"',
+            '"tooltip_text"',
+            '"capture_source"',
+            '"selected_index"',
+        ):
+            assert field in source
+
+
+def test_workbench_retains_java_agent_identification_when_authoring_native_capture():
+    source = (
+        ROOT / "automation_harness" / "authoring" / "object_identity_workbench.py"
+    ).read_text(encoding="utf-8")
+    # Selected and batch authoring must never silently replace the native
+    # Java locator with an AT-SPI candidate.
+    assert source.count('if strategy.type in {"javafx", "java_agent"}') == 2

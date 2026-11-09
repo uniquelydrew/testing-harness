@@ -1,0 +1,9 @@
+{
+  "format": "automation-harness-extension",
+  "format_version": 1,
+  "extension": {"id": "org.automation-harness.solipsys", "name": "Solipsys Rendered Components", "version": "0.1.0"},
+  "requires": {"harness": ">=0.5.2,<0.6.0"},
+  "dependencies": [],
+  "resources": {"components": ["components/rendered_track.json"], "behaviors": [], "assets": [], "schemas": []},
+  "adapters": []
+}

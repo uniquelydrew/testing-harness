@@ -1,0 +1,20 @@
+{
+  "id": "org.automation-harness.msct.status_indicator",
+  "extends": "menu",
+  "display_name": "MSCT Status Monitor Trigger",
+  "framework": "swing",
+  "capabilities": [
+    "inspect",
+    "reveal",
+    "read_fields"
+  ],
+  "interaction": {
+    "reveal": "owner_trigger",
+    "selection": false
+  },
+  "observation": {
+    "behavior": "org.automation-harness.msct.label_value_reader",
+    "fresh_runtime_required": true,
+    "execution_state": "declarative_only"
+  }
+}

@@ -891,6 +891,11 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
     actions = tuple(str(value) for value in node.get("actions", []) if value is not None)
     identity = _candidate_identification(node)
     strategy = ComponentStrategy("javafx", {"identification": identity})
+    raw_state = node.get("state")
+    native_state = raw_state if isinstance(raw_state, Mapping) else {}
+    selected_index = node.get("selected_index")
+    if selected_index is None:
+        selected_index = native_state.get("selected_index")
     state = ComponentState(
         present=True,
         visible=_optional_bool(node.get("visible")),
@@ -900,7 +905,7 @@ def _captured(endpoint: JavaFxBridgeEndpoint, node: Mapping[str, Any]) -> Captur
         properties={
             "managed": node.get("managed"),
             "focus_traversable": node.get("focus_traversable"),
-            **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {}),
+            **({"selected_index": selected_index} if selected_index is not None else {}),
         },
     )
     node_properties = dict(node.get("properties") or {}) if isinstance(node.get("properties"), Mapping) else {}
@@ -1191,6 +1196,15 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
         properties.update(node["backend_properties"])
     if isinstance(node.get("properties"), Mapping):
         properties.update(node["properties"])
+    # Preserve the agent's actual accessibility observations independently of
+    # the derived display name and the canonical locator. Do not synthesize
+    # missing accessible text from the repository's authored object name.
+    for key in (
+        "accessible_name", "accessible_description", "accessible_role",
+        "component_name", "tooltip_text", "text",
+    ):
+        if node.get(key) not in (None, ""):
+            properties[key] = node[key]
     framework = str(node.get("framework") or "javafx").casefold()
     if framework == "solipsys_rendered":
         mandatory = {}
@@ -1251,11 +1265,11 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
     parent = node.get("parent") if isinstance(node.get("parent"), Mapping) else {}
     return CapturedComponent(
         name=_optional_str(node.get("name") or node.get("accessible_text") or node.get("text") or node.get("id")), role=role,
-        description=_optional_str(node.get("description") or node.get("accessible_help")), accessible_id=_optional_str(node.get("accessible_id") or node.get("id")),
+        description=_optional_str(node.get("description") or node.get("accessible_description") or node.get("accessible_help")), accessible_id=_optional_str(node.get("accessible_id") or node.get("id")),
         application=_optional_str(node.get("application") or node.get("window")), window=_optional_str(node.get("window")),
         hierarchy=tuple(str(item) for item in node.get("hierarchy", ()) if item is not None),
         actions=tuple(str(item) for item in node.get("actions", ()) if item is not None), bounds=bounds,
-        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible", node.get("visible")), showing=state.get("showing", node.get("visible")), enabled=state.get("enabled", None if node.get("disabled") is None else not bool(node.get("disabled"))), focused=state.get("focused", node.get("focused")), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties={**(dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}), **({"selected_index": node["selected_index"]} if node.get("selected_index") is not None else {})}),
+        state=ComponentState(present=bool(state.get("present", True)), visible=state.get("visible", node.get("visible")), showing=state.get("showing", node.get("visible")), enabled=state.get("enabled", None if node.get("disabled") is None else not bool(node.get("disabled"))), focused=state.get("focused", node.get("focused")), selected=state.get("selected"), checked=state.get("checked"), editable=state.get("editable"), properties={**(dict(state.get("properties", {})) if isinstance(state.get("properties", {}), Mapping) else {}), **({"selected_index": node.get("selected_index", state.get("selected_index"))} if node.get("selected_index", state.get("selected_index")) is not None else {})}),
         backend_properties={
             **dict(properties),
             **({"javafx_id": node.get("id"), "accessible_role": node.get("accessible_role"), "text": node.get("text"), "style_classes": node.get("style_classes", []), "stable_ancestors": node.get("stable_ancestors", [])} if legacy_fx_node else {}),
@@ -1264,6 +1278,7 @@ def _captured_recording_node(node: Mapping[str, Any]) -> CapturedComponent:
             **({"ref": node["ref"], "node_ref": node["ref"]} if node.get("ref") else {}),
             **({"tabs": [dict(tab) for tab in node["tabs"] if isinstance(tab, Mapping)]}
                if isinstance(node.get("tabs"), (list, tuple)) else {}),
+            **({"capture_source": "native_java_agent"} if framework in {"swing", "awt", "java", "jogl"} else {}),
         },
         parent_name=_optional_str(parent.get("name")),
         parent_role=_optional_str(parent.get("role")),

@@ -11,6 +11,41 @@ from automation_harness.models.gui import ObjectType, classify_accessibility
 
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SPACE = re.compile(r"\s+")
+_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_GENERIC_NAMES = frozenset({"object", "component", "unknown", "unnamed", "n/a"})
+_GENERIC_NATIVE_PACKAGES = (
+    "java.", "javax.", "javafx.", "com.sun.javafx.", "com.jogamp.",
+)
+
+
+def _native_class_name(native_class: str | None) -> str | None:
+    """Best-effort display fallback, never a locator or inferred semantic role.
+
+    Application-specific class names frequently convey more useful intent than
+    an accessible name such as 'Object'. Framework classes do not.
+    """
+    full_name = str(native_class or "").strip()
+    if not full_name or full_name.startswith(_GENERIC_NATIVE_PACKAGES):
+        return None
+    simple = full_name.rsplit(".", 1)[-1].split("$", 1)[0]
+    if not simple or simple.startswith(("Anonymous", "lambda")):
+        return None
+    words = _ACRONYM_BOUNDARY.sub(" ", _CAMEL_BOUNDARY.sub(" ", simple)).split()
+    if not words:
+        return None
+
+    # A short implementation prefix can be removed only when the package
+    # corroborates the descriptive stem (e.g. trackstate/UiTrackState...).
+    package_parts = full_name.rsplit(".", 1)[0].casefold().split(".")
+    if (
+        len(words) >= 4 and 2 <= len(words[0]) <= 4
+        and len(words[1]) >= 3
+        and "".join(words[1:3]).casefold() in package_parts
+    ):
+        words = words[1:]
+    readable = _readable(" ".join(words))
+    return readable if any(len(word) > 2 for word in words) else None
+
 
 
 def default_component_name(capture: CapturedComponent) -> str:
@@ -18,7 +53,7 @@ def default_component_name(capture: CapturedComponent) -> str:
     type_name = _display_name_for_native(object_type, capture.native_class)
     text = _distinguishing_text(capture)
     if not text:
-        return type_name
+        return _native_class_name(capture.native_class) or type_name
     text = _readable(text)
     if not text:
         return type_name
@@ -58,7 +93,9 @@ def default_payload_name(payload: Mapping[str, object]) -> str:
     )
     text = _payload_distinguishing_text(payload, object_type)
     if not text:
-        return type_name
+        return _native_class_name(
+            str(payload.get("native_class") or payload.get("class") or "")
+        ) or type_name
     text = _readable(text)
     if not text:
         return type_name
@@ -100,7 +137,7 @@ def _distinguishing_text(capture: CapturedComponent):
             continue
         text = str(value).strip()
         folded = text.casefold()
-        if folded in {native.casefold(), native_simple, role, type_name}:
+        if folded in {native.casefold(), native_simple, role, type_name} | _GENERIC_NAMES:
             continue
         if "." in text and text.rsplit(".", 1)[-1].casefold() == native_simple:
             continue
@@ -127,7 +164,7 @@ def _payload_distinguishing_text(payload: Mapping[str, object], object_type: Obj
             continue
         text = str(value).strip()
         folded = text.casefold()
-        if folded in {native.casefold(), native_simple, role, type_name}:
+        if folded in {native.casefold(), native_simple, role, type_name} | _GENERIC_NAMES:
             continue
         if "." in text and text.rsplit(".", 1)[-1].casefold() == native_simple:
             continue

@@ -1,0 +1,9 @@
+{
+  "id": "org.automation-harness.msct.label_value_reader",
+  "kind": "structured_observation",
+  "strategy": "swing_accessibility",
+  "association": "label_value_pair",
+  "read_only": true,
+  "require_fresh_runtime_observation": true,
+  "execution_state": "declarative_only"
+}

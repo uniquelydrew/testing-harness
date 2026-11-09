@@ -163,3 +163,41 @@ def test_javafx_semantic_tab_selector_requires_identity_and_rejects_unscoped_ind
         driver.select_tab({"text": "Camera Status", "window": "other"})
     with pytest.raises(ValueError, match="nonnegative"):
         driver.select_tab({"text": "Camera Status", "index": -1})
+
+
+def test_native_java_accessibility_metadata_survives_bridge_without_becoming_identity():
+    node = {
+        "framework": "swing",
+        "native_class": "org.example.trackstate.UiTrackStateDBStatusIndicator",
+        "name": "Object",
+        "accessible_name": "Object",
+        "accessible_description": "Track state indicator",
+        "accessible_role": "menu",
+        "role": "menu",
+        "object_type": "menu",
+        "text": "Track state",
+        "component_name": "trackStateIndicator",
+        "tooltip_text": "Current track state",
+        "component_path": "javax.swing.JFrame[0]/org.example.trackstate.UiTrackStateDBStatusIndicator[0]",
+        "window": "Demo Display",
+        "state": {"present": True, "selected_index": 2, "editable": False},
+        "properties": {"process_id": 5908},
+    }
+
+    captured = _captured_recording_node(node)
+
+    assert captured.name == "Object"
+    assert captured.backend_properties["accessible_name"] == "Object"
+    assert captured.backend_properties["accessible_description"] == "Track state indicator"
+    assert captured.backend_properties["text"] == "Track state"
+    assert captured.backend_properties["component_name"] == "trackStateIndicator"
+    assert captured.backend_properties["capture_source"] == "native_java_agent"
+    assert captured.description == "Track state indicator"
+    assert captured.state.properties["selected_index"] == 2
+    locator = captured.candidate_strategy().options["identification"]
+    assert locator["mandatory"] == {
+        "name": "Object",
+        "native_class": node["native_class"],
+    }
+    assert "process_id" not in locator["mandatory"]
+    assert "accessible_description" not in locator["mandatory"]

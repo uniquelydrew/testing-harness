@@ -1,0 +1,31 @@
+{
+  "id": "org.automation-harness.msct.process_status",
+  "extends": "panel",
+  "display_name": "Process Status",
+  "capabilities": [
+    "inspect",
+    "read_fields",
+    "assert_fields"
+  ],
+  "interaction": {
+    "reveal": "owner_trigger",
+    "selection": false
+  },
+  "observation": {
+    "behavior": "org.automation-harness.msct.label_value_reader",
+    "fresh_runtime_required": true
+  },
+  "fields": [
+    {
+      "id": "service_heartbeat",
+      "label": "Service Heartbeat",
+      "type": "string"
+    },
+    {
+      "id": "service_outbox",
+      "label": "Service Outbox",
+      "type": "string"
+    }
+  ],
+  "framework": "swing"
+}

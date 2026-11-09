@@ -13,15 +13,18 @@ from automation_harness.authoring.action_catalog import (
     ActionInput, actions_for, tab_inventory_selector_options,
 )
 from automation_harness.models.component import ComponentDefinition
+from automation_harness.extensions.runtime import load_registry_from_environment
 from automation_harness.models.gui import ObjectType
 from automation_harness.core.menu_navigation import (
     menu_item_label, navigation_from_path, resolve_navigation, selectors_from_navigation,
 )
 
 
-def interaction_actions(definition: ComponentDefinition):
+def interaction_actions(definition: ComponentDefinition, *, registry=None):
+    if registry is None:
+        registry = load_registry_from_environment()
     return tuple(
-        action for action in actions_for(definition)
+        action for action in actions_for(definition, registry=registry)
         if action.executor_step == "gui.object.action"
     )
 

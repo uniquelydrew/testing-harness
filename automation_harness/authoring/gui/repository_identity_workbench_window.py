@@ -13,6 +13,11 @@ from gi.repository import GLib, Gtk
 from automation_harness.authoring.capture_context import CaptureContext, CaptureContextNode
 from automation_harness.authoring.object_identity_workbench import ObjectIdentityWorkbench
 from automation_harness.core.component_repository import ComponentRepository, repository_fingerprint
+from automation_harness.core.component_naming import default_payload_name
+from automation_harness.extensions.runtime import (
+    ExtensionBinding, available_profiles, bind_extension,
+    load_registry_from_environment, unbind_extension,
+)
 from automation_harness.core.hybrid_object_capture import HybridObjectCaptureService
 from automation_harness.core.object_identity_sync import rename_repository_component
 from automation_harness.core.object_resolution import resolve_repository_object
@@ -35,6 +40,7 @@ class _RepositoryWorkbenchHost:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()
+        self.extension_registry = load_registry_from_environment()
         self.recovery_issues = ()
         try:
             self.repository = ComponentRepository.load((self.path,))
@@ -469,7 +475,107 @@ class RepositoryIdentityWorkbench(ObjectIdentityWorkbench):
         common = self.context.common_peer_descriptors(node.key) if self.context else {}
         framework = str(getattr(captured, "framework", "") or "")
         self._build_property_inventory(node, identity, inherited, common, framework)
+        self._render_extension_profile(node, definition)
+        current_name = self.names.get(node.key, definition.component_id)
+        if current_name.casefold() in {"object", "component", "unknown", "unnamed"}:
+            suggested = default_payload_name(_capture_payload(captured, definition))
+            if suggested and suggested.casefold() != current_name.casefold():
+                suggestion = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                suggestion.pack_start(
+                    Gtk.Label(label="Native-class name suggestion: %s" % suggested),
+                    False, False, 0,
+                )
+                apply_button = Gtk.Button(label="Use Suggested Name")
+                apply_button.connect(
+                    "clicked", lambda _button: self.name_entry.set_text(suggested),
+                )
+                suggestion.pack_start(apply_button, False, False, 0)
+                self.properties_box.pack_start(suggestion, False, False, 0)
+        self._add_message(
+            "Stored repository definition, not live target inspection. "
+            "Recapture Selected to refresh accessibility and runtime evidence."
+        )
         self.properties_box.show_all()
+
+    def _render_extension_profile(self, node, definition):
+        """Offer explicit, non-destructive profile binding for persisted objects."""
+        registry = self._repository_host.extension_registry
+        try:
+            binding = ExtensionBinding.from_definition(definition)
+        except ValueError as exc:
+            self._add_message("Invalid extension binding: %s" % exc)
+            return
+        if registry is None:
+            if binding is not None:
+                self._add_message(
+                    "Extension %s@%s is pinned but no .ahext packages are loaded. "
+                    "Set AUTOMATION_HARNESS_EXTENSIONS before authoring."
+                    % (binding.component_id, binding.version)
+                )
+            return
+        try:
+            profiles = available_profiles(definition, registry)
+        except ValueError as exc:
+            self._add_message("Cannot load extension profiles: %s" % exc)
+            return
+        if not profiles and binding is None:
+            return
+
+        frame = Gtk.Frame(label="Extension Profile (opt-in)")
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.set_border_width(8)
+        frame.add(controls)
+        combo = Gtk.ComboBoxText()
+        combo.append("__none__", "Base component (no extension)")
+        ids = set()
+        for profile in profiles:
+            key = profile["id"]
+            ids.add(key)
+            combo.append(key, "%s — %s" % (profile.get("display_name", key), key))
+        if binding is not None and binding.component_id not in ids:
+            combo.append("__missing__", "Unavailable: %s@%s" % (
+                binding.component_id, binding.version,
+            ))
+            combo.set_active_id("__missing__")
+        else:
+            combo.set_active_id(binding.component_id if binding else "__none__")
+        controls.pack_start(combo, True, True, 0)
+        apply_button = Gtk.Button(label="Apply Profile")
+
+        def apply_profile(_button):
+            selected = combo.get_active_id()
+            if selected == "__missing__":
+                self.app._error(
+                    "Extension Profile",
+                    "The bound profile is unavailable. Load its pinned version or "
+                    "explicitly select Base component to remove the binding.",
+                )
+                return
+            try:
+                self._remember_selected_edits()
+                current = self._definition_by_key[node.key]
+                updated = (
+                    unbind_extension(current) if selected == "__none__"
+                    else bind_extension(current, selected, registry)
+                )
+                if updated is current:
+                    return
+                repository = self._repository_host.repository.with_component(updated)
+                self._repository_host.repository = repository
+                self.app.repository = repository
+                self._definition_by_key[node.key] = updated
+                self.app._mark_repository_dirty(True)
+                self._render_properties(node)
+                self._set_status(
+                    "Extension profile updated for %s — Save Repository to persist"
+                    % updated.component_id
+                )
+            except (KeyError, ValueError) as exc:
+                self.app._error("Extension Profile", "%s: %s" % (type(exc).__name__, exc))
+
+        apply_button.connect("clicked", apply_profile)
+        controls.pack_start(apply_button, False, False, 0)
+        self.properties_box.pack_start(frame, False, False, 0)
 
     def _save_node(self, node, component_id, identity):
         definition = self._definition_by_key.get(node.key)
@@ -633,13 +739,14 @@ def _capture_from_definition(definition: ComponentDefinition) -> CapturedCompone
     framework = definition.framework or strategy.type
     if framework == "java_accessibility":
         framework = "java"
+    scope = dict(definition.scope or {})
     return CapturedComponent(
         name=str(value("name", "text", "accessible_text") or definition.component_id),
         role=str(value("role", "accessible_role") or definition.object_type.value),
         description=definition.description,
         accessible_id=str(value("accessible_id", "id")) if value("accessible_id", "id") is not None else None,
-        application=str(value("application")) if value("application") is not None else None,
-        window=str(value("window")) if value("window") is not None else None,
+        application=str(value("application") or scope.get("application")) if (value("application") or scope.get("application")) is not None else None,
+        window=str(value("window") or scope.get("window")) if (value("window") or scope.get("window")) is not None else None,
         hierarchy=tuple(definition.component_id.split(".")),
         actions=tuple(definition.actions),
         bounds=None,
@@ -660,14 +767,38 @@ def _capture_from_definition(definition: ComponentDefinition) -> CapturedCompone
 def _capture_payload(capture: CapturedComponent, definition: ComponentDefinition):
     strategy = _editable_strategy(definition)
     identity = strategy.options.get("identification", {}) if isinstance(strategy.options, Mapping) else {}
+    properties = dict(definition.properties or {})
+    scope = dict(definition.scope or {})
+    parts = identity if isinstance(identity, Mapping) else {}
+    mandatory = parts.get("mandatory", parts)
+    assistive = parts.get("assistive", {})
+    conditions = {
+        **(dict(assistive) if isinstance(assistive, Mapping) else {}),
+        **(dict(mandatory) if isinstance(mandatory, Mapping) else {}),
+    }
+    # This view is reconstructed from a persistent definition, not a fresh
+    # interrogation of the target process. Only show captured accessibility
+    # values if they were actually persisted as observations.
     return {
         "repository_component_id": definition.component_id,
         "repository_object_id": definition.object_id,
         "id": capture.accessible_id,
-        "accessible_role": capture.role,
-        "accessible_text": capture.name,
+        "name": conditions.get("name"),
+        "accessible_name": properties.get("accessible_name"),
+        "accessible_role": properties.get("accessible_role"),
+        "accessible_text": properties.get("accessible_text"),
+        "accessible_description": properties.get("accessible_description"),
+        "text": properties.get("text"),
+        "component_name": properties.get("component_name"),
+        "tooltip_text": properties.get("tooltip_text"),
+        "semantic_object_type": definition.object_type.value,
+        "framework": definition.framework or strategy.type,
         "class": definition.native_class,
-        "properties": dict(definition.properties),
+        "native_class": definition.native_class,
+        "component_path": conditions.get("component_path"),
+        "window": capture.window or scope.get("window"),
+        "capture_source": "stored_repository_definition",
+        "properties": properties,
         "identification": identity,
     }
 
@@ -683,7 +814,7 @@ def _editable_strategy(definition: ComponentDefinition) -> ComponentStrategy:
 
 def _editable_strategy_index(definition: ComponentDefinition):
     for index, strategy in enumerate(definition.strategies):
-        if strategy.type in {"javafx", "atspi", "java_accessibility"}:
+        if strategy.type in {"javafx", "java_agent", "atspi", "java_accessibility"}:
             return index
     return 0 if definition.strategies else None
 
