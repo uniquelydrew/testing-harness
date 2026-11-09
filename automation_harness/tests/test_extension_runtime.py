@@ -52,7 +52,7 @@ def test_opt_in_extension_binding_does_not_rewrite_existing_identity(registry):
     assert bound.actions == original.actions
     assert bound.revision == 2
     assert original.properties == {"original": "kept"}
-    assert bound.properties[BINDING_KEY] == {"component_id": ids[0], "version": "0.1.0"}
+    assert bound.properties[BINDING_KEY] == {"component_id": ids[0], "version": "0.2.0"}
     assert bind_extension(bound, ids[0], registry) is bound
     assert unbind_extension(bound).properties == original.properties
     assert unbind_extension(original) is original
@@ -92,7 +92,7 @@ def test_invalid_or_mismatched_pin_never_falls_back(registry):
             "version": "1.0.0",
         }}), registry)
     with pytest.raises(ExtensionFormatError, match="invalid component extension binding"):
-        resolve_extension(replace(bound, properties={BINDING_KEY: {"version": "0.1.0"}}), registry)
+        resolve_extension(replace(bound, properties={BINDING_KEY: {"version": "0.2.0"}}), registry)
 
 
 def test_no_package_discovery_unless_explicitly_configured(tmp_path, monkeypatch):

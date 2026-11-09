@@ -30,7 +30,7 @@ manifest itself. Source manifests do not have to maintain checksums manually.
   "extension": {
     "id": "org.automation-harness.msct",
     "name": "MSCT Components",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "requires": {"harness": ">=0.5.2,<0.6.0"},
   "dependencies": [
@@ -136,7 +136,7 @@ The binding resides in the existing component's `properties` mapping:
 properties:
   automation_harness.extension:
     component_id: org.automation-harness.msct.messaging_status
-    version: 0.1.0
+    version: 0.2.0
 ```
 
 This operation preserves `object_id`, `component_id`, `object_type`, authored
