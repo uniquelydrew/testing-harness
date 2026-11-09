@@ -33,7 +33,7 @@ def test_identity_form_preserves_nested_key_value_structure():
 
 def test_identity_form_rejects_missing_mandatory_conditions():
     with pytest.raises(ValueError, match="mandatory"):
-        _normalize_identity({"mandatory": {}, "assistive": {"window": "ERSA"}})
+        _normalize_identity({"mandatory": {}, "assistive": {"window": "SampleApp"}})
 
 
 def test_identity_form_normalizes_legacy_ordinal_mapping():

@@ -22,7 +22,7 @@ def _capture(strategy="atspi"):
         authored = ComponentStrategy("javafx", {
             "identification": {
                 "mandatory": {"id": "cameraSelectorButton"},
-                "assistive": {"window": "ERSA Main Video Display"},
+                "assistive": {"window": "SampleApp Main Video Display"},
             }
         })
         framework = "javafx"
@@ -34,8 +34,8 @@ def _capture(strategy="atspi"):
         role="button" if strategy == "javafx" else "push button",
         description=None,
         accessible_id=accessible_id,
-        application="ERSA Main Video Display" if strategy == "javafx" else "Reference",
-        window="ERSA Main Video Display" if strategy == "javafx" else "Reference",
+        application="SampleApp Main Video Display" if strategy == "javafx" else "Reference",
+        window="SampleApp Main Video Display" if strategy == "javafx" else "Reference",
         hierarchy=(),
         actions=("activate", "click") if strategy == "javafx" else ("click",),
         bounds=(10, 20, 100, 30),
@@ -129,7 +129,7 @@ class _JavaAgentSuccess:
 def _solipsys_capture(*, visible_matches=1):
     return CapturedComponent(
         name="2", role="rendered_object", description=None,
-        accessible_id=None, application="MSCT", window="MSCT",
+        accessible_id=None, application="SampleConsole", window="SampleConsole",
         hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
         actions=("resolve", "click"), bounds=(100, 200, 13, 13),
         state=ComponentState(present=True, visible=True, showing=True),
@@ -141,13 +141,13 @@ def _solipsys_capture(*, visible_matches=1):
         authored_strategy=ComponentStrategy("java_agent", {"identification": {
             "mandatory": {
                 "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-                "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+                "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
                 "track_identity_key": "getTrackId",
                 "track_identity_value": "2",
             },
             "assistive": {
                 "native_class": "com.solipsys.view.AWTViewCanvas",
-                "window": "MSCT",
+                "window": "SampleConsole",
             },
         }}),
         object_type=ObjectType.CUSTOM, framework="solipsys_rendered",
@@ -162,7 +162,7 @@ def test_solipsys_definition_preserves_provisional_unique_identity_state():
     )
 
     definition = service.definition_from_capture(
-        "msct.track.2", _solipsys_capture(), validate_live=False,
+        "sample.track.2", _solipsys_capture(), validate_live=False,
     )
 
     assert definition.framework == "solipsys_rendered"
@@ -178,7 +178,7 @@ def test_solipsys_definition_rejects_identity_duplicated_in_visible_scope():
 
     with pytest.raises(ValueError, match="ambiguous in the visible surface scope"):
         service.definition_from_capture(
-            "msct.track.2", _solipsys_capture(visible_matches=2), validate_live=False,
+            "sample.track.2", _solipsys_capture(visible_matches=2), validate_live=False,
         )
 
 
@@ -201,7 +201,7 @@ def test_solipsys_definition_rejects_disqualified_field_identity():
 
     with pytest.raises(ValueError, match="no validated durable identity"):
         service.definition_from_capture(
-            "msct.track.2", capture, validate_live=False,
+            "sample.track.2", capture, validate_live=False,
         )
 
 
@@ -289,7 +289,7 @@ def test_targeted_capture_calls_only_the_authoritative_adapter():
 
     result = service.observe_next_click(TargetContext(
         process_id=12001,
-        window_id="ERSA Main Video Display",
+        window_id="SampleApp Main Video Display",
         framework_hint=Framework.JAVAFX,
         java_agent_pids=frozenset({77}),
         javafx_pids=frozenset({12001}),
@@ -306,7 +306,7 @@ def test_routed_observation_materializes_through_canonical_factory():
     )
     routed = service.observe_next_click(TargetContext(
         process_id=12001,
-        window_id="ERSA Main Video Display",
+        window_id="SampleApp Main Video Display",
         framework_hint=Framework.JAVAFX,
         javafx_pids=frozenset({12001}),
     ), timeout=1.0)
@@ -322,13 +322,13 @@ def test_routed_observation_materializes_through_canonical_factory():
 
 def test_javafx_definition_preserves_native_identity_and_framework():
     service = HybridObjectCaptureService(driver=_AtspiFailure(), javafx_driver=_JavaFxSuccess())
-    definition = service.definition_from_capture("mvd.camera_selector", _capture("javafx"))
+    definition = service.definition_from_capture("sampledisplay.camera_selector", _capture("javafx"))
     assert definition.framework == "javafx"
     assert definition.native_class == "javafx.scene.control.Button"
     assert definition.strategies[0].type == "javafx"
     identity = definition.strategies[0].options["identification"]
     assert identity["mandatory"] == {"id": "cameraSelectorButton"}
-    assert identity["assistive"]["window"] == "ERSA Main Video Display"
+    assert identity["assistive"]["window"] == "SampleApp Main Video Display"
     assert "activate" in definition.actions
 
 def test_javafx_combo_capture_preserves_select_item_capability():
@@ -442,7 +442,7 @@ def test_javafx_definition_validation_is_scoped_to_captured_process():
         }
     )
 
-    service.definition_from_capture("mvd.camera_selector", captured)
+    service.definition_from_capture("sampledisplay.camera_selector", captured)
 
     assert driver.process_ids == [12001]
 
@@ -458,7 +458,7 @@ def test_recorded_javafx_definition_does_not_require_closed_transient_to_reappea
     captured = _capture("javafx")
 
     definition = service.definition_from_capture(
-        "mvd.file_menu", captured, validate_live=False,
+        "sampledisplay.file_menu", captured, validate_live=False,
     )
 
     assert definition.framework == "javafx"
@@ -482,7 +482,7 @@ def test_javafx_definition_rejects_ambiguous_identity():
     )
     import pytest
     with pytest.raises(ValueError, match="remains ambiguous"):
-        service.definition_from_capture("mvd.button", captured)
+        service.definition_from_capture("sampledisplay.button", captured)
 
 
 
@@ -492,8 +492,8 @@ def _swing_semantic_capture(object_type, actions, accessible_id, native_class):
         role=object_type.value.replace("_", " "),
         description=None,
         accessible_id=accessible_id,
-        application="MSCT",
-        window="MSCT",
+        application="SampleConsole",
+        window="SampleConsole",
         hierarchy=(),
         actions=tuple(actions),
         bounds=(10, 20, 120, 24),
@@ -502,7 +502,7 @@ def _swing_semantic_capture(object_type, actions, accessible_id, native_class):
         authored_strategy=ComponentStrategy("java_agent", {
             "identification": {
                 "mandatory": {"accessible_id": accessible_id},
-                "assistive": {"window": "MSCT"},
+                "assistive": {"window": "SampleConsole"},
             },
         }),
         object_type=object_type,

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Executed by scripts/ci/desktop-integration.sh after dependency installation.
 # A manual self-hosted RHEL 8 desktop workflow exercises the pytest adapter
-# against a real GUI reference backend without depending on ERSA assets.
+# against a real GUI reference backend without depending on protected application assets.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARTIFACTS="${CI_ARTIFACTS_DIR:-$ROOT/artifacts/desktop}"
 mkdir -p "$ARTIFACTS"

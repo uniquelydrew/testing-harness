@@ -39,13 +39,13 @@ and retains the JavaFX identity.
 FXML:
 
 ```xml
-<VideoPlayerFXMLController id="feedPanelNorthWest" ... />
+<VideoTileController id="tileNorthWest" ... />
 ```
 
 Java:
 
 ```java
-feedPanel.setId("feedPanelNorthWest");
+tileNode.setId("tileNorthWest");
 ```
 
 Use an ID when the logical object itself is stable across runs and data assignments.
@@ -55,14 +55,14 @@ Use an ID when the logical object itself is stable across runs and data assignme
 For repeated/data-driven components, expose the represented domain object without changing CSS semantics:
 
 ```java
-feedPanel.getProperties().put("automation.feed-id", feedId);
+tileNode.getProperties().put("automation.feed-id", feedId);
 ```
 
 The bridge automatically treats scalar keys beginning with `automation.`, `test.`, or `qa.` as very-high-stability identity evidence. Examples:
 
 ```java
-node.getProperties().put("automation.id", "mvd.primary-video");
-node.getProperties().put("automation.feed-id", cameraId);
+node.getProperties().put("automation.id", "sample.primary-video");
+node.getProperties().put("automation.feed-id", sourceId);
 node.getProperties().put("automation.role", "tracking-feed");
 ```
 
@@ -73,7 +73,7 @@ Only scalar values are exported: strings, numbers, booleans, characters, and enu
 A scalar `userData` value is also exported and can identify a data-bound object:
 
 ```java
-feedPanel.setUserData(cameraId);
+tileNode.setUserData(sourceId);
 ```
 
 Prefer a namespaced `automation.*` property when multiple independent metadata values are useful.
@@ -86,10 +86,10 @@ A locator may therefore resemble:
 
 ```yaml
 mandatory:
-  class: edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController
+  class: org.example.desktop.widgets.VideoTileController
 assistive:
   lineage:
-    - id: bigGridPane
+    - id: mainGridPane
       class: javafx.scene.layout.GridPane
   layout:
     grid_row: 1
@@ -104,10 +104,10 @@ If eight feed panels have stable physical slots, `GridPane` row/column is approp
 
 ```yaml
 mandatory:
-  class: edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController
+  class: org.example.desktop.widgets.VideoTileController
 assistive:
   lineage:
-    - id: bigGridPane
+    - id: mainGridPane
   layout:
     grid_row: 1
     grid_column: 2
@@ -116,7 +116,7 @@ assistive:
 If feeds can move between slots, row/column is state rather than identity. Expose the represented feed instead:
 
 ```java
-feedPanel.getProperties().put("automation.feed-id", cameraId);
+tileNode.getProperties().put("automation.feed-id", sourceId);
 ```
 
 Then the generated identity can be based on:
@@ -124,9 +124,9 @@ Then the generated identity can be based on:
 ```yaml
 mandatory:
   properties:
-    automation.feed-id: camera-12
+    automation.feed-id: source-12
 assistive:
-  class: edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController
+  class: org.example.desktop.widgets.VideoTileController
 ```
 
 ## Ordinals

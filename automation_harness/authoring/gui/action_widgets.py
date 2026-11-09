@@ -94,7 +94,7 @@ def create_action_input_widget(
     if value is not None:
         widget.set_text(_editable(value))
     if item.name == "selector" and component.object_type is ObjectType.TAB_CONTAINER:
-        widget.set_placeholder_text("Tab label or JSON selector, e.g. Camera Status")
+        widget.set_placeholder_text("Tab label or JSON selector, e.g. Overview")
     elif item.name == "selector":
         widget.set_placeholder_text("Item selector (JSON, label or index)")
     else:

@@ -15,12 +15,12 @@ class _Transport:
 
 def _owner():
     return {
-        "class": "edu.mit.ll.ersa.common.dashboard.components.AdvancedDetailsDisplay",
+        "class": "org.example.desktop.widgets.DetailsPane",
         "id": "advancedDetailsTabs",
         "accessible_role": "TAB_PANE",
         "window": "Advanced Details",
         "tabs": [
-            {"index": 0, "id": None, "text": "Camera Status"},
+            {"index": 0, "id": None, "text": "System Status"},
             {"index": 3, "id": "sessionViewTab", "text": "Active Sessions"},
         ],
     }
@@ -55,7 +55,7 @@ def test_javafx_tab_event_normalizes_to_owner_semantics():
     )
     assert isinstance(event, StateChanged)
     assert event.target.semantic_type() is ObjectType.TAB_CONTAINER
-    assert event.target.backend_properties["tabs"][0]["text"] == "Camera Status"
+    assert event.target.backend_properties["tabs"][0]["text"] == "System Status"
     assert event.after["id"] == "sessionViewTab"
 
 
@@ -94,18 +94,18 @@ def test_tab_change_creates_one_semantic_step_not_an_owner_click():
     assert owner.subobjects["sessionviewtab"]["criteria"] == {
         "id": "sessionViewTab", "text": "Active Sessions",
     }
-    assert owner.subobjects["camera_status"]["criteria"] == {"text": "Camera Status"}
+    assert owner.subobjects["system_status"]["criteria"] == {"text": "System Status"}
 
 
-def test_idless_camera_status_records_owner_scoped_text_selector():
+def test_idless_system_status_records_owner_scoped_text_selector():
     adapter = JavaFxRecordingAdapter(_Transport())
-    observation = adapter.normalize(_event({"text": "Camera Status", "index": 0}))
+    observation = adapter.normalize(_event({"text": "System Status", "index": 0}))
     session = RecordingSession(repository=_repository(observation.target))
     session.start()
     session.observe(observation)
     step = interactions_to_steps(session.stop())[0]
     assert step.inputs["action"]["selector"] == {
-        "kind": "tab", "criteria": {"text": "Camera Status", "index": 0},
+        "kind": "tab", "criteria": {"text": "System Status", "index": 0},
     }
 
 

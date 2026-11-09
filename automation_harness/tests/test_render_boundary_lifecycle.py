@@ -17,14 +17,14 @@ from automation_harness.drivers.vision_driver import VisionDriver
 def _jogl_capture():
     return annotate_capture_boundary(CapturedComponent(
         name="Tactical Display", role="canvas", description=None,
-        accessible_id="tactical-display", application="MSCT", window="MSCT Display",
+        accessible_id="tactical-display", application="SampleConsole", window="SampleConsole Display",
         hierarchy=("javax.swing.JFrame", "javax.swing.JPanel", "com.jogamp.opengl.awt.GLCanvas"),
         actions=("resolve", "click"), bounds=(100, 200, 1000, 600),
         state=ComponentState(present=True, visible=True, showing=True),
         backend_properties={"capture_point": [600, 500]},
         authored_strategy=ComponentStrategy("java_agent", {"identification": {
             "mandatory": {"accessible_id": "tactical-display"},
-            "assistive": {"native_class": "com.jogamp.opengl.awt.GLCanvas", "window": "MSCT Display"},
+            "assistive": {"native_class": "com.jogamp.opengl.awt.GLCanvas", "window": "SampleConsole Display"},
         }}),
         framework="swing", native_class="com.jogamp.opengl.awt.GLCanvas",
     ))

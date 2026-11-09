@@ -31,19 +31,19 @@ def _repository() -> ComponentRepository:
 def _javafx_region(index: int, *, node_ref: str) -> CapturedComponent:
     lineage = [
         {"accessible_role": "TITLED_PANE", "class": "javafx.scene.control.TitledPane", "text": "Left Set"},
-        {"class": "edu.mit.ll.ersa.common.dashboard.components.VideoPlayerFXMLController", "id": "VideoPlayer"},
+        {"class": "org.example.desktop.widgets.VideoTileController", "id": "VideoPlayer"},
         {"class": "javafx.scene.layout.VBox", "id": "centerVBox"},
     ]
     identity = {
         "mandatory": {"class": "javafx.scene.layout.Region"},
         "assistive": {
-            "window": "ERSA Mosaic", "lineage": lineage,
+            "window": "SampleApp Mosaic", "lineage": lineage,
             "sibling_count": 6, "sibling_index": index,
         },
     }
     return CapturedComponent(
         name="Region", role="parent", description=None, accessible_id=None,
-        application="ERSA Mosaic", window="ERSA Mosaic",
+        application="SampleApp Mosaic", window="SampleApp Mosaic",
         hierarchy=("GridPane", "VideoPlayerFXMLController#VideoPlayer", "VBox#centerVBox", "Region"),
         actions=(), bounds=(7, 145 + index * 73, 468, 72),
         state=ComponentState(present=True, visible=True, showing=True),
@@ -309,19 +309,19 @@ def _solipsys_track_capture(identity="2", *, bounds=(737, 480, 1, 1), runtime_re
     identification = {
         "mandatory": {
             "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-            "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+            "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
             "track_identity_key": "getTrackId",
             "track_identity_value": identity,
         },
         "assistive": {
             "accessible_id": "panel0",
             "native_class": "com.solipsys.view.AWTViewCanvas",
-            "window": "MSCT Domain 12",
+            "window": "SampleConsole Domain 12",
         },
     }
     return CapturedComponent(
         name=identity, role="rendered_object", description=None, accessible_id=None,
-        application="MSCT Domain 12", window="MSCT Domain 12",
+        application="SampleConsole Domain 12", window="SampleConsole Domain 12",
         hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
         actions=("resolve", "click"), bounds=bounds,
         state=ComponentState(present=True, visible=True, showing=True),
@@ -376,7 +376,7 @@ def test_repository_matching_rejects_different_solipsys_track_identity():
 def _runtime_only_solipsys_capture(track_ref, rendered_ref, bounds):
     return CapturedComponent(
         name=f"track@{track_ref}", role="rendered_object", description=None,
-        accessible_id=None, application="MSCT Domain 12", window="MSCT Domain 12",
+        accessible_id=None, application="SampleConsole Domain 12", window="SampleConsole Domain 12",
         hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
         actions=("resolve", "click"), bounds=bounds,
         state=ComponentState(present=True, visible=True, showing=True),
@@ -390,7 +390,7 @@ def _runtime_only_solipsys_capture(track_ref, rendered_ref, bounds):
             "runtime_correlation": {
                 "track_runtime_ref": track_ref,
                 "rendered_object_ref": rendered_ref,
-                "window": "MSCT Domain 12",
+                "window": "SampleConsole Domain 12",
             }
         }),
         object_type=ObjectType.CUSTOM, framework="solipsys_rendered",
@@ -480,11 +480,11 @@ def test_repository_matching_rejects_same_track_identity_in_different_explicit_s
     })
     different_scope = _solipsys_track_capture("2")
     identity = dict(different_scope.candidate_strategy().options["identification"])
-    identity["assistive"] = dict(identity["assistive"], window="MSCT Domain 99")
+    identity["assistive"] = dict(identity["assistive"], window="SampleConsole Domain 99")
     different_scope = replace(
         different_scope,
         authored_strategy=ComponentStrategy("java_agent", {"identification": identity}),
-        application="MSCT Domain 99", window="MSCT Domain 99",
+        application="SampleConsole Domain 99", window="SampleConsole Domain 99",
     )
     session = RecordingSession(repository=repository)
     session.start()

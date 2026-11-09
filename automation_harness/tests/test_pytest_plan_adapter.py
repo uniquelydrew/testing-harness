@@ -13,7 +13,7 @@ from automation_harness.runner.plan_resources import resolve_plan_resources
 pytest_plugins = ("pytester",)
 
 
-PLAN = """name: T1789
+PLAN = """name: SamplePlan001
 version: 1
 variables: {}
 objects: {}
@@ -51,7 +51,7 @@ def test_invalid_variable_override_rejected(values):
 
 
 def test_plan_resource_resolution_without_project(tmp_path):
-    path = tmp_path / "T1789.ahplan"
+    path = tmp_path / "SamplePlan001.ahplan"
     path.write_text(PLAN, encoding="utf-8")
     plan = load_plan(path)
     resolved = resolve_plan_resources(plan, path)
@@ -61,9 +61,9 @@ def test_plan_resource_resolution_without_project(tmp_path):
 
 def test_project_resource_resolver_preserves_batch_semantics(tmp_path):
     from automation_harness.authoring.project import AuthoringProject
-    path = tmp_path / "T1789.ahplan"
+    path = tmp_path / "SamplePlan001.ahplan"
     path.write_text(PLAN, encoding="utf-8")
-    project = AuthoringProject(name="ERSA", root=tmp_path)
+    project = AuthoringProject(name="SampleApp", root=tmp_path)
     # Project Manager previously allowed supplied plan paths; the resolver must
     # not silently impose a new membership restriction on that existing caller.
     resolved = resolve_plan_resources(load_plan(path), path, project=project)
@@ -74,8 +74,8 @@ def test_pytest_rejects_nonmember_project(tmp_path, monkeypatch):
     from automation_harness.authoring.project import AuthoringProject
     from automation_harness.integrations.pytest import plugin
 
-    path = tmp_path / "T1789.ahplan"
-    project = AuthoringProject(name="ERSA", root=tmp_path)
+    path = tmp_path / "SamplePlan001.ahplan"
+    project = AuthoringProject(name="SampleApp", root=tmp_path)
     monkeypatch.setattr(plugin.AuthoringProject, "load", lambda _: project)
     with pytest.raises(ValueError, match="not a member"):
         load_selected_project(str(tmp_path / "project.ahproject"), path)
@@ -83,16 +83,16 @@ def test_pytest_rejects_nonmember_project(tmp_path, monkeypatch):
 
 def test_pytest_collects_ahplan_without_execution(pytester):
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
     result = pytester.runpytest_inprocess("--collect-only", "-q", str(plan))
-    result.stdout.fnmatch_lines(["*T1789.ahplan::T1789*", "*1 test collected*"])
+    result.stdout.fnmatch_lines(["*SamplePlan001.ahplan::SamplePlan001*", "*1 test collected*"])
     assert result.ret == 0
 
 
 def test_invalid_plan_is_collection_error(pytester):
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text("invalid: [", encoding="utf-8")
     result = pytester.runpytest_inprocess("--collect-only", "-q", str(plan))
     assert result.ret != 0
@@ -117,7 +117,7 @@ def test_collected_item_delegates_to_harness_and_exports_properties(pytester, mo
     monkeypatch.setattr(plugin, "execute_plan", execute_stub)
     monkeypatch.setattr(plugin, "LiveDesktopBackend", lambda: object())
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
     report = pytester.path / "junit.xml"
 
@@ -127,7 +127,7 @@ def test_collected_item_delegates_to_harness_and_exports_properties(pytester, mo
     )
     result.assert_outcomes(passed=1)
     assert len(calls) == 1
-    assert calls[0][0].name == "T1789"
+    assert calls[0][0].name == "SamplePlan001"
     assert str(calls[0][2]["runs_dir"]) == str(pytester.path / "artifacts")
     assert "test-run-123" in report.read_text(encoding="utf-8")
     assert "harness_report_html" in report.read_text(encoding="utf-8")
@@ -147,7 +147,7 @@ def test_failed_harness_plan_fails_pytest_with_step_diagnostics(pytester, monkey
         ),
     )
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
 
     result = pytester.runpytest_inprocess("-q", str(plan))
@@ -171,7 +171,7 @@ def test_lifecycle_rejects_empty_and_failing_commands(tmp_path):
 
 def test_collector_assigns_ahplan_marker(pytester):
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    path = pytester.path / "T1789.ahplan"
+    path = pytester.path / "SamplePlan001.ahplan"
     path.write_text(PLAN, encoding="utf-8")
     result = pytester.runpytest_inprocess("--collect-only", "-q", "-m", "ahplan", str(path))
     result.stdout.fnmatch_lines(["*1 test collected*"])
@@ -191,7 +191,7 @@ def test_teardown_runs_after_failed_execution(pytester, monkeypatch):
         ),
     )
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
     marker = pytester.path / "teardown.marker"
     script = pytester.path / "teardown.py"
@@ -213,7 +213,7 @@ def test_teardown_runs_after_failed_execution(pytester, monkeypatch):
 
 def test_teardown_runs_even_if_setup_fails(pytester):
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
     setup = pytester.path / "setup.py"
     setup.write_text("raise SystemExit(7)\n", encoding="utf-8")
@@ -338,7 +338,7 @@ def test_failed_teardown_does_not_change_successful_harness_result(pytester, mon
         ),
     )
     pytester.makeconftest('pytest_plugins = ["automation_harness.integrations.pytest.plugin"]')
-    plan = pytester.path / "T1789.ahplan"
+    plan = pytester.path / "SamplePlan001.ahplan"
     plan.write_text(PLAN, encoding="utf-8")
     script = pytester.path / "teardown.py"
     script.write_text("raise SystemExit(23)\n", encoding="utf-8")

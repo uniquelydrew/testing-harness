@@ -2,7 +2,7 @@ package automation.harness.agent;
 
 import java.util.UUID;
 
-/** Java 8 compatible bootstrap for Swing/AWT/JOGL targets such as MSCT. */
+/** Java 8 compatible bootstrap for Swing/AWT/JOGL targets including legacy GUI targets. */
 public final class AutomationAgent {
     private static volatile AgentServer server;
     private AutomationAgent() { }
