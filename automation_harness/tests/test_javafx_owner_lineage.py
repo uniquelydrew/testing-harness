@@ -13,8 +13,8 @@ from automation_harness.models.component import ComponentDefinition, ComponentSt
 from automation_harness.models.gui import ObjectType, ActionType
 
 
-WINDOW = "Select Site"
-MAIN = "ERSA Main Video Display"
+WINDOW = "Select Workspace"
+MAIN = "SampleApp Main Video Display"
 
 
 def make_owner(window=WINDOW, *, scope=None):

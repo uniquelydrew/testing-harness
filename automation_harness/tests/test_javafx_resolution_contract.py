@@ -1,7 +1,7 @@
 """Regression contract for native JavaFX selection and canonical ownership.
 
 Source-level checks complement bridge integration tests. The native JavaFX
-resolver runs in the AUT JVM, where test CI cannot create an ERSA scene graph.
+resolver runs in the AUT JVM, where test CI cannot create an SampleApp scene graph.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_canonical_identity_is_not_replaced_to_work_around_duplicate_ids():
                 "class": "javafx.scene.control.Menu",
             },
         }}),),
-        scope={"ownership": {"window": "ERSA Main Video Display"}},
+        scope={"ownership": {"window": "SampleApp Main Video Display"}},
     )
     repo = ComponentRepository({menu.component_id: menu})
     ctx = SimpleNamespace(components=repo)
@@ -77,6 +77,6 @@ def test_canonical_identity_is_not_replaced_to_work_around_duplicate_ids():
     original = menu.strategies[0].options["identification"]
     scoped = handle._scoped_identification("javafx", original)
     assert scoped["mandatory"] == {"id": "fileMenu"}
-    assert scoped["assistive"]["window"] == "ERSA Main Video Display"
+    assert scoped["assistive"]["window"] == "SampleApp Main Video Display"
     assert menu.strategies[0].options["identification"] == original
     assert menu.object_id == repo.get(menu.object_id).object_id
