@@ -30,12 +30,12 @@ def test_capture_uses_newly_discovered_transport(monkeypatch):
             assert payload == {"x": 100, "y": 200}
             return {
                 "semantic_node": {
-                    "name": "MSCT Surface",
+                    "name": "SampleConsole Surface",
                     "role": "panel",
                     "description": None,
                     "accessible_id": None,
-                    "application": "MSCT",
-                    "hierarchy": ["MSCT", "MSCT Surface"],
+                    "application": "SampleConsole",
+                    "hierarchy": ["SampleConsole", "SampleConsole Surface"],
                     "actions": [],
                     "bounds": [0, 0, 800, 600],
                     "state": {"present": True, "visible": True},
@@ -56,5 +56,5 @@ def test_capture_uses_newly_discovered_transport(monkeypatch):
 
     captured = driver.capture_at_point(100, 200, process_id=5887)
 
-    assert captured.name == "MSCT Surface"
+    assert captured.name == "SampleConsole Surface"
     assert captured.backend_properties["bridge_pid"] == 5887

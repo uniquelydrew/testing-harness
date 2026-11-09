@@ -462,7 +462,7 @@ def test_physical_press_resolves_and_highlights_before_release_arrives():
 def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
     javafx_target = replace(
         _target(), name="File", accessible_id="fileMenu", role="menu",
-        application="ERSA test.build.0", framework="javafx",
+        application="SampleApp test.build.0", framework="javafx",
         native_class="com.sun.javafx.scene.control.MenuBarButton",
     )
 
@@ -511,7 +511,7 @@ def test_physical_press_prefers_same_javafx_point_capture_as_next_click():
 def test_physical_press_prefers_javafx_semantic_target_over_recordable_atspi_proxy():
     coarse = replace(
         _target(), name="File", role="menu", accessible_id=None,
-        application="ERSA test.build.0", bounds=(0, 0, 1024, 768),
+        application="SampleApp test.build.0", bounds=(0, 0, 1024, 768),
         backend_properties={"process_id": 702},
     )
     exact = replace(
@@ -536,7 +536,7 @@ def test_physical_press_rejects_javafx_window_beneath_topmost_application():
         backend_properties={"process_id": 701}, bounds=(0, 0, 400, 300),
     )
     underneath = replace(
-        _target(), name="File", application="ERSA", framework="javafx",
+        _target(), name="File", application="SampleApp", framework="javafx",
         backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
     )
 
@@ -557,7 +557,7 @@ def test_structural_topmost_window_blocks_javafx_window_beneath_it():
         bounds=(0, 0, 400, 300),
     )
     underneath = replace(
-        _target(), name="File", application="ERSA", framework="javafx",
+        _target(), name="File", application="SampleApp", framework="javafx",
         backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
     )
 
@@ -592,7 +592,7 @@ def test_matching_process_uses_javafx_semantic_target():
         application="Application Window", backend_properties={"process_id": 702},
     )
     semantic = replace(
-        _target(), name="File", application="ERSA", framework="javafx",
+        _target(), name="File", application="SampleApp", framework="javafx",
         backend_properties={"bridge_pid": 702}, bounds=(10, 20, 80, 24),
     )
 

@@ -134,14 +134,14 @@ def test_solipsys_track_identity_matches_across_runtime_ref_and_position_changes
     identification = {
         "mandatory": {
             "rendered_class": "com.solipsys.tdf.track.DefaultTrackVelocityDisplay2D",
-            "track_class": "com.solipsys.msct.track.report.MSCTTrackReport",
+            "track_class": "com.solipsys.sample.track.report.SampleConsoleTrackReport",
             "track_identity_key": "getTrackId",
             "track_identity_value": "2",
         },
         "assistive": {
             "accessible_id": "panel0",
             "native_class": "com.solipsys.view.AWTViewCanvas",
-            "window": "MSCT Domain 12",
+            "window": "SampleConsole Domain 12",
         },
     }
     definition = ComponentDefinition(
@@ -153,7 +153,7 @@ def test_solipsys_track_identity_matches_across_runtime_ref_and_position_changes
     repository = ComponentRepository({definition.component_id: definition})
     capture = CapturedComponent(
         name="2", role="rendered_object", description=None, accessible_id=None,
-        application="MSCT Domain 12", window="MSCT Domain 12",
+        application="SampleConsole Domain 12", window="SampleConsole Domain 12",
         hierarchy=("AWTViewCanvas", "DefaultTrackVelocityDisplay2D"),
         actions=("resolve", "click"), bounds=(1297, 227, 1, 1),
         state=ComponentState(present=True, visible=True, showing=True),

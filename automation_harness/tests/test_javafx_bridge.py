@@ -38,7 +38,7 @@ def test_mixed_agent_swing_snapshot_authors_native_agent_locator():
         "native_class": "com.jogamp.opengl.awt.GLCanvas",
         "name": "Tactical Display",
         "accessible_id": "tactical-display",
-        "window": "MSCT Display",
+        "window": "SampleConsole Display",
         "role": "canvas",
         "object_type": "canvas",
         "bounds": [100, 200, 800, 600],
@@ -78,7 +78,7 @@ def test_javafx_nested_tab_inventory_is_preserved_in_recorded_capture():
         "framework": "javafx",
         "class": "javafx.scene.control.TabPane",
         "id": "childTabs",
-        "window": "MSCT Display",
+        "window": "SampleConsole Display",
         "selected_index": 1,
         "tabs": [
             {"index": 0, "id": "configurationTab", "text": "Configuration",
@@ -160,6 +160,6 @@ def test_javafx_semantic_tab_selector_requires_identity_and_rejects_unscoped_ind
     with pytest.raises(ValueError, match="ID or text"):
         driver.select_tab({"index": 3}, identification={"mandatory": {"id": "advancedTabs"}})
     with pytest.raises(ValueError, match="unsupported"):
-        driver.select_tab({"text": "Camera Status", "window": "other"})
+        driver.select_tab({"text": "System Status", "window": "other"})
     with pytest.raises(ValueError, match="nonnegative"):
-        driver.select_tab({"text": "Camera Status", "index": -1})
+        driver.select_tab({"text": "System Status", "index": -1})
